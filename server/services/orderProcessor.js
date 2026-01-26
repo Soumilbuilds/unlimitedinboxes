@@ -45,6 +45,19 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function isCancelled(orderId) {
+  const job = activeJobs.get(orderId);
+  return Boolean(job?.cancelled);
+}
+
+function checkCancelled(orderId, message = null) {
+  if (!isCancelled(orderId)) return false;
+  if (message) {
+    logMessage(orderId, message);
+  }
+  return true;
+}
+
 function isRetryableAdminStatus(status) {
   return status === 400 || status === 404 || status === 429 || status === 500 || status === 503;
 }
@@ -181,6 +194,7 @@ export async function processOrder(orderId) {
       zoneId = zone.id;
       updateTenantCloudflare(tenant.id, zone.id, zone.name_servers);
     }
+    if (checkCancelled(orderId)) return;
 
     const cleanDomains = process.env.CLEAN_DOMAINS_BEFORE_ORDER === 'true';
     if (cleanDomains) {
@@ -209,18 +223,22 @@ export async function processOrder(orderId) {
         // ignore
       }
     }
+    if (checkCancelled(orderId)) return;
 
     logMessage(orderId, 'Adding domain to Microsoft...');
     const match = await addDomainToMicrosoft(MASTER_CLIENT_ID, MASTER_CLIENT_SECRET, tenant.tenant_id, domain);
+    if (checkCancelled(orderId)) return;
 
     logMessage(orderId, 'Adding verification TXT to Cloudflare...');
     await addDnsRecord(zoneId, 'TXT', match.txt_name, match.txt_text);
 
     logMessage(orderId, 'Waiting for DNS propagation (15s)...');
     await new Promise(r => setTimeout(r, 15000));
+    if (checkCancelled(orderId)) return;
 
     logMessage(orderId, 'Verifying domain with Microsoft...');
     const verifyResult = await verifyDomain(MASTER_CLIENT_ID, MASTER_CLIENT_SECRET, tenant.tenant_id, domain);
+    if (checkCancelled(orderId)) return;
 
     if (verifyResult?.records?.length) {
       logMessage(orderId, 'Adding Exchange DNS records...');
@@ -240,11 +258,13 @@ export async function processOrder(orderId) {
     } else {
       logMessage(orderId, 'No service configuration records returned. Domain may already be configured.');
     }
+    if (checkCancelled(orderId)) return;
 
     // Step 2: Graph admin client (app-only)
     logMessage(orderId, 'Preparing Microsoft Graph admin client...');
     graphProvider = await createGraphClientProvider(MASTER_CLIENT_ID, MASTER_CLIENT_SECRET, tenant.tenant_id);
     globalAdminRoleId = await graphProvider.run(client => getGlobalAdminRoleIdWithClient(client));
+    if (checkCancelled(orderId)) return;
 
     // Step 3: Exchange mailbox creation
     logMessage(orderId, 'Launching exchange browser...');
@@ -252,6 +272,7 @@ export async function processOrder(orderId) {
     browserContext = exchangeContext;
     page = newPage;
     page.setDefaultTimeout(60000);
+    if (checkCancelled(orderId)) return;
 
     logMessage(orderId, 'Logging in to Microsoft 365...');
     const loginResult = await loginToMicrosoft365(page, tenant.admin_email, tenant.admin_password, browserContext);
@@ -261,6 +282,7 @@ export async function processOrder(orderId) {
     if (loginResult.page) {
       page = loginResult.page;
     }
+    if (checkCancelled(orderId)) return;
 
     const total = order.total_mailboxes || 100;
     const createdMailboxes = [];
@@ -278,6 +300,7 @@ export async function processOrder(orderId) {
       if (!result.success) {
         throw new Error(`Preflight failed during mailbox creation: ${result.error}`);
       }
+      if (checkCancelled(orderId, 'Order cancelled during preflight.')) return;
 
       const email = result.email;
       createdMailboxes.push({
@@ -287,6 +310,7 @@ export async function processOrder(orderId) {
         createdAt: new Date().toISOString()
       });
       updateOrderProgress(orderId, preflightWeight, createdMailboxes);
+      if (checkCancelled(orderId, 'Order cancelled during preflight.')) return;
 
       let userId = result.externalDirectoryObjectId || result.objectId;
       userId = await resolveUserId(graphProvider, email, userId);
@@ -297,6 +321,7 @@ export async function processOrder(orderId) {
       userIdByEmail.set(email, userId);
 
       await sleep(5000);
+      if (checkCancelled(orderId, 'Order cancelled during preflight.')) return;
 
       const upnResult = await retryAdminAction(
         orderId,
@@ -320,6 +345,7 @@ export async function processOrder(orderId) {
         throw new Error(`Preflight sign-in enable failed: ${enableResult?.error || 'Unknown error'}`);
       }
       logMessage(orderId, `Preflight: sign-in enabled for ${email}`);
+      if (checkCancelled(orderId, 'Order cancelled during preflight.')) return;
 
       const roleResult = await retryAdminAction(
         orderId,
@@ -333,6 +359,7 @@ export async function processOrder(orderId) {
       }
       logMessage(orderId, `Preflight: Global Admin assigned to ${email}`);
     }
+    if (checkCancelled(orderId)) return;
 
     if (total === 1) {
       await ensureSmtpAuthSetting(orderId, page);
@@ -377,6 +404,7 @@ export async function processOrder(orderId) {
     }
 
     await ensureSmtpAuthSetting(orderId, page);
+    if (checkCancelled(orderId)) return;
 
     logMessage(orderId, 'Enabling sign-in and setting passwords for all mailboxes...');
     for (let i = 0; i < createdMailboxes.length; i += 1) {
@@ -511,6 +539,7 @@ export async function processOrder(orderId) {
       logMessage(orderId, `Email authentication setup failed: ${emailAuthError.message}`);
     }
 
+    if (checkCancelled(orderId)) return;
     updateOrderProgress(orderId, 100, createdMailboxes);
     updateOrderStatus(orderId, 'completed');
     logMessage(orderId, 'Order completed successfully.');

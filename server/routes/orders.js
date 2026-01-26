@@ -7,6 +7,7 @@ import {
   getTenantByIdForUser,
   getUserByEmail,
   updateOrderStatus,
+  addOrderLog,
   deleteOrder,
   getOrderLogs as getStoredLogs
 } from '../db/database.js';
@@ -150,9 +151,14 @@ router.post('/:id/cancel', (req, res) => {
   try {
     const order = getOrderByIdForUser(parseInt(req.params.id, 10), req.session.user.id);
     if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (!['processing', 'pending'].includes(order.status)) {
+      return res.status(400).json({ error: 'Order is not being processed' });
+    }
     const success = cancelOrder(order.id);
     if (success) return res.json({ success: true, message: 'Order cancelled' });
-    res.status(400).json({ error: 'Order is not being processed' });
+    updateOrderStatus(order.id, 'cancelled');
+    addOrderLog(order.id, 'Order cancelled by user (no active job found).');
+    res.json({ success: true, message: 'Order cancelled' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -309,6 +309,9 @@ export default function Orders() {
     if (!confirm('Stop processing this order?')) return;
     try {
       await api.post(`/orders/${id}/cancel`);
+      setOrders(prev => prev.map(order => (
+        order.id === id ? { ...order, status: 'cancelled' } : order
+      )));
       fetchOrders();
     } catch (e) {
       alert(e.response?.data?.error || 'Failed to stop');
@@ -367,7 +370,7 @@ export default function Orders() {
         </div>
 
         {hasActiveOrder && (
-          <div className="alert info">
+          <div className="alert info" style={{ marginBottom: 16 }}>
             An order is already processing. Finish or stop it before creating another.
           </div>
         )}
