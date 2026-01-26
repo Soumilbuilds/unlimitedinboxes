@@ -108,8 +108,9 @@ router.post('/', (req, res) => {
     const plan = req.session.user.plan || 'free';
     if (plan === 'free') {
       const existing = getOrders(req.session.user.id);
-      if (existing.length > 0) {
-        return res.status(403).json({ error: 'Free plan allows only one order.' });
+      const hasCompleted = existing.some(o => o.status === 'completed');
+      if (hasCompleted) {
+        return res.status(403).json({ error: 'Free plan allows only one completed order.' });
       }
     }
 

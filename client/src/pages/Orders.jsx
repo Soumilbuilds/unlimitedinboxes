@@ -73,6 +73,7 @@ export default function Orders() {
   const [wizardError, setWizardError] = useState('');
   const [wizardBusy, setWizardBusy] = useState(false);
   const [downloadNotice, setDownloadNotice] = useState(false);
+  const [upgradeNotice, setUpgradeNotice] = useState(false);
 
   const [tenantEmail, setTenantEmail] = useState('');
   const [tenantPassword, setTenantPassword] = useState('');
@@ -111,8 +112,8 @@ export default function Orders() {
     () => orders.some(o => ['pending', 'processing'].includes(o.status)),
     [orders]
   );
-  const freeOrderLocked = useMemo(
-    () => user?.plan === 'free' && orders.length > 0,
+  const freeCompletedOrder = useMemo(
+    () => user?.plan === 'free' && orders.some(o => o.status === 'completed'),
     [orders, user?.plan]
   );
 
@@ -346,14 +347,18 @@ export default function Orders() {
             <button className="btn ghost" onClick={fetchOrders}>Refresh</button>
             <button
               className="btn primary"
-              onClick={() => setWizardOpen(true)}
-              disabled={hasActiveOrder || freeOrderLocked}
+              onClick={() => {
+                if (freeCompletedOrder) {
+                  setUpgradeNotice(true);
+                  return;
+                }
+                setWizardOpen(true);
+              }}
+              disabled={hasActiveOrder}
               title={
-                freeOrderLocked
-                  ? 'Free plan allows only one order'
-                  : hasActiveOrder
-                    ? 'Only one active order at a time'
-                    : 'Create a new order'
+                hasActiveOrder
+                  ? 'Only one active order at a time'
+                  : 'Create a new order'
               }
             >
               New Order
@@ -364,11 +369,6 @@ export default function Orders() {
         {hasActiveOrder && (
           <div className="alert info">
             An order is already processing. Finish or stop it before creating another.
-          </div>
-        )}
-        {freeOrderLocked && (
-          <div className="alert info">
-            Free plan allows one order. Upgrade to create more.
           </div>
         )}
 
@@ -620,6 +620,25 @@ export default function Orders() {
               </p>
               <div className="modal-actions">
                 <button className="btn ghost" onClick={() => setDownloadNotice(false)}>Close</button>
+                <a className="btn primary" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
+                  Upgrade
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {upgradeNotice && (
+          <div className="modal-overlay" onClick={() => setUpgradeNotice(false)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <div className="wizard-header">
+                <div>
+                  <h2>Upgrade Required</h2>
+                </div>
+                <button className="icon-btn" onClick={() => setUpgradeNotice(false)} title="Close">✕</button>
+              </div>
+              <p className="modal-subtitle">To Create More Inboxes Upgrade Your Account</p>
+              <div className="modal-actions">
                 <a className="btn primary" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
                   Upgrade
                 </a>
