@@ -128,7 +128,29 @@ router.get('/callback', (req, res) => {
   const { tenant, error, error_description, state } = req.query;
 
   if (error) {
-    return res.send(`<h1>Error</h1><p>${error_description}</p>`);
+    const description = String(error_description || '');
+    const alreadyExists = description.includes('service principal name is already present for the tenant');
+    if (alreadyExists && state) {
+      const match = description.match(/tenant\\s+([0-9a-fA-F-]{36})/);
+      if (match && match[1]) {
+        try {
+          updateTenantId(parseInt(state, 10), match[1]);
+          return res.send(`
+            <div style="font-family: sans-serif; text-align: center; padding: 50px;">
+              <h1 style="color: #34d399;">Consent Successful!</h1>
+              <p>Tenant ID: <strong>${match[1]}</strong> has been connected.</p>
+              <p>You can close this window and refresh the dashboard.</p>
+              <script>
+                setTimeout(() => window.close(), 3000);
+              </script>
+            </div>
+          `);
+        } catch (e) {
+          return res.send(`<h1>Error</h1><p>Database Update Failed: ${e.message}</p>`);
+        }
+      }
+    }
+    return res.send(`<h1>Error</h1><p>${description}</p>`);
   }
 
   if (!tenant) {
