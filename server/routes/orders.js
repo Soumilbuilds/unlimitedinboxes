@@ -105,8 +105,17 @@ router.post('/', (req, res) => {
     const tenant = getTenantByIdForUser(tenant_id, req.session.user.id);
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
+    const plan = req.session.user.plan || 'free';
+    if (plan === 'free') {
+      const existing = getOrders(req.session.user.id);
+      if (existing.length > 0) {
+        return res.status(403).json({ error: 'Free plan allows only one order.' });
+      }
+    }
+
     const safeName = typeof order_name === 'string' && order_name.trim() ? order_name.trim() : null;
-    const orderId = createOrder(tenant_id, total_mailboxes || 100, mailbox_password, safeName, req.session.user.id);
+    const mailboxTotal = plan === 'free' ? 100 : (total_mailboxes || 100);
+    const orderId = createOrder(tenant_id, mailboxTotal, mailbox_password, safeName, req.session.user.id);
     const order = getOrderById(orderId);
 
     res.status(201).json({

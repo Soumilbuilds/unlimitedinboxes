@@ -71,6 +71,19 @@ router.post('/upgrade', (req, res) => {
   }
 });
 
+router.post('/downgrade', (req, res) => {
+  const { email } = req.body;
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+  const existing = getUserByEmail(email);
+  if (!existing) {
+    return res.status(404).json({ error: 'Account not found' });
+  }
+  updateUserPlanByEmail(email, 'free');
+  return res.json({ success: true, email, plan: 'free', downgraded: true });
+});
+
 router.post('/login', (req, res) => {
   const { email, password } = req.body;
 

@@ -111,6 +111,10 @@ export default function Orders() {
     () => orders.some(o => ['pending', 'processing'].includes(o.status)),
     [orders]
   );
+  const freeOrderLocked = useMemo(
+    () => user?.plan === 'free' && orders.length > 0,
+    [orders, user?.plan]
+  );
 
   const fetchOrders = async () => {
     setLoading(true);
@@ -343,8 +347,14 @@ export default function Orders() {
             <button
               className="btn primary"
               onClick={() => setWizardOpen(true)}
-              disabled={hasActiveOrder}
-              title={hasActiveOrder ? 'Only one active order at a time' : 'Create a new order'}
+              disabled={hasActiveOrder || freeOrderLocked}
+              title={
+                freeOrderLocked
+                  ? 'Free plan allows only one order'
+                  : hasActiveOrder
+                    ? 'Only one active order at a time'
+                    : 'Create a new order'
+              }
             >
               New Order
             </button>
@@ -354,6 +364,11 @@ export default function Orders() {
         {hasActiveOrder && (
           <div className="alert info">
             An order is already processing. Finish or stop it before creating another.
+          </div>
+        )}
+        {freeOrderLocked && (
+          <div className="alert info">
+            Free plan allows one order. Upgrade to create more.
           </div>
         )}
 
@@ -418,9 +433,15 @@ export default function Orders() {
                       <button className="btn primary" onClick={() => startOrder(selectedOrder.id)}>Try Again</button>
                     )}
                     {selectedOrder.status === 'completed' && (
-                      <button className="btn success" onClick={() => downloadCsv(selectedOrder)}>
-                        Download CSV
-                      </button>
+                      user?.plan === 'free' ? (
+                        <a className="btn primary" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
+                          Upgrade to Download
+                        </a>
+                      ) : (
+                        <button className="btn success" onClick={() => downloadCsv(selectedOrder)}>
+                          Download CSV
+                        </button>
+                      )
                     )}
                   </div>
 

@@ -17,12 +17,12 @@ export default function Sidebar() {
       </div>
 
       <nav className="sidebar-nav">
-        <a className="sidebar-link" href="http://unlimitedinboxes.com/tenants" target="_blank" rel="noreferrer">
-          Tenants
-        </a>
         <NavLink to="/orders" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
           Orders
         </NavLink>
+        <a className="sidebar-link" href="http://unlimitedinboxes.com/tenants" target="_blank" rel="noreferrer">
+          Tenants
+        </a>
       </nav>
 
       <div className="sidebar-footer">

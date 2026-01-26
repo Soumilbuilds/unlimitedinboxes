@@ -75,7 +75,7 @@ $SSH_CMD "$REMOTE" "touch \"$SHARED_DIR/db/app.db\"; ln -sfn \"$SHARED_DIR/db/ap
 $SSH_CMD "$REMOTE" "cd \"$REPO_DIR/server\" && (npm ci --omit=dev || npm install --omit=dev)"
 $SSH_CMD "$REMOTE" "cd \"$REPO_DIR/client\" && (npm ci || npm install) && npm run build"
 
-$SSH_CMD "$REMOTE" "pkill -f \"node index.js\" >/dev/null 2>&1 || true"
+$SSH_CMD "$REMOTE" "if command -v fuser >/dev/null 2>&1; then fuser -k 3000/tcp || true; else pkill -f \"node .*index.js\" >/dev/null 2>&1 || true; fi"
 $SSH_CMD "$REMOTE" "cd \"$REPO_DIR/server\" && NODE_ENV=production nohup node index.js > \"$SHARED_DIR/logs/server.log\" 2>&1 & echo \$! > \"$SHARED_DIR/pids/server.pid\""
 
 echo "Deploy complete (GitHub)."

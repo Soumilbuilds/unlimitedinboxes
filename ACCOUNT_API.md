@@ -83,6 +83,36 @@ Errors
 
 ---
 
+## Downgrade Account
+Downgrade an existing account to **free** (payment failed, etc).
+
+Endpoint
+- `POST /api/auth/downgrade`
+
+Body
+```json
+{
+  "email": "user@domain.com"
+}
+```
+
+Response (success)
+```json
+{
+  "success": true,
+  "email": "user@domain.com",
+  "plan": "free",
+  "downgraded": true
+}
+```
+
+Errors
+- `400` missing email
+- `404` account not found
+
+---
+
 ## Notes
 - The app UI still uses login sessions; these endpoints are for account creation/upgrade only.
-- Free accounts see **masked mailbox emails** in logs and CSV downloads.
+- Free accounts are limited to **one order** (100 mailboxes).
+- Free accounts see **masked mailbox emails** in logs and cannot download the real list.
