@@ -23,6 +23,11 @@ export default function Sidebar() {
         <a className="sidebar-link" href="https://unlimitedinboxes.com/tenant" target="_blank" rel="noreferrer">
           Tenants
         </a>
+        {user?.plan !== 'free' && (
+          <NavLink to="/inboxes" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
+            Inboxes
+          </NavLink>
+        )}
       </nav>
 
       <div className="sidebar-footer">

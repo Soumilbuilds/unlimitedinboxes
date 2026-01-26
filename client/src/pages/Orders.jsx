@@ -318,6 +318,18 @@ export default function Orders() {
     }
   };
 
+  const deleteOrder = async (id) => {
+    if (!confirm('Delete this order? This cannot be undone.')) return;
+    try {
+      await api.delete(`/orders/${id}`);
+      setOrders(prev => prev.filter(order => order.id !== id));
+      setSelectedOrderId(prev => (prev === id ? null : prev));
+      fetchOrders();
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to delete');
+    }
+  };
+
   const downloadCsv = (order) => {
     const rows = order?.created_mailboxes || [];
     const csv = buildCsv(rows);
@@ -433,18 +445,15 @@ export default function Orders() {
                       <button className="btn danger" onClick={() => cancelOrder(selectedOrder.id)}>Stop Order</button>
                     )}
                     {(selectedOrder.status === 'failed' || selectedOrder.status === 'cancelled') && (
-                      <button className="btn primary" onClick={() => startOrder(selectedOrder.id)}>Try Again</button>
+                      <>
+                        <button className="btn primary" onClick={() => startOrder(selectedOrder.id)}>Try Again</button>
+                        <button className="btn ghost" onClick={() => deleteOrder(selectedOrder.id)}>Delete Order</button>
+                      </>
                     )}
                     {selectedOrder.status === 'completed' && (
-                      user?.plan === 'free' ? (
-                        <a className="btn primary" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
-                          Upgrade to Download
-                        </a>
-                      ) : (
-                        <button className="btn success" onClick={() => downloadCsv(selectedOrder)}>
-                          Download CSV
-                        </button>
-                      )
+                      <button className="btn success" onClick={() => downloadCsv(selectedOrder)}>
+                        Download Inboxes
+                      </button>
                     )}
                   </div>
 
@@ -616,7 +625,7 @@ export default function Orders() {
         {downloadNotice && (
           <div className="modal-overlay" onClick={() => setDownloadNotice(false)}>
             <div className="modal" onClick={(e) => e.stopPropagation()}>
-              <h2 className="modal-title">Download started</h2>
+              <h2 className="modal-title">Upgrade Your Account To View Mailboxes</h2>
               <p className="modal-subtitle">
                 Your download has started, but mailbox names are hidden on the free plan.
                 Upgrade to view the full list.

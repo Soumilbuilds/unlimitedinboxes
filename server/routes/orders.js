@@ -68,6 +68,41 @@ function maskEmailsInText(text) {
   );
 }
 
+function maskName(name) {
+  if (!name) return name;
+  const trimmed = String(name).trim();
+  if (trimmed.length <= 2) return trimmed;
+  const first = trimmed[0] || '';
+  const last = trimmed[trimmed.length - 1] || first;
+  return `${first}*****${last}`;
+}
+
+function maskNamesInText(text) {
+  if (!text) return text;
+  let output = String(text);
+
+  // Creating: Full Name (email)
+  output = output.replace(/(Creating:\s*)([^()]+)(\s*\()/gi, (_m, prefix, name, suffix) => {
+    return `${prefix}${maskName(name)}${suffix}`;
+  });
+
+  // Creating mailbox Full Name...
+  output = output.replace(/(Creating mailbox\s+)([^.]+)(\.\.\.)/gi, (_m, prefix, name, suffix) => {
+    return `${prefix}${maskName(name)}${suffix}`;
+  });
+
+  // Creating mailbox: Full Name
+  output = output.replace(/(Creating mailbox:\s*)(.+)$/gi, (_m, prefix, name) => {
+    return `${prefix}${maskName(name)}`;
+  });
+
+  return output;
+}
+
+function maskSensitiveText(text) {
+  return maskEmailsInText(maskNamesInText(text));
+}
+
 function maybeMaskOrder(order, plan) {
   if (plan !== 'free' || !order) return order;
   const created = Array.isArray(order.created_mailboxes) ? order.created_mailboxes : [];
@@ -189,14 +224,14 @@ router.get('/:id/logs', (req, res) => {
     const inMemory = getOrderLogs(orderId);
     if (inMemory) {
       const mapped = plan === 'free'
-        ? inMemory.map(entry => ({ ...entry, message: maskEmailsInText(entry.message) }))
+        ? inMemory.map(entry => ({ ...entry, message: maskSensitiveText(entry.message) }))
         : inMemory;
       return res.json(mapped);
     }
 
     const stored = getStoredLogs(orderId);
     const mapped = plan === 'free'
-      ? stored.map(entry => ({ ...entry, message: maskEmailsInText(entry.message) }))
+      ? stored.map(entry => ({ ...entry, message: maskSensitiveText(entry.message) }))
       : stored;
     res.json(mapped);
   } catch (error) {

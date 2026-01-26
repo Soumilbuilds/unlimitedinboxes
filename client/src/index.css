@@ -599,6 +599,27 @@ a {
   gap: 10px;
 }
 
+.inboxes-list {
+  display: grid;
+  gap: 12px;
+}
+
+.inbox-row {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.inbox-meta {
+  display: grid;
+  gap: 6px;
+}
+
 .order-row {
   background: var(--panel);
   border: 1px solid transparent;
