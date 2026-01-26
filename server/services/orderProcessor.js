@@ -1,5 +1,6 @@
 import { createIncognitoPage, loginToMicrosoft365, createSharedMailbox, ensureExchangeSmtpAuthEnabled } from './puppeteer.js';
 import { createZone, addDnsRecord } from './cloudflare.js';
+import { ensureSpfRecord, ensureDmarcRecord, ensureDkimRecords } from './emailAuth.js';
 import {
   addDomainToMicrosoft,
   verifyDomain,
@@ -12,6 +13,11 @@ import {
   assignGlobalAdminWithClient,
   waitForUserByEmailWithClient
 } from './graph.js';
+import {
+  loginToSecurityCenter,
+  ensureDkimSelectors,
+  retryEnableDkimSigning
+} from './securityCenterDkim.js';
 import { generateMailboxName, resetUsedNames } from './nameGenerator.js';
 import {
   getOrderById,
@@ -165,11 +171,11 @@ export async function processOrder(orderId) {
   let page = null;
   let graphProvider = null;
   let globalAdminRoleId = null;
+  let zoneId = tenant.cloudflare_zone_id;
 
   try {
     // Step 1: Ensure Cloudflare zone + verify domain with Microsoft
     logMessage(orderId, 'Ensuring Cloudflare zone...');
-    let zoneId = tenant.cloudflare_zone_id;
     if (!zoneId) {
       const zone = await createZone(domain);
       zoneId = zone.id;
@@ -454,6 +460,55 @@ export async function processOrder(orderId) {
       const progress = preflightWeight + creationWeight + signinWeight + Math.round(((i + 1) / createdMailboxes.length) * adminWeight);
       updateOrderProgress(orderId, progress, createdMailboxes);
       await new Promise(r => setTimeout(r, 800));
+    }
+
+    logMessage(orderId, 'Configuring SPF / DKIM / DMARC...');
+    try {
+      const spfValue = process.env.SPF_VALUE || 'v=spf1 include:spf.protection.outlook.com -all';
+      const dmarcValue = process.env.DMARC_VALUE || 'v=DMARC1; p=none; pct=100';
+
+      logMessage(orderId, 'Adding SPF record...');
+      const spf = await ensureSpfRecord(zoneId, domain, spfValue);
+      logMessage(orderId, spf.action === 'created' ? 'SPF record created.' : 'SPF record already present.');
+
+      logMessage(orderId, 'Adding DMARC record...');
+      const dmarc = await ensureDmarcRecord(zoneId, domain, dmarcValue);
+      logMessage(orderId, dmarc.action === 'created' ? 'DMARC record created.' : 'DMARC record already present.');
+
+      let securitySession = null;
+      try {
+        logMessage(orderId, 'Fetching DKIM selectors...');
+        securitySession = await loginToSecurityCenter(tenant.admin_email, tenant.admin_password);
+        if (!securitySession.success) {
+          throw new Error(securitySession.error || 'Security Center login failed');
+        }
+
+        const cfg = await ensureDkimSelectors(securitySession.page, tenant.tenant_id, domain, msg => logMessage(orderId, msg));
+        logMessage(orderId, 'Adding DKIM DNS records...');
+        await ensureDkimRecords(zoneId, domain, cfg.Selector1CNAME, cfg.Selector2CNAME);
+
+        if (cfg.Enabled === true) {
+          logMessage(orderId, 'DKIM already enabled.');
+        } else {
+          logMessage(orderId, 'Enabling DKIM signing...');
+          const enable = await retryEnableDkimSigning(securitySession.page, tenant.tenant_id, domain, msg => logMessage(orderId, msg));
+          if (!enable?.success) {
+            throw new Error(enable?.error || 'Failed to enable DKIM signing');
+          }
+          logMessage(orderId, 'DKIM enabled.');
+        }
+      } catch (dkimError) {
+        logMessage(orderId, `DKIM setup failed: ${dkimError.message}`);
+      } finally {
+        if (securitySession?.page) {
+          try { await securitySession.page.close(); } catch { /* ignore */ }
+        }
+        if (securitySession?.context) {
+          try { await securitySession.context.close(); } catch { /* ignore */ }
+        }
+      }
+    } catch (emailAuthError) {
+      logMessage(orderId, `Email authentication setup failed: ${emailAuthError.message}`);
     }
 
     updateOrderProgress(orderId, 100, createdMailboxes);

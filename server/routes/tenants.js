@@ -1,5 +1,5 @@
 import express from 'express';
-import { createTenant, getTenants, getTenantById, updateTenantCloudflare, updateTenantStatus, deleteTenant } from '../db/database.js';
+import { createTenant, getTenants, getTenantByIdForUser, updateTenantCloudflare, updateTenantStatus, updateTenantDetails, deleteTenant } from '../db/database.js';
 import { createZone } from '../services/cloudflare.js';
 import { ensureSpfRecord, ensureDmarcRecord, ensureDkimRecords } from '../services/emailAuth.js';
 import {
@@ -15,6 +15,9 @@ const requireAuth = (req, res, next) => {
   if (!req.session.authenticated) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  if (!req.session.user?.id) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   next();
 };
 
@@ -22,7 +25,7 @@ router.use(requireAuth);
 
 router.get('/', (req, res) => {
   try {
-    const tenants = getTenants();
+    const tenants = getTenants(req.session.user.id);
     const processed = tenants.map(t => ({
       ...t,
       cloudflare_ns: t.cloudflare_ns ? JSON.parse(t.cloudflare_ns) : null
@@ -41,15 +44,36 @@ router.post('/', (req, res) => {
       return res.status(400).json({ error: 'Name, Domain, Email, and Password are required' });
     }
 
-    const result = createTenant({ name, admin_email, admin_password, domain });
+    const result = createTenant({
+      user_id: req.session.user.id,
+      name,
+      admin_email,
+      admin_password,
+      domain
+    });
     res.json({ success: true, id: result.lastInsertRowid });
   } catch (error) {
     res.status(500).json({ error: 'Failed to create tenant' });
   }
 });
 
+router.patch('/:id', (req, res) => {
+  try {
+    const { name, domain, admin_email, admin_password } = req.body;
+    const tenant = getTenantByIdForUser(req.params.id, req.session.user.id);
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+    const result = updateTenantDetails(req.params.id, { name, domain, admin_email, admin_password });
+    if (result.changes === 0) return res.status(404).json({ error: 'Tenant not found' });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.post('/:id/connect', (req, res) => {
   try {
+    const tenant = getTenantByIdForUser(req.params.id, req.session.user.id);
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
     if (!MASTER_CLIENT_ID || !MASTER_REDIRECT_URI) {
       return res.status(500).json({ error: 'Server misconfigured (Missing Master App Env Vars)' });
     }
@@ -64,7 +88,7 @@ router.post('/:id/connect', (req, res) => {
 
 router.post('/:id/nameservers', async (req, res) => {
   try {
-    const tenant = getTenantById(req.params.id);
+    const tenant = getTenantByIdForUser(req.params.id, req.session.user.id);
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
     if (tenant.cloudflare_zone_id && tenant.cloudflare_ns) {
@@ -85,7 +109,7 @@ router.post('/:id/nameservers', async (req, res) => {
 
 router.post('/:id/email-auth', async (req, res) => {
   try {
-    const tenant = getTenantById(req.params.id);
+    const tenant = getTenantByIdForUser(req.params.id, req.session.user.id);
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
     if (!tenant.tenant_id) {
       return res.status(400).json({ error: 'Tenant not connected to Microsoft (missing tenant_id)' });
@@ -160,6 +184,8 @@ router.post('/:id/email-auth', async (req, res) => {
 router.patch('/:id/status', (req, res) => {
   try {
     const { status } = req.body;
+    const tenant = getTenantByIdForUser(req.params.id, req.session.user.id);
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
     updateTenantStatus(req.params.id, status);
     res.json({ success: true });
   } catch (error) {
@@ -169,6 +195,8 @@ router.patch('/:id/status', (req, res) => {
 
 router.delete('/:id', (req, res) => {
   try {
+    const tenant = getTenantByIdForUser(req.params.id, req.session.user.id);
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
     const result = deleteTenant(req.params.id);
     if (result.changes === 0) return res.status(404).json({ error: 'Tenant not found' });
     res.json({ success: true });

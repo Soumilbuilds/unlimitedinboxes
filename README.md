@@ -1,4 +1,4 @@
-# Unlimited Mailboxes Final
+# Unlimited Inboxes
 
 Local dev instructions:
 1. Install server deps: `cd server && npm install`

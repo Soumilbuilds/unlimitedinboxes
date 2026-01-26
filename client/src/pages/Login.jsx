@@ -5,8 +5,8 @@ import { useAuth } from '../context/AuthContext';
 export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState('admin@unlimitedinboxes.com');
-  const [password, setPassword] = useState('admin account');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -28,7 +28,7 @@ export default function Login() {
     <div className="login-shell">
       <div className="login-card">
         <h1 className="login-title">Sign In</h1>
-        <p className="login-subtitle">Unlimited Mailboxes Control</p>
+        <p className="login-subtitle">Unlimited Inboxes</p>
 
         {error && <div className="alert error">{error}</div>}
 
@@ -55,10 +55,6 @@ export default function Login() {
             {loading ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
-
-        <div className="login-demo">
-          Demo account: <span>admin@unlimitedinboxes.com</span> / <span>admin account</span>
-        </div>
       </div>
     </div>
   );

@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 export default function Sidebar() {
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const navigate = useNavigate();
 
   const handleLogout = async () => {
@@ -13,29 +13,24 @@ export default function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-logo">
-        <span className="logo-glow" />
-        Unlimited Mailboxes
+        Unlimited Inboxes
       </div>
 
       <nav className="sidebar-nav">
-        <NavLink to="/tenants" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
+        <a className="sidebar-link" href="http://unlimitedinboxes.com/tenants" target="_blank" rel="noreferrer">
           Tenants
-        </NavLink>
+        </a>
         <NavLink to="/orders" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
           Orders
-        </NavLink>
-        <NavLink to="/mailboxes" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
-          Mailboxes
-        </NavLink>
-        <NavLink to="/email-auth" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
-          SPF/DKIM/DMARC
-        </NavLink>
-        <NavLink to="/logs" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
-          Logs
         </NavLink>
       </nav>
 
       <div className="sidebar-footer">
+        {user?.plan === 'free' && (
+          <a className="btn primary" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
+            Upgrade
+          </a>
+        )}
         <button className="btn ghost" onClick={handleLogout}>Sign out</button>
       </div>
     </aside>

@@ -10,8 +10,19 @@ const db = new Database(join(__dirname, 'app.db'));
 db.pragma('journal_mode = WAL');
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    plan TEXT DEFAULT 'free',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS tenants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
     name TEXT NOT NULL,
     domain TEXT NOT NULL,
     admin_email TEXT NOT NULL,
@@ -20,12 +31,15 @@ db.exec(`
     cloudflare_zone_id TEXT,
     cloudflare_ns TEXT,
     status TEXT DEFAULT 'pending_consent',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id)
   );
 
   CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tenant_id INTEGER NOT NULL,
+    user_id INTEGER,
+    order_name TEXT,
     status TEXT DEFAULT 'pending',
     progress INTEGER DEFAULT 0,
     total_mailboxes INTEGER DEFAULT 100,
@@ -34,7 +48,8 @@ db.exec(`
     error_message TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+    FOREIGN KEY(tenant_id) REFERENCES tenants(id),
+    FOREIGN KEY(user_id) REFERENCES users(id)
   );
 
   CREATE TABLE IF NOT EXISTS order_logs (
@@ -54,24 +69,81 @@ function ensureOrdersPasswordColumn() {
   }
 }
 
+function ensureOrdersNameColumn() {
+  const columns = db.prepare('PRAGMA table_info(orders)').all();
+  const hasName = columns.some(col => col.name === 'order_name');
+  if (!hasName) {
+    db.prepare('ALTER TABLE orders ADD COLUMN order_name TEXT').run();
+  }
+}
+
+function ensureTenantsUserColumn() {
+  const columns = db.prepare('PRAGMA table_info(tenants)').all();
+  const hasUser = columns.some(col => col.name === 'user_id');
+  if (!hasUser) {
+    db.prepare('ALTER TABLE tenants ADD COLUMN user_id INTEGER').run();
+  }
+}
+
+function ensureOrdersUserColumn() {
+  const columns = db.prepare('PRAGMA table_info(orders)').all();
+  const hasUser = columns.some(col => col.name === 'user_id');
+  if (!hasUser) {
+    db.prepare('ALTER TABLE orders ADD COLUMN user_id INTEGER').run();
+  }
+}
+
 ensureOrdersPasswordColumn();
+ensureOrdersNameColumn();
+ensureTenantsUserColumn();
+ensureOrdersUserColumn();
+
+// --- USERS ---
+
+export function createUser(email, passwordHash, passwordSalt, plan = 'free') {
+  const stmt = db.prepare(`
+    INSERT INTO users (email, password_hash, password_salt, plan)
+    VALUES (?, ?, ?, ?)
+  `);
+  return stmt.run(email, passwordHash, passwordSalt, plan);
+}
+
+export function getUserByEmail(email) {
+  return db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+}
+
+export function updateUserPlanByEmail(email, plan) {
+  const stmt = db.prepare(`
+    UPDATE users
+    SET plan = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE email = ?
+  `);
+  return stmt.run(plan, email);
+}
 
 // --- TENANTS ---
 
 export function createTenant(tenant) {
   const stmt = db.prepare(`
-    INSERT INTO tenants (name, domain, admin_email, admin_password)
-    VALUES (@name, @domain, @admin_email, @admin_password)
+    INSERT INTO tenants (user_id, name, domain, admin_email, admin_password)
+    VALUES (@user_id, @name, @domain, @admin_email, @admin_password)
   `);
   return stmt.run(tenant);
 }
 
-export function getTenants() {
-  return db.prepare('SELECT * FROM tenants ORDER BY created_at DESC').all();
+export function getTenants(userId = null) {
+  if (!userId) {
+    return db.prepare('SELECT * FROM tenants ORDER BY created_at DESC').all();
+  }
+  return db.prepare('SELECT * FROM tenants WHERE user_id = ? ORDER BY created_at DESC').all(userId);
 }
 
 export function getTenantById(id) {
   return db.prepare('SELECT * FROM tenants WHERE id = ?').get(id);
+}
+
+export function getTenantByIdForUser(id, userId) {
+  return db.prepare('SELECT * FROM tenants WHERE id = ? AND user_id = ?').get(id, userId);
 }
 
 export function updateTenantCloudflare(id, zoneId, nameServers) {
@@ -97,6 +169,19 @@ export function updateTenantStatus(id, status) {
   return stmt.run(status, id);
 }
 
+export function updateTenantDetails(id, updates = {}) {
+  const { name = null, domain = null, admin_email = null, admin_password = null } = updates;
+  const stmt = db.prepare(`
+    UPDATE tenants
+    SET name = COALESCE(?, name),
+        domain = COALESCE(?, domain),
+        admin_email = COALESCE(?, admin_email),
+        admin_password = COALESCE(?, admin_password)
+    WHERE id = ?
+  `);
+  return stmt.run(name, domain, admin_email, admin_password, id);
+}
+
 export function deleteTenant(id) {
   // Remove related orders/logs first to avoid FK issues
   db.prepare('DELETE FROM order_logs WHERE order_id IN (SELECT id FROM orders WHERE tenant_id = ?)').run(id);
@@ -106,22 +191,31 @@ export function deleteTenant(id) {
 
 // --- ORDERS ---
 
-export function createOrder(tenantId, totalMailboxes = 100, mailboxPassword = null) {
+export function createOrder(tenantId, totalMailboxes = 100, mailboxPassword = null, orderName = null, userId = null) {
   const stmt = db.prepare(`
-    INSERT INTO orders (tenant_id, total_mailboxes, mailbox_password)
-    VALUES (?, ?, ?)
+    INSERT INTO orders (tenant_id, total_mailboxes, mailbox_password, order_name, user_id)
+    VALUES (?, ?, ?, ?, ?)
   `);
-  const result = stmt.run(tenantId, totalMailboxes, mailboxPassword);
+  const result = stmt.run(tenantId, totalMailboxes, mailboxPassword, orderName, userId);
   return result.lastInsertRowid;
 }
 
-export function getOrders() {
+export function getOrders(userId = null) {
+  if (!userId) {
+    return db.prepare(`
+      SELECT orders.*, tenants.domain AS tenant_domain, tenants.name AS tenant_name
+      FROM orders
+      JOIN tenants ON orders.tenant_id = tenants.id
+      ORDER BY orders.created_at DESC
+    `).all();
+  }
   return db.prepare(`
     SELECT orders.*, tenants.domain AS tenant_domain, tenants.name AS tenant_name
     FROM orders
     JOIN tenants ON orders.tenant_id = tenants.id
+    WHERE orders.user_id = ?
     ORDER BY orders.created_at DESC
-  `).all();
+  `).all(userId);
 }
 
 export function getOrderById(id) {
@@ -132,6 +226,16 @@ export function getOrderById(id) {
     JOIN tenants ON orders.tenant_id = tenants.id
     WHERE orders.id = ?
   `).get(id);
+}
+
+export function getOrderByIdForUser(id, userId) {
+  return db.prepare(`
+    SELECT orders.*, tenants.domain AS tenant_domain, tenants.name AS tenant_name,
+           tenants.admin_email, tenants.admin_password, tenants.tenant_id AS ms_tenant_id, tenants.status AS tenant_status
+    FROM orders
+    JOIN tenants ON orders.tenant_id = tenants.id
+    WHERE orders.id = ? AND orders.user_id = ?
+  `).get(id, userId);
 }
 
 export function updateOrderStatus(id, status) {

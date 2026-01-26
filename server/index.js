@@ -14,9 +14,15 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const isProd = process.env.NODE_ENV === 'production';
+const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
 
+app.set('trust proxy', 1);
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000'],
+  origin: corsOrigins,
   credentials: true
 }));
 app.use(express.json());
@@ -24,9 +30,11 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'unlimited-mailboxes-secret',
   resave: false,
   saveUninitialized: false,
+  proxy: isProd,
   cookie: {
-    secure: false,
+    secure: isProd,
     httpOnly: true,
+    sameSite: 'lax',
     maxAge: 24 * 60 * 60 * 1000
   }
 }));

@@ -1,10 +1,75 @@
 import { Router } from 'express';
-import { updateTenantId } from '../db/database.js';
+import crypto from 'crypto';
+import { createUser, getUserByEmail, updateUserPlanByEmail, updateTenantId } from '../db/database.js';
 
 const router = Router();
 
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@unlimitedinboxes.com';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin account';
+const PASSWORD_ITERATIONS = 120000;
+const PASSWORD_KEYLEN = 64;
+const PASSWORD_DIGEST = 'sha512';
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const hash = crypto.pbkdf2Sync(password, salt, PASSWORD_ITERATIONS, PASSWORD_KEYLEN, PASSWORD_DIGEST).toString('hex');
+  return { salt, hash };
+}
+
+function verifyPassword(password, hash, salt) {
+  if (!hash || !salt) return false;
+  const nextHash = crypto.pbkdf2Sync(password, salt, PASSWORD_ITERATIONS, PASSWORD_KEYLEN, PASSWORD_DIGEST).toString('hex');
+  const safeA = Buffer.from(hash, 'hex');
+  const safeB = Buffer.from(nextHash, 'hex');
+  if (safeA.length !== safeB.length) return false;
+  return crypto.timingSafeEqual(safeA, safeB);
+}
+
+function normalizePlan(plan) {
+  const normalized = String(plan || 'free').toLowerCase();
+  return normalized === 'paid' ? 'paid' : 'free';
+}
+
+router.post('/create', (req, res) => {
+  const { email, password, plan } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+  const existing = getUserByEmail(email);
+  if (existing) {
+    return res.status(409).json({ error: 'Account already exists' });
+  }
+
+  const { hash, salt } = hashPassword(password);
+  const targetPlan = normalizePlan(plan);
+  try {
+    const result = createUser(email, hash, salt, targetPlan);
+    return res.json({ success: true, id: result.lastInsertRowid, email, plan: targetPlan });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/upgrade', (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  const existing = getUserByEmail(email);
+  if (existing) {
+    if (!verifyPassword(password, existing.password_hash, existing.password_salt)) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    updateUserPlanByEmail(email, 'paid');
+    return res.json({ success: true, email, plan: 'paid', upgraded: true });
+  }
+
+  const { hash, salt } = hashPassword(password);
+  try {
+    const result = createUser(email, hash, salt, 'paid');
+    return res.json({ success: true, id: result.lastInsertRowid, email, plan: 'paid', created: true });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
 
 router.post('/login', (req, res) => {
   const { email, password } = req.body;
@@ -13,13 +78,17 @@ router.post('/login', (req, res) => {
     return res.status(400).json({ error: 'Email and password are required' });
   }
 
-  if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
-    req.session.authenticated = true;
-    req.session.user = { email };
-    return res.json({ success: true, user: { email } });
+  const user = getUserByEmail(email);
+  if (!user) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+  if (!verifyPassword(password, user.password_hash, user.password_salt)) {
+    return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  return res.status(401).json({ error: 'Invalid credentials' });
+  req.session.authenticated = true;
+  req.session.user = { id: user.id, email: user.email, plan: user.plan || 'free' };
+  return res.json({ success: true, user: req.session.user });
 });
 
 router.post('/logout', (req, res) => {
@@ -31,6 +100,12 @@ router.post('/logout', (req, res) => {
 
 router.get('/check', (req, res) => {
   if (req.session.authenticated) {
+    if (req.session.user?.email) {
+      const latest = getUserByEmail(req.session.user.email);
+      if (latest) {
+        req.session.user = { id: latest.id, email: latest.email, plan: latest.plan || 'free' };
+      }
+    }
     return res.json({ authenticated: true, user: req.session.user });
   }
   return res.json({ authenticated: false });

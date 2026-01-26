@@ -1,11 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
-import Tenants from './pages/Tenants';
 import Orders from './pages/Orders';
-import Logs from './pages/Logs';
-import Mailboxes from './pages/Mailboxes';
-import EmailAuth from './pages/EmailAuth';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -32,14 +28,6 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route
-            path="/tenants"
-            element={
-              <ProtectedRoute>
-                <Tenants />
-              </ProtectedRoute>
-            }
-          />
-          <Route
             path="/orders"
             element={
               <ProtectedRoute>
@@ -47,32 +35,8 @@ export default function App() {
               </ProtectedRoute>
             }
           />
-          <Route
-            path="/logs"
-            element={
-              <ProtectedRoute>
-                <Logs />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/mailboxes"
-            element={
-              <ProtectedRoute>
-                <Mailboxes />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/email-auth"
-            element={
-              <ProtectedRoute>
-                <EmailAuth />
-              </ProtectedRoute>
-            }
-          />
-          <Route path="/" element={<Navigate to="/tenants" replace />} />
-          <Route path="*" element={<Navigate to="/tenants" replace />} />
+          <Route path="/" element={<Navigate to="/orders" replace />} />
+          <Route path="*" element={<Navigate to="/orders" replace />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

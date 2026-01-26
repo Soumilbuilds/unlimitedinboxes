@@ -1,22 +1,89 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
 import api from '../lib/api';
+import { useAuth } from '../context/AuthContext';
+
+function buildCsv(rows) {
+  const header = ['email', 'password'];
+  const lines = [header.join(',')];
+  rows.forEach(r => {
+    const email = r.email || '';
+    const password = r.password || '';
+    lines.push(`${email},${password}`);
+  });
+  return lines.join('\n');
+}
+
+function deriveTenantName(email, domain) {
+  if (domain) return domain;
+  if (!email) return 'Tenant';
+  const prefix = email.split('@')[0];
+  return prefix ? `Tenant ${prefix}` : 'Tenant';
+}
+
+function formatStatusLabel(status) {
+  if (!status) return 'unknown';
+  if (status === 'completed') return 'ready';
+  return String(status).replace(/_/g, ' ');
+}
+
+function formatLogMessage(message) {
+  if (!message) return '';
+  const text = String(message);
+
+  if (/Ensuring Cloudflare zone/i.test(text)) return 'Connecting domain...';
+  if (/Adding domain to Microsoft/i.test(text)) return 'Connecting domain to Microsoft...';
+  if (/Adding verification TXT/i.test(text)) return 'Updating DNS records...';
+  if (/Waiting for DNS propagation/i.test(text)) return 'Waiting for DNS propagation...';
+  if (/Verifying domain/i.test(text)) return 'Verifying domain...';
+  if (/Adding Exchange DNS records/i.test(text)) return 'Applying DNS records...';
+  if (/Preparing Microsoft Graph admin client/i.test(text)) return 'Preparing admin permissions...';
+  if (/Launching exchange browser/i.test(text)) return 'Starting mailbox provisioning...';
+  if (/Logging in to Microsoft 365/i.test(text)) return 'Signing in to Microsoft 365...';
+  if (/Preflight:/i.test(text)) return 'Initializing mailbox workflow...';
+  if (/Creating mailbox/i.test(text)) {
+    const match = text.match(/Creating mailbox\\s+(.+)$/i);
+    return match ? `Creating mailbox ${match[1]}` : 'Creating mailbox...';
+  }
+  if (/Creating:/i.test(text)) {
+    const match = text.match(/Creating:\\s*([^\\(]+)/i);
+    if (match && match[1]) return `Creating mailbox: ${match[1].trim()}`;
+  }
+  if (/Sign-in enabled/i.test(text)) return text.replace('Preflight: ', '');
+  if (/Global Admin assigned/i.test(text)) return text.replace('Preflight: ', '');
+  if (/Checking Exchange mail flow SMTP AUTH setting/i.test(text)) return 'Updating mail flow settings...';
+  if (/Configuring SPF/i.test(text)) return 'Configuring SPF / DKIM / DMARC...';
+  if (/SPF record/i.test(text)) return text;
+  if (/DMARC record/i.test(text)) return text;
+  if (/DKIM/i.test(text)) return text;
+  if (/Order completed successfully/i.test(text)) return 'Order completed.';
+
+  return text;
+}
 
 export default function Orders() {
-  const [searchParams] = useSearchParams();
-  const preselectedTenant = searchParams.get('tenant');
-
+  const { user, refreshUser } = useAuth();
   const [orders, setOrders] = useState([]);
-  const [tenants, setTenants] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [selectedTenant, setSelectedTenant] = useState(preselectedTenant || '');
+  const [selectedOrderId, setSelectedOrderId] = useState(null);
+  const [logs, setLogs] = useState([]);
+
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardStep, setWizardStep] = useState(0);
+  const [wizardError, setWizardError] = useState('');
+  const [wizardBusy, setWizardBusy] = useState(false);
+  const [downloadNotice, setDownloadNotice] = useState(false);
+
+  const [tenantEmail, setTenantEmail] = useState('');
+  const [tenantPassword, setTenantPassword] = useState('');
+  const [tenantId, setTenantId] = useState(null);
+  const [domain, setDomain] = useState('');
+  const [nameServers, setNameServers] = useState([]);
+
+  const [orderName, setOrderName] = useState('');
   const [mailboxPassword, setMailboxPassword] = useState('');
   const [passwordTouched, setPasswordTouched] = useState(false);
-  const [creating, setCreating] = useState(false);
 
-  const readyTenants = useMemo(() => tenants.filter(t => t.status === 'ready'), [tenants]);
   const passwordRules = useMemo(() => {
     const lengthOk = mailboxPassword.length >= 8 && mailboxPassword.length <= 256;
     const hasUpper = /[A-Z]/.test(mailboxPassword);
@@ -35,15 +102,28 @@ export default function Orders() {
     };
   }, [mailboxPassword]);
 
-  const fetchAll = async () => {
+  const selectedOrder = useMemo(
+    () => orders.find(o => o.id === selectedOrderId) || orders[0] || null,
+    [orders, selectedOrderId]
+  );
+
+  const hasActiveOrder = useMemo(
+    () => orders.some(o => ['pending', 'processing'].includes(o.status)),
+    [orders]
+  );
+
+  const fetchOrders = async () => {
     setLoading(true);
     try {
-      const [ordersRes, tenantsRes] = await Promise.all([
-        api.get('/orders'),
-        api.get('/tenants')
-      ]);
-      setOrders(ordersRes.data);
-      setTenants(tenantsRes.data);
+      await refreshUser();
+      const res = await api.get('/orders');
+      setOrders(res.data);
+      if (res.data.length > 0) {
+        setSelectedOrderId(prev => {
+          if (prev && res.data.some(o => o.id === prev)) return prev;
+          return res.data[0].id;
+        });
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -51,42 +131,170 @@ export default function Orders() {
     }
   };
 
+  const fetchLogs = async (orderId) => {
+    if (!orderId) return;
+    try {
+      const res = await api.get(`/orders/${orderId}/logs`);
+      setLogs(res.data || []);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   useEffect(() => {
-    fetchAll();
-    const interval = setInterval(fetchAll, 5000);
+    fetchOrders();
+    const interval = setInterval(fetchOrders, 5000);
     return () => clearInterval(interval);
   }, []);
 
-  const createOrder = async (e) => {
-    e.preventDefault();
-    if (!selectedTenant) return;
+  useEffect(() => {
+    if (!selectedOrder?.id) return;
+    fetchLogs(selectedOrder.id);
+    const interval = setInterval(() => fetchLogs(selectedOrder.id), 2000);
+    return () => clearInterval(interval);
+  }, [selectedOrder?.id]);
+
+  const resetWizard = () => {
+    setWizardStep(0);
+    setWizardError('');
+    setWizardBusy(false);
+    setTenantEmail('');
+    setTenantPassword('');
+    setTenantId(null);
+    setDomain('');
+    setNameServers([]);
+    setOrderName('');
+    setMailboxPassword('');
+    setPasswordTouched(false);
+  };
+
+  const closeWizard = () => {
+    setWizardOpen(false);
+    resetWizard();
+  };
+
+  const handleCreateTenant = async () => {
+    setWizardBusy(true);
+    setWizardError('');
+    try {
+      const tempDomain = `pending-${Date.now()}.local`;
+      const name = deriveTenantName(tenantEmail, '');
+      const res = await api.post('/tenants', {
+        name,
+        domain: tempDomain,
+        admin_email: tenantEmail,
+        admin_password: tenantPassword
+      });
+      setTenantId(res.data.id);
+      setWizardStep(1);
+    } catch (e) {
+      setWizardError(e.response?.data?.error || 'Failed to save tenant details');
+    } finally {
+      setWizardBusy(false);
+    }
+  };
+
+  const handleOpenConsent = async () => {
+    if (!tenantId) return;
+    setWizardBusy(true);
+    setWizardError('');
+    try {
+      const res = await api.post(`/tenants/${tenantId}/connect`);
+      if (res.data.consentUrl) {
+        window.open(res.data.consentUrl, 'MicrosoftConsent', 'width=600,height=720');
+      }
+    } catch (e) {
+      setWizardError(e.response?.data?.error || 'Failed to open consent window');
+    } finally {
+      setWizardBusy(false);
+    }
+  };
+
+  const handleCheckConsent = async () => {
+    if (!tenantId) return;
+    setWizardBusy(true);
+    setWizardError('');
+    try {
+      const res = await api.get('/tenants');
+      const tenant = res.data.find(t => t.id === tenantId);
+      if (tenant?.tenant_id) {
+        setWizardStep(2);
+      } else {
+        setWizardError('Consent is not completed yet. Finish the Microsoft prompt, then try again.');
+      }
+    } catch (e) {
+      setWizardError(e.response?.data?.error || 'Could not verify consent yet');
+    } finally {
+      setWizardBusy(false);
+    }
+  };
+
+  const handleGetNameServers = async () => {
+    if (!tenantId || !domain) return;
+    setWizardBusy(true);
+    setWizardError('');
+    try {
+      await api.patch(`/tenants/${tenantId}`, {
+        domain,
+        name: deriveTenantName(tenantEmail, domain)
+      });
+      const res = await api.post(`/tenants/${tenantId}/nameservers`);
+      setNameServers(res.data.name_servers || []);
+    } catch (e) {
+      setWizardError(e.response?.data?.error || 'Failed to get name servers');
+    } finally {
+      setWizardBusy(false);
+    }
+  };
+
+  const handleNameServersUpdated = async () => {
+    if (!tenantId) return;
+    setWizardBusy(true);
+    setWizardError('');
+    try {
+      await api.patch(`/tenants/${tenantId}/status`, { status: 'ready' });
+      setWizardStep(3);
+    } catch (e) {
+      setWizardError(e.response?.data?.error || 'Failed to confirm name servers');
+    } finally {
+      setWizardBusy(false);
+    }
+  };
+
+  const handleStartOrder = async () => {
+    if (!tenantId) return;
     if (!passwordRules.valid) {
       setPasswordTouched(true);
       return;
     }
-    setCreating(true);
+    if (!orderName.trim()) {
+      setWizardError('Please add an order name.');
+      return;
+    }
+
+    setWizardBusy(true);
+    setWizardError('');
     try {
       const res = await api.post('/orders', {
-        tenant_id: selectedTenant,
-        mailbox_password: mailboxPassword
+        tenant_id: tenantId,
+        mailbox_password: mailboxPassword,
+        order_name: orderName.trim()
       });
       await api.post(`/orders/${res.data.id}/start`);
-      setModalOpen(false);
-      setSelectedTenant('');
-      setMailboxPassword('');
-      setPasswordTouched(false);
-      fetchAll();
+      closeWizard();
+      await fetchOrders();
+      setSelectedOrderId(res.data.id);
     } catch (e) {
-      alert(e.response?.data?.error || 'Failed to create order');
+      setWizardError(e.response?.data?.error || 'Failed to start order');
     } finally {
-      setCreating(false);
+      setWizardBusy(false);
     }
   };
 
   const startOrder = async (id) => {
     try {
       await api.post(`/orders/${id}/start`);
-      fetchAll();
+      fetchOrders();
     } catch (e) {
       alert(e.response?.data?.error || 'Failed to start');
     }
@@ -96,21 +304,30 @@ export default function Orders() {
     if (!confirm('Stop processing this order?')) return;
     try {
       await api.post(`/orders/${id}/cancel`);
-      fetchAll();
+      fetchOrders();
     } catch (e) {
       alert(e.response?.data?.error || 'Failed to stop');
     }
   };
 
-  const deleteOrder = async (id) => {
-    if (!confirm('Delete this order?')) return;
-    try {
-      await api.delete(`/orders/${id}`);
-      fetchAll();
-    } catch (e) {
-      alert(e.response?.data?.error || 'Failed to delete');
+  const downloadCsv = (order) => {
+    const rows = order?.created_mailboxes || [];
+    const csv = buildCsv(rows);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `mailboxes-${order?.order_name || order?.id}-${new Date().toISOString().slice(0,10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    if (user?.plan === 'free') {
+      setDownloadNotice(true);
     }
   };
+
+  const stepTitle = ['Tenant credentials', 'Microsoft consent', 'Domain setup', 'Order details'][wizardStep] || 'Order setup';
 
   return (
     <div className="app-layout">
@@ -119,132 +336,273 @@ export default function Orders() {
         <div className="page-header">
           <div>
             <h1>Orders</h1>
-            <p>Create mailbox orders and monitor processing.</p>
+            <p>Create and run one order at a time.</p>
           </div>
           <div className="page-actions">
-            <button className="btn ghost" onClick={fetchAll}>Refresh</button>
-            <button className="btn primary" onClick={() => setModalOpen(true)}>Create Order</button>
+            <button className="btn ghost" onClick={fetchOrders}>Refresh</button>
+            <button
+              className="btn primary"
+              onClick={() => setWizardOpen(true)}
+              disabled={hasActiveOrder}
+              title={hasActiveOrder ? 'Only one active order at a time' : 'Create a new order'}
+            >
+              New Order
+            </button>
           </div>
         </div>
+
+        {hasActiveOrder && (
+          <div className="alert info">
+            An order is already processing. Finish or stop it before creating another.
+          </div>
+        )}
 
         {loading ? (
           <div className="center-screen"><div className="spinner" /></div>
         ) : orders.length === 0 ? (
           <div className="empty-state">
             <h3>No orders yet</h3>
-            <p>Create your first order.</p>
+            <p>Create your first order to get started.</p>
           </div>
         ) : (
-          <div className="grid">
-            {orders.map(order => (
-              <div className="card" key={order.id}>
-                <div className="card-header">
-                  <div>
-                    <h3>Tenant: {order.tenant_name}</h3>
-                    <span className={`status ${order.status}`}>{order.status}</span>
+          <div className="orders-layout">
+            <section className="orders-list">
+              {orders.map(order => (
+                <button
+                  key={order.id}
+                  className={`order-row ${selectedOrder?.id === order.id ? 'active' : ''}`}
+                  onClick={() => setSelectedOrderId(order.id)}
+                >
+                  <div className="order-row-main">
+                    <strong>{order.order_name || `Order #${order.id}`}</strong>
+                    <span className="order-sub">{order.tenant_domain || order.tenant_name}</span>
                   </div>
-                </div>
+                  <span className={`status ${order.status}`}>{formatStatusLabel(order.status)}</span>
+                </button>
+              ))}
+            </section>
 
-                <div className="progress">
-                  <div className="progress-bar">
-                    <div className="progress-fill" style={{ width: `${order.progress}%` }} />
-                  </div>
-                  <div className="progress-meta">
-                    <span>{order.progress}%</span>
-                    <span>{order.created_mailboxes?.length || 0}/{order.total_mailboxes || 100}</span>
-                  </div>
-                </div>
-
-                {order.error_message && (
-                  <div className="alert error">{order.error_message}</div>
-                )}
-
-                <div className="card-actions">
-                  {order.status === 'pending' && (
-                    <>
-                      <button className="btn primary" onClick={() => startOrder(order.id)}>Start Processing</button>
-                      <button className="btn ghost" onClick={() => deleteOrder(order.id)}>Delete</button>
-                    </>
-                  )}
-
-                  {order.status === 'processing' && (
-                    <>
-                      <button className="btn danger" onClick={() => cancelOrder(order.id)}>Stop</button>
-                    </>
-                  )}
-
-                  {(order.status === 'failed' || order.status === 'cancelled') && (
-                    <>
-                      <button className="btn primary" onClick={() => startOrder(order.id)}>Try Again</button>
-                      <button className="btn ghost" onClick={() => deleteOrder(order.id)}>Delete</button>
-                    </>
-                  )}
-
-                  {order.status === 'completed' && (
-                    <>
-                      <button className="btn ghost" onClick={() => deleteOrder(order.id)}>Delete</button>
-                    </>
-                  )}
-                </div>
-
-                {order.created_mailboxes?.length > 0 && (
-                  <details className="mailbox-details">
-                    <summary>View created mailboxes ({order.created_mailboxes.length})</summary>
-                    <div className="mailbox-list">
-                      {order.created_mailboxes.map((m, idx) => (
-                        <div key={`${m.email}-${idx}`} className="mailbox-item">
-                          <span>{m.name}</span>
-                          <span>{m.email}</span>
-                        </div>
-                      ))}
+            <section className="orders-panel">
+              {selectedOrder ? (
+                <>
+                  <div className="order-header">
+                    <div>
+                      <h2>{selectedOrder.order_name || `Order #${selectedOrder.id}`}</h2>
+                      <p>{selectedOrder.tenant_domain || selectedOrder.tenant_name}</p>
                     </div>
-                  </details>
-                )}
-              </div>
-            ))}
+                    <span className={`status ${selectedOrder.status}`}>{formatStatusLabel(selectedOrder.status)}</span>
+                  </div>
+
+                  <div className="progress">
+                    <div className="progress-bar">
+                      <div className="progress-fill" style={{ width: `${selectedOrder.progress || 0}%` }} />
+                    </div>
+                    <div className="progress-meta">
+                      <span>{selectedOrder.progress || 0}%</span>
+                      <span>{selectedOrder.created_mailboxes?.length || 0}/{selectedOrder.total_mailboxes || 100}</span>
+                    </div>
+                  </div>
+
+                  {selectedOrder.error_message && (
+                    <div className="alert error">{selectedOrder.error_message}</div>
+                  )}
+
+                  <div className="order-actions">
+                    {selectedOrder.status === 'pending' && (
+                      <button className="btn primary" onClick={() => startOrder(selectedOrder.id)}>Start Order</button>
+                    )}
+                    {selectedOrder.status === 'processing' && (
+                      <button className="btn danger" onClick={() => cancelOrder(selectedOrder.id)}>Stop Order</button>
+                    )}
+                    {(selectedOrder.status === 'failed' || selectedOrder.status === 'cancelled') && (
+                      <button className="btn primary" onClick={() => startOrder(selectedOrder.id)}>Try Again</button>
+                    )}
+                    {selectedOrder.status === 'completed' && (
+                      <button className="btn success" onClick={() => downloadCsv(selectedOrder)}>
+                        Download CSV
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="logs-panel">
+                    {logs.length === 0 ? (
+                      <div className="empty-state">No logs yet.</div>
+                    ) : (
+                      logs.map((log, idx) => (
+                        <div key={idx} className="log-line">
+                          <span>{new Date(log.timestamp).toLocaleTimeString()}</span>
+                          <span>{formatLogMessage(log.message)}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="empty-state">
+                  <h3>Select an order</h3>
+                  <p>Choose an order to view progress and logs.</p>
+                </div>
+              )}
+            </section>
           </div>
         )}
 
-        {modalOpen && (
-          <div className="modal-overlay" onClick={() => setModalOpen(false)}>
-            <div className="modal" onClick={(e) => e.stopPropagation()}>
-              <h2 className="modal-title">Create Order</h2>
-              <form className="form" onSubmit={createOrder}>
-                <label>
-                  Select Tenant
-                  <select value={selectedTenant} onChange={(e) => setSelectedTenant(e.target.value)} required>
-                    <option value="">Choose tenant</option>
-                    {readyTenants.map(t => (
-                      <option key={t.id} value={t.id}>{t.name} ({t.domain})</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Mailbox Password (applies to all)
-                  <input
-                    type="password"
-                    value={mailboxPassword}
-                    onChange={(e) => setMailboxPassword(e.target.value)}
-                    onBlur={() => setPasswordTouched(true)}
-                    placeholder="Enter a strong password"
-                    required
-                  />
-                  <div className="helper-text">
-                    Must be 8-256 chars and include at least 3 of: uppercase, lowercase, number, symbol.
+        {wizardOpen && (
+          <div className="modal-overlay" onClick={closeWizard}>
+            <div className="modal wide" onClick={(e) => e.stopPropagation()}>
+              <div className="wizard-header">
+                <div>
+                  <h2>New Order</h2>
+                  <p>Step {wizardStep + 1} of 4 · {stepTitle}</p>
+                </div>
+                <button className="icon-btn" onClick={closeWizard} title="Close">✕</button>
+              </div>
+
+              {wizardError && <div className="alert error">{wizardError}</div>}
+
+              {wizardStep === 0 && (
+                <div className="form">
+                  <label>
+                    Tenant admin email
+                    <input
+                      type="email"
+                      value={tenantEmail}
+                      onChange={(e) => setTenantEmail(e.target.value)}
+                      placeholder="admin@tenant.onmicrosoft.com"
+                      required
+                    />
+                  </label>
+                  <label>
+                    Tenant admin password
+                    <input
+                      type="password"
+                      value={tenantPassword}
+                      onChange={(e) => setTenantPassword(e.target.value)}
+                      required
+                    />
+                  </label>
+                  <div className="modal-actions">
+                    <button className="btn ghost" onClick={closeWizard}>Cancel</button>
+                    <button
+                      className="btn primary"
+                      onClick={handleCreateTenant}
+                      disabled={wizardBusy || !tenantEmail || !tenantPassword}
+                    >
+                      {wizardBusy ? 'Saving...' : 'Continue'}
+                    </button>
                   </div>
-                  {passwordTouched && !passwordRules.valid && (
-                    <div className="alert error">
-                      Password does not meet Microsoft complexity requirements.
+                </div>
+              )}
+
+              {wizardStep === 1 && (
+                <div className="form">
+                  <div className="helper-text">
+                    Open the Microsoft consent window and approve access for your tenant.
+                  </div>
+                  <div className="modal-actions">
+                    <button className="btn ghost" onClick={() => setWizardStep(0)}>Back</button>
+                    <button className="btn primary" onClick={handleOpenConsent} disabled={wizardBusy}>
+                      {wizardBusy ? 'Opening...' : 'Open Consent'}
+                    </button>
+                    <button className="btn success" onClick={handleCheckConsent} disabled={wizardBusy}>
+                      I Have Connected
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {wizardStep === 2 && (
+                <div className="form">
+                  <label>
+                    Domain to connect
+                    <input
+                      value={domain}
+                      onChange={(e) => setDomain(e.target.value)}
+                      placeholder="example.com"
+                      required
+                    />
+                  </label>
+                  {nameServers.length > 0 && (
+                    <div className="ns-list">
+                      {nameServers.map((server) => (
+                        <div key={server} className="ns-item">{server}</div>
+                      ))}
                     </div>
                   )}
-                </label>
-                <div className="modal-actions">
-                  <button type="button" className="btn ghost" onClick={() => setModalOpen(false)}>Cancel</button>
-                  <button type="submit" className="btn primary" disabled={creating || !passwordRules.valid}>
-                    {creating ? 'Creating...' : 'Create Order'}
-                  </button>
+                  <div className="modal-actions">
+                    <button className="btn ghost" onClick={() => setWizardStep(1)}>Back</button>
+                    <button
+                      className="btn primary"
+                      onClick={handleGetNameServers}
+                      disabled={wizardBusy || !domain}
+                    >
+                      {wizardBusy ? 'Fetching...' : 'Get Name Servers'}
+                    </button>
+                    {nameServers.length > 0 && (
+                      <button className="btn success" onClick={handleNameServersUpdated} disabled={wizardBusy}>
+                        Name Servers Updated
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </form>
+              )}
+
+              {wizardStep === 3 && (
+                <div className="form">
+                  <label>
+                    Order name
+                    <input
+                      value={orderName}
+                      onChange={(e) => setOrderName(e.target.value)}
+                      placeholder="January batch"
+                      required
+                    />
+                  </label>
+                  <label>
+                    Mailbox password (applies to all)
+                    <input
+                      type="password"
+                      value={mailboxPassword}
+                      onChange={(e) => setMailboxPassword(e.target.value)}
+                      onBlur={() => setPasswordTouched(true)}
+                      placeholder="Enter a strong password"
+                      required
+                    />
+                    <div className="helper-text">
+                      Must be 8-256 chars and include at least 3 of: uppercase, lowercase, number, symbol.
+                    </div>
+                    {passwordTouched && !passwordRules.valid && (
+                      <div className="alert error">
+                        Password does not meet Microsoft complexity requirements.
+                      </div>
+                    )}
+                  </label>
+                  <div className="modal-actions">
+                    <button className="btn ghost" onClick={() => setWizardStep(2)}>Back</button>
+                    <button className="btn primary" onClick={handleStartOrder} disabled={wizardBusy || !passwordRules.valid}>
+                      {wizardBusy ? 'Starting...' : 'Start Order'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {downloadNotice && (
+          <div className="modal-overlay" onClick={() => setDownloadNotice(false)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h2 className="modal-title">Download started</h2>
+              <p className="modal-subtitle">
+                Your download has started, but mailbox names are hidden on the free plan.
+                Upgrade to view the full list.
+              </p>
+              <div className="modal-actions">
+                <button className="btn ghost" onClick={() => setDownloadNotice(false)}>Close</button>
+                <a className="btn primary" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
+                  Upgrade
+                </a>
+              </div>
             </div>
           </div>
         )}
