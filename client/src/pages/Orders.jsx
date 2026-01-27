@@ -648,16 +648,19 @@ export default function Orders() {
 
         {upgradeNotice && (
           <div className="modal-overlay" onClick={() => setUpgradeNotice(false)}>
-            <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal upgrade-modal" onClick={(e) => e.stopPropagation()}>
               <div className="wizard-header">
                 <div>
                   <h2>Upgrade Required</h2>
                 </div>
                 <button className="icon-btn" onClick={() => setUpgradeNotice(false)} title="Close">✕</button>
               </div>
-              <p className="modal-subtitle">To Create More Inboxes Upgrade Your Account</p>
-              <div className="modal-actions">
-                <a className="btn primary" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
+              <p className="modal-subtitle">
+                To create more inboxes, upgrade your account<br />
+                and unlock unlimited downloads.
+              </p>
+              <div className="modal-actions centered">
+                <a className="btn accent" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
                   Upgrade
                 </a>
               </div>
