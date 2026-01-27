@@ -382,6 +382,13 @@ a {
   color: var(--text);
 }
 
+.btn.accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #000;
+  font-weight: 700;
+}
+
 .btn.danger {
   background: rgba(255, 107, 107, 0.12);
   border-color: rgba(255, 107, 107, 0.5);
@@ -469,6 +476,11 @@ a {
   width: min(560px, 92vw);
 }
 
+.modal.upgrade-modal {
+  width: min(620px, 92vw);
+  padding: 28px 28px 26px;
+}
+
 .modal-title {
   margin: 0 0 10px;
   font-size: 20px;
@@ -486,6 +498,11 @@ a {
   justify-content: flex-end;
   gap: 12px;
   margin-top: 10px;
+}
+
+.modal-actions.centered {
+  justify-content: center;
+  margin-top: 18px;
 }
 
 .ns-list {

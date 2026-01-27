@@ -24,6 +24,8 @@ function verifyPassword(password, hash, salt) {
 
 function normalizePlan(plan) {
   const normalized = String(plan || 'free').toLowerCase();
+  const allowed = new Set(['free', 'paid', '25', '50', '100']);
+  if (allowed.has(normalized)) return normalized;
   return normalized === 'paid' ? 'paid' : 'free';
 }
 
@@ -82,6 +84,20 @@ router.post('/downgrade', (req, res) => {
   }
   updateUserPlanByEmail(email, 'free');
   return res.json({ success: true, email, plan: 'free', downgraded: true });
+});
+
+router.post('/set-plan', (req, res) => {
+  const { email, plan } = req.body;
+  if (!email || !plan) {
+    return res.status(400).json({ error: 'Email and plan are required' });
+  }
+  const existing = getUserByEmail(email);
+  if (!existing) {
+    return res.status(404).json({ error: 'Account not found' });
+  }
+  const targetPlan = normalizePlan(plan);
+  updateUserPlanByEmail(email, targetPlan);
+  return res.json({ success: true, email, plan: targetPlan, updated: true });
 });
 
 router.post('/login', (req, res) => {

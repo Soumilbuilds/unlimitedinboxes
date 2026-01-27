@@ -56,7 +56,7 @@ export default function Inboxes() {
     URL.revokeObjectURL(url);
   };
 
-  if (user?.plan === 'free') {
+  if (user?.plan !== 'paid') {
     return <Navigate to="/orders" replace />;
   }
 

@@ -8,6 +8,9 @@ Base URL (local)
 Plan values
 - `free`
 - `paid`
+- `25` (review reward)
+- `50` (review reward)
+- `100` (review reward)
 
 ---
 
@@ -112,7 +115,42 @@ Errors
 
 ---
 
+## Set Plan (Review Rewards)
+Set a user's plan to `25`, `50`, or `100` after a review is verified.
+
+Endpoint
+- `POST /api/auth/set-plan`
+
+Body
+```json
+{
+  "email": "user@domain.com",
+  "plan": "25"
+}
+```
+
+Response (success)
+```json
+{
+  "success": true,
+  "email": "user@domain.com",
+  "plan": "25",
+  "updated": true
+}
+```
+
+Errors
+- `400` missing fields
+- `404` account not found
+
+---
+
 ## Notes
 - The app UI still uses login sessions; these endpoints are for account creation/upgrade only.
-- Free accounts are limited to **one order** (100 mailboxes).
-- Free accounts see **masked mailbox emails** in logs and cannot download the real list.
+- Free/review accounts are limited to **one completed order** (100 mailboxes).
+- Logs are masked for all non‑paid plans.
+- Download access:
+  - `free`: all mailboxes masked.
+  - `25`: first 25 visible, remaining masked.
+  - `50`: first 50 visible, remaining masked.
+  - `100`: all 100 visible.

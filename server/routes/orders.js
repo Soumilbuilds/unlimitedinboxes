@@ -48,6 +48,21 @@ router.use((req, _res, next) => {
   next();
 });
 
+const FREE_PLANS = new Set(['free', '25', '50', '100']);
+
+function isFreePlan(plan) {
+  return FREE_PLANS.has(String(plan || 'free'));
+}
+
+function getDownloadAllowance(plan) {
+  const normalized = String(plan || 'free');
+  if (normalized === 'paid') return Number.POSITIVE_INFINITY;
+  if (normalized === '100') return 100;
+  if (normalized === '50') return 50;
+  if (normalized === '25') return 25;
+  return 0;
+}
+
 function maskEmail(email) {
   if (!email || typeof email !== 'string') return email;
   const parts = email.split('@');
@@ -104,14 +119,21 @@ function maskSensitiveText(text) {
 }
 
 function maybeMaskOrder(order, plan) {
-  if (plan !== 'free' || !order) return order;
+  if (plan === 'paid' || !order) return order;
+  const allowance = getDownloadAllowance(plan);
   const created = Array.isArray(order.created_mailboxes) ? order.created_mailboxes : [];
   return {
     ...order,
-    created_mailboxes: created.map(m => ({
-      ...m,
-      email: m?.email ? maskEmail(m.email) : m?.email
-    }))
+    created_mailboxes: created.map((m, idx) => {
+      if (allowance > idx) {
+        return m;
+      }
+      return {
+        ...m,
+        name: m?.name ? maskName(m.name) : m?.name,
+        email: m?.email ? maskEmail(m.email) : m?.email
+      };
+    })
   };
 }
 
@@ -142,7 +164,7 @@ router.post('/', (req, res) => {
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
     const plan = req.session.user.plan || 'free';
-    if (plan === 'free') {
+    if (isFreePlan(plan)) {
       const existing = getOrders(req.session.user.id);
       const hasCompleted = existing.some(o => o.status === 'completed');
       if (hasCompleted) {
@@ -151,7 +173,7 @@ router.post('/', (req, res) => {
     }
 
     const safeName = typeof order_name === 'string' && order_name.trim() ? order_name.trim() : null;
-    const mailboxTotal = plan === 'free' ? 100 : (total_mailboxes || 100);
+    const mailboxTotal = isFreePlan(plan) ? 100 : (total_mailboxes || 100);
     const orderId = createOrder(tenant_id, mailboxTotal, mailbox_password, safeName, req.session.user.id);
     const order = getOrderById(orderId);
 
@@ -223,16 +245,16 @@ router.get('/:id/logs', (req, res) => {
     const plan = req.session.user.plan || 'free';
     const inMemory = getOrderLogs(orderId);
     if (inMemory) {
-      const mapped = plan === 'free'
-        ? inMemory.map(entry => ({ ...entry, message: maskSensitiveText(entry.message) }))
-        : inMemory;
+      const mapped = plan === 'paid'
+        ? inMemory
+        : inMemory.map(entry => ({ ...entry, message: maskSensitiveText(entry.message) }));
       return res.json(mapped);
     }
 
     const stored = getStoredLogs(orderId);
-    const mapped = plan === 'free'
-      ? stored.map(entry => ({ ...entry, message: maskSensitiveText(entry.message) }))
-      : stored;
+    const mapped = plan === 'paid'
+      ? stored
+      : stored.map(entry => ({ ...entry, message: maskSensitiveText(entry.message) }));
     res.json(mapped);
   } catch (error) {
     res.status(500).json({ error: error.message });

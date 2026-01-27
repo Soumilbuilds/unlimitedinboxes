@@ -113,7 +113,7 @@ export default function Orders() {
     [orders]
   );
   const freeCompletedOrder = useMemo(
-    () => user?.plan === 'free' && orders.some(o => o.status === 'completed'),
+    () => user?.plan !== 'paid' && orders.some(o => o.status === 'completed'),
     [orders, user?.plan]
   );
 
@@ -624,16 +624,20 @@ export default function Orders() {
 
         {downloadNotice && (
           <div className="modal-overlay" onClick={() => setDownloadNotice(false)}>
-            <div className="modal" onClick={(e) => e.stopPropagation()}>
-              <h2 className="modal-title">Upgrade Your Account To View Mailboxes</h2>
+            <div className="modal wide upgrade-modal" onClick={(e) => e.stopPropagation()}>
+              <h2 className="modal-title">Account upgrade needed</h2>
               <p className="modal-subtitle">
-                Your download has started, but mailbox names are hidden on the free plan.
-                Upgrade to view the full list.
+                To prevent abuse of the platform, free users are not able to download the mailboxes they create.
               </p>
-              <div className="modal-actions">
-                <button className="btn ghost" onClick={() => setDownloadNotice(false)}>Close</button>
+              <p className="modal-subtitle">
+                Either upgrade your account or leave an honest review to get free mailboxes.
+              </p>
+              <div className="modal-actions centered">
                 <a className="btn primary" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
                   Upgrade
+                </a>
+                <a className="btn accent" href="https://unlimitedinboxes.com/freeinboxes" target="_blank" rel="noreferrer">
+                  Free Inboxes
                 </a>
               </div>
             </div>
