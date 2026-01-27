@@ -477,8 +477,24 @@ a {
 }
 
 .modal.upgrade-modal {
-  width: min(620px, 92vw);
-  padding: 28px 28px 26px;
+  width: min(700px, 94vw);
+  padding: 34px 36px 32px;
+}
+
+.modal.upgrade-modal .modal-title {
+  font-size: 24px;
+  margin-bottom: 14px;
+}
+
+.modal.upgrade-modal .modal-subtitle {
+  font-size: 15px;
+  line-height: 1.6;
+  margin-bottom: 18px;
+}
+
+.modal.upgrade-modal .btn {
+  padding: 12px 22px;
+  font-size: 15px;
 }
 
 .modal-title {
@@ -502,7 +518,8 @@ a {
 
 .modal-actions.centered {
   justify-content: center;
-  margin-top: 18px;
+  margin-top: 22px;
+  gap: 16px;
 }
 
 .ns-list {

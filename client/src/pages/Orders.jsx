@@ -627,10 +627,12 @@ export default function Orders() {
             <div className="modal wide upgrade-modal" onClick={(e) => e.stopPropagation()}>
               <h2 className="modal-title">Account upgrade needed</h2>
               <p className="modal-subtitle">
-                To prevent abuse of the platform, free users are not able to download the mailboxes they create.
+                To prevent abuse of the platform, free users can’t download<br />
+                the mailboxes they create.
               </p>
               <p className="modal-subtitle">
-                Either upgrade your account or leave an honest review to get free mailboxes.
+                Either upgrade your account or leave an honest review<br />
+                to unlock free mailboxes.
               </p>
               <div className="modal-actions centered">
                 <a className="btn primary" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
