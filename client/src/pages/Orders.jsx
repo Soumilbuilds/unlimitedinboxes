@@ -627,11 +627,11 @@ export default function Orders() {
             <div className="modal wide upgrade-modal" onClick={(e) => e.stopPropagation()}>
               <h2 className="modal-title">Account upgrade needed</h2>
               <p className="modal-subtitle">
-                To prevent abuse of the platform, free users can’t download<br />
-                the mailboxes they create.
+                Free users can’t download the mailboxes they create<br />
+                to prevent abuse of the platform.
               </p>
               <p className="modal-subtitle">
-                Either upgrade your account or leave an honest review<br />
+                Upgrade your account or leave an honest review<br />
                 to unlock free mailboxes.
               </p>
               <div className="modal-actions centered">
@@ -656,7 +656,7 @@ export default function Orders() {
                 <button className="icon-btn" onClick={() => setUpgradeNotice(false)} title="Close">✕</button>
               </div>
               <p className="modal-subtitle">
-                To create more inboxes, upgrade your account<br />
+                Upgrade your account to create more inboxes<br />
                 and unlock unlimited downloads.
               </p>
               <div className="modal-actions centered">
