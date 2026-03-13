@@ -20,9 +20,6 @@ export default function Sidebar() {
         <NavLink to="/orders" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
           Orders
         </NavLink>
-        <a className="sidebar-link" href="https://unlimitedinboxes.com/tenant" target="_blank" rel="noreferrer">
-          Tenants
-        </a>
         {user?.plan === 'paid' && (
           <NavLink to="/inboxes" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
             Inboxes
