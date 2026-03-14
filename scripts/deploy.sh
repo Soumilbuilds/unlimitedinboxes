@@ -82,7 +82,15 @@ $SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/client\" && (npm ci --omit=dev || npm inst
 
 $SSH_CMD "$REMOTE" "ln -sfn \"$RELEASE_DIR\" \"$DEPLOY_PATH/current\""
 
-$SSH_CMD "$REMOTE" "if command -v fuser >/dev/null 2>&1; then fuser -k 3000/tcp || true; else pkill -f \"node .*index.js\" >/dev/null 2>&1 || true; fi"
-$SSH_CMD "$REMOTE" "cd \"$DEPLOY_PATH/current/server\" && NODE_ENV=production nohup node index.js > \"$SHARED_DIR/logs/server.log\" 2>&1 & echo \$! > \"$SHARED_DIR/pids/server.pid\""
+SERVICE_NAME="${DEPLOY_SERVICE_NAME:-unlimited-inboxes}"
+SERVICE_EXISTS="$($SSH_CMD "$REMOTE" "systemctl cat \"$SERVICE_NAME\" >/dev/null 2>&1 && echo yes || echo no")"
+
+if [ "$SERVICE_EXISTS" = "yes" ]; then
+  echo "Restarting systemd service ${SERVICE_NAME}"
+  $SSH_CMD "$REMOTE" "systemctl restart \"$SERVICE_NAME\""
+else
+  $SSH_CMD "$REMOTE" "if command -v fuser >/dev/null 2>&1; then fuser -k 3000/tcp || true; else pkill -f \"node .*index.js\" >/dev/null 2>&1 || true; fi"
+  $SSH_CMD "$REMOTE" "cd \"$DEPLOY_PATH/current/server\" && NODE_ENV=production nohup node index.js > \"$SHARED_DIR/logs/server.log\" 2>&1 & echo \$! > \"$SHARED_DIR/pids/server.pid\""
+fi
 
 echo "Deploy complete."

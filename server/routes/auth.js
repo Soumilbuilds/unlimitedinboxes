@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import { createUser, getUserByEmail, updateUserPlanByEmail, updateTenantId } from '../db/database.js';
+import { isWhopSyncConfigured, syncUserBillingState } from '../services/whop.js';
 
 const router = Router();
 
@@ -27,6 +28,15 @@ function normalizePlan(plan) {
   const allowed = new Set(['free', 'paid', '25', '50', '100']);
   if (allowed.has(normalized)) return normalized;
   return normalized === 'paid' ? 'paid' : 'free';
+}
+
+function serializeSessionUser(user) {
+  return {
+    id: user.id,
+    email: user.email,
+    plan: user.plan || 'free',
+    billingStatus: user.whop_membership_status || null
+  };
 }
 
 router.post('/create', (req, res) => {
@@ -100,7 +110,7 @@ router.post('/set-plan', (req, res) => {
   return res.json({ success: true, email, plan: targetPlan, updated: true });
 });
 
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
@@ -115,9 +125,20 @@ router.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  req.session.authenticated = true;
-  req.session.user = { id: user.id, email: user.email, plan: user.plan || 'free' };
-  return res.json({ success: true, user: req.session.user });
+  try {
+    if (isWhopSyncConfigured()) {
+      await syncUserBillingState(user, { forceRecovery: true });
+    }
+
+    const latest = getUserByEmail(email) || user;
+    req.session.authenticated = true;
+    req.session.user = serializeSessionUser(latest);
+    return res.json({ success: true, user: req.session.user });
+  } catch (error) {
+    req.session.authenticated = true;
+    req.session.user = serializeSessionUser(user);
+    return res.json({ success: true, user: req.session.user, billingWarning: error.message });
+  }
 });
 
 router.post('/logout', (req, res) => {
@@ -127,12 +148,21 @@ router.post('/logout', (req, res) => {
   });
 });
 
-router.get('/check', (req, res) => {
+router.get('/check', async (req, res) => {
   if (req.session.authenticated) {
     if (req.session.user?.email) {
-      const latest = getUserByEmail(req.session.user.email);
-      if (latest) {
-        req.session.user = { id: latest.id, email: latest.email, plan: latest.plan || 'free' };
+      const current = getUserByEmail(req.session.user.email);
+      if (current) {
+        try {
+          if (isWhopSyncConfigured()) {
+            await syncUserBillingState(current, { forceRecovery: true });
+          }
+        } catch (_error) {
+          // Keep the last known local plan if Whop is temporarily unavailable.
+        }
+
+        const latest = getUserByEmail(req.session.user.email) || current;
+        req.session.user = serializeSessionUser(latest);
       }
     }
     return res.json({ authenticated: true, user: req.session.user });

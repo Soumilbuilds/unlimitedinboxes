@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import authRoutes from './routes/auth.js';
+import billingRoutes from './routes/billing.js';
 import tenantRoutes from './routes/tenants.js';
 import orderRoutes from './routes/orders.js';
 
@@ -25,7 +26,11 @@ app.use(cors({
   origin: corsOrigins,
   credentials: true
 }));
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, buffer) => {
+    req.rawBody = buffer.toString('utf8');
+  }
+}));
 app.use(session({
   secret: process.env.SESSION_SECRET || 'unlimited-mailboxes-secret',
   resave: false,
@@ -40,6 +45,7 @@ app.use(session({
 }));
 
 app.use('/api/auth', authRoutes);
+app.use('/api/billing', billingRoutes);
 app.use('/api/tenants', tenantRoutes);
 app.use('/api/orders', orderRoutes);
 

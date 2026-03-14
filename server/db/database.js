@@ -16,6 +16,17 @@ db.exec(`
     password_hash TEXT NOT NULL,
     password_salt TEXT NOT NULL,
     plan TEXT DEFAULT 'free',
+    whop_member_id TEXT,
+    whop_membership_id TEXT,
+    whop_membership_status TEXT,
+    whop_renewal_period_end DATETIME,
+    whop_cancel_at_period_end INTEGER DEFAULT 0,
+    whop_plan_id TEXT,
+    whop_last_payment_id TEXT,
+    whop_last_payment_status TEXT,
+    whop_last_payment_substatus TEXT,
+    whop_last_invoice_id TEXT,
+    whop_last_invoice_status TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
@@ -69,6 +80,14 @@ function ensureOrdersPasswordColumn() {
   }
 }
 
+function ensureUserColumn(name, definition) {
+  const columns = db.prepare('PRAGMA table_info(users)').all();
+  const hasColumn = columns.some(col => col.name === name);
+  if (!hasColumn) {
+    db.prepare(`ALTER TABLE users ADD COLUMN ${name} ${definition}`).run();
+  }
+}
+
 function ensureOrdersNameColumn() {
   const columns = db.prepare('PRAGMA table_info(orders)').all();
   const hasName = columns.some(col => col.name === 'order_name');
@@ -97,6 +116,17 @@ ensureOrdersPasswordColumn();
 ensureOrdersNameColumn();
 ensureTenantsUserColumn();
 ensureOrdersUserColumn();
+ensureUserColumn('whop_member_id', 'TEXT');
+ensureUserColumn('whop_membership_id', 'TEXT');
+ensureUserColumn('whop_membership_status', 'TEXT');
+ensureUserColumn('whop_renewal_period_end', 'DATETIME');
+ensureUserColumn('whop_cancel_at_period_end', 'INTEGER DEFAULT 0');
+ensureUserColumn('whop_plan_id', 'TEXT');
+ensureUserColumn('whop_last_payment_id', 'TEXT');
+ensureUserColumn('whop_last_payment_status', 'TEXT');
+ensureUserColumn('whop_last_payment_substatus', 'TEXT');
+ensureUserColumn('whop_last_invoice_id', 'TEXT');
+ensureUserColumn('whop_last_invoice_status', 'TEXT');
 
 // --- USERS ---
 
@@ -112,6 +142,18 @@ export function getUserByEmail(email) {
   return db.prepare('SELECT * FROM users WHERE email = ?').get(email);
 }
 
+export function getUserById(id) {
+  return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+}
+
+export function getUserByWhopMembershipId(membershipId) {
+  return db.prepare('SELECT * FROM users WHERE whop_membership_id = ?').get(membershipId);
+}
+
+export function getUserByWhopMemberId(memberId) {
+  return db.prepare('SELECT * FROM users WHERE whop_member_id = ?').get(memberId);
+}
+
 export function updateUserPlanByEmail(email, plan) {
   const stmt = db.prepare(`
     UPDATE users
@@ -119,6 +161,47 @@ export function updateUserPlanByEmail(email, plan) {
     WHERE email = ?
   `);
   return stmt.run(plan, email);
+}
+
+export function updateUserBillingById(id, updates = {}) {
+  const allowed = [
+    'plan',
+    'whop_member_id',
+    'whop_membership_id',
+    'whop_membership_status',
+    'whop_renewal_period_end',
+    'whop_cancel_at_period_end',
+    'whop_plan_id',
+    'whop_last_payment_id',
+    'whop_last_payment_status',
+    'whop_last_payment_substatus',
+    'whop_last_invoice_id',
+    'whop_last_invoice_status'
+  ];
+
+  const assignments = [];
+  const params = { id };
+
+  allowed.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(updates, key)) {
+      assignments.push(`${key} = @${key}`);
+      params[key] = updates[key];
+    }
+  });
+
+  if (assignments.length === 0) {
+    return { changes: 0 };
+  }
+
+  assignments.push('updated_at = CURRENT_TIMESTAMP');
+
+  const stmt = db.prepare(`
+    UPDATE users
+    SET ${assignments.join(', ')}
+    WHERE id = @id
+  `);
+
+  return stmt.run(params);
 }
 
 // --- TENANTS ---

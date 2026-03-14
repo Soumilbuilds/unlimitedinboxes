@@ -1,8 +1,10 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useBilling } from '../context/BillingContext';
 
 export default function Sidebar() {
   const { logout, user } = useAuth();
+  const { openUpgrade } = useBilling();
   const navigate = useNavigate();
 
   const handleLogout = async () => {
@@ -34,9 +36,9 @@ export default function Sidebar() {
           </a>
         )}
         {user?.plan !== 'paid' && (
-          <a className="btn primary" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
+          <button className="btn primary" onClick={openUpgrade}>
             Upgrade
-          </a>
+          </button>
         )}
         <button className="btn ghost" onClick={handleLogout}>Sign out</button>
       </div>

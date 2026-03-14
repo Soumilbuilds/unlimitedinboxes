@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Sidebar from '../components/Sidebar';
 import api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
+import { useBilling } from '../context/BillingContext';
 
 function buildCsv(rows) {
   const header = ['email', 'password'];
@@ -63,6 +64,7 @@ function formatLogMessage(message) {
 
 export default function Orders() {
   const { user, refreshUser } = useAuth();
+  const { openUpgrade } = useBilling();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedOrderId, setSelectedOrderId] = useState(null);
@@ -635,9 +637,9 @@ export default function Orders() {
                 to unlock free mailboxes.
               </p>
               <div className="modal-actions centered">
-                <a className="btn primary" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
+                <button className="btn primary" onClick={openUpgrade}>
                   Upgrade
-                </a>
+                </button>
                 <a className="btn accent" href="https://unlimitedinboxes.com/freeinboxes" target="_blank" rel="noreferrer">
                   Free Inboxes
                 </a>
@@ -660,9 +662,9 @@ export default function Orders() {
                 and unlock unlimited downloads.
               </p>
               <div className="modal-actions centered">
-                <a className="btn accent" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
+                <button className="btn accent" onClick={openUpgrade}>
                   Upgrade
-                </a>
+                </button>
               </div>
             </div>
           </div>
