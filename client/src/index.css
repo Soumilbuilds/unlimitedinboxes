@@ -516,121 +516,48 @@ a {
   margin-bottom: 0;
 }
 
-.upgrade-page {
-  max-width: 860px;
-  margin: 0 auto;
+.billing-page {
+  min-height: 100vh;
+  padding: 56px 24px 72px;
+  display: grid;
+  place-items: start center;
+  background: #000;
+}
+
+.billing-page-inner {
+  width: min(760px, 100%);
   display: grid;
   gap: 20px;
 }
 
-.upgrade-back {
-  justify-self: start;
-}
-
-.upgrade-hero {
-  display: grid;
-  gap: 10px;
-}
-
-.upgrade-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  width: fit-content;
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border-strong);
-  background: rgba(133, 248, 184, 0.08);
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.upgrade-hero h1 {
+.billing-page-header h1 {
   margin: 0;
-  font-size: clamp(30px, 4vw, 44px);
-  line-height: 1.02;
+  text-align: center;
+  font-size: clamp(34px, 5vw, 52px);
+  line-height: 1.03;
+  letter-spacing: -0.03em;
 }
 
-.upgrade-hero p {
-  margin: 0;
-  max-width: 760px;
-  color: var(--text-muted);
-  font-size: 15px;
-}
-
-.upgrade-meta {
-  color: var(--accent);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.upgrade-shell {
-  display: grid;
-  gap: 18px;
-  padding: 22px;
-  border-radius: 18px;
-  border: 1px solid var(--border);
-  background:
-    radial-gradient(circle at top left, rgba(133, 248, 184, 0.12), transparent 38%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.015));
-  box-shadow: var(--shadow);
-}
-
-.upgrade-loading-shell {
-  min-height: 440px;
+.billing-page-loading {
+  min-height: 240px;
   display: grid;
   place-items: center;
   gap: 16px;
   text-align: center;
 }
 
-.upgrade-loading-shell p {
+.billing-page-loading p {
   margin: 0;
   color: var(--text-muted);
 }
 
-.upgrade-checkout-shell {
+.billing-page-checkout {
   background: #050505;
-  border: 1px solid rgba(133, 248, 184, 0.26);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   overflow: hidden;
   padding: 12px;
-}
-
-.upgrade-state-card {
-  min-height: 320px;
-  display: grid;
-  place-items: center;
-  text-align: center;
-  gap: 16px;
-  padding: 28px;
-  border-radius: 16px;
-  border: 1px dashed rgba(133, 248, 184, 0.22);
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.upgrade-state-card h2,
-.upgrade-state-card p {
-  margin: 0;
-}
-
-.upgrade-state-card p {
-  color: var(--text-muted);
-  max-width: 520px;
-}
-
-.upgrade-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.upgrade-note {
-  margin: 0;
-  font-size: 13px;
-  color: var(--text-muted);
+  box-shadow: var(--shadow);
 }
 
 .billing-status-row {
@@ -671,23 +598,15 @@ a {
 }
 
 @media (max-width: 720px) {
-  .upgrade-shell {
-    padding: 16px;
+  .billing-page {
+    padding: 32px 14px 48px;
   }
 
-  .upgrade-hero h1 {
-    font-size: 30px;
+  .billing-page-header h1 {
+    font-size: 32px;
   }
 
-  .upgrade-actions {
-    width: 100%;
-  }
-
-  .upgrade-actions > * {
-    width: 100%;
-  }
-
-  .upgrade-checkout-shell {
+  .billing-page-checkout {
     padding: 6px;
   }
 }

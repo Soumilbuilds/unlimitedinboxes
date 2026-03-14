@@ -32,7 +32,7 @@ export default function WhopCheckoutFrame({
         undefined,
         { container: { paddingY: 0 } },
         email ? { email } : undefined,
-        { accentColor: '#85f8b8', highContrast: true },
+        { accentColor: 'mint', highContrast: false },
         false,
         false,
         Boolean(email),
