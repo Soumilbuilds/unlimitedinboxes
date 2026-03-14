@@ -157,8 +157,8 @@ export const createWhopCheckoutSession = async ({ userId, email }) => {
   const checkout = await client.checkoutConfigurations.create({
     plan_id: WHOP_PLAN_ID_PAID,
     metadata: buildBillingMetadata({ userId, email, action: 'upgrade' }),
-    redirect_url: `${APP_BASE_URL}/orders?billing=success`,
-    source_url: `${APP_BASE_URL}/orders`
+    redirect_url: `${APP_BASE_URL}/upgrade?billing=success`,
+    source_url: `${APP_BASE_URL}/upgrade`
   });
 
   return {

@@ -4,6 +4,7 @@ import { BillingProvider } from './context/BillingContext';
 import Login from './pages/Login';
 import Orders from './pages/Orders';
 import Inboxes from './pages/Inboxes';
+import Upgrade from './pages/Upgrade';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -43,6 +44,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Inboxes />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/upgrade"
+              element={
+                <ProtectedRoute>
+                  <Upgrade />
                 </ProtectedRoute>
               }
             />

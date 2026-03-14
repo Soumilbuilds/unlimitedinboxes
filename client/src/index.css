@@ -7,7 +7,7 @@
   --panel-2: #070707;
   --text: #f5f5f5;
   --text-muted: #f5f5f5;
-  --accent: #86f7b8;
+  --accent: #85f8b8;
   --border: rgba(134, 247, 184, 0.22);
   --border-strong: rgba(134, 247, 184, 0.45);
   --error: #ff6b6b;
@@ -512,71 +512,125 @@ a {
   margin-top: -6px;
 }
 
-.billing-modal {
-  width: min(940px, 96vw);
-  min-height: 0;
-  max-height: 92vh;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 30px 32px 28px;
-}
-
-.billing-modal-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 0;
-}
-
-.billing-modal-subtitle {
-  text-align: left;
-  margin: 6px 0 0;
-  max-width: 640px;
-}
-
 .billing-alert {
   margin-bottom: 0;
 }
 
-.billing-loading-shell {
-  min-height: 320px;
+.upgrade-page {
+  max-width: 860px;
+  margin: 0 auto;
+  display: grid;
+  gap: 20px;
+}
+
+.upgrade-back {
+  justify-self: start;
+}
+
+.upgrade-hero {
+  display: grid;
+  gap: 10px;
+}
+
+.upgrade-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: rgba(133, 248, 184, 0.08);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.upgrade-hero h1 {
+  margin: 0;
+  font-size: clamp(30px, 4vw, 44px);
+  line-height: 1.02;
+}
+
+.upgrade-hero p {
+  margin: 0;
+  max-width: 760px;
+  color: var(--text-muted);
+  font-size: 15px;
+}
+
+.upgrade-meta {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.upgrade-shell {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background:
+    radial-gradient(circle at top left, rgba(133, 248, 184, 0.12), transparent 38%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.015));
+  box-shadow: var(--shadow);
+}
+
+.upgrade-loading-shell {
+  min-height: 440px;
   display: grid;
   place-items: center;
   gap: 16px;
   text-align: center;
 }
 
-.billing-loading-shell p {
+.upgrade-loading-shell p {
   margin: 0;
   color: var(--text-muted);
 }
 
-.billing-embed-shell {
+.upgrade-checkout-shell {
   background: #050505;
-  border: 1px solid rgba(122, 167, 255, 0.18);
-  border-radius: 14px;
-  overflow: auto;
-  min-height: 420px;
-  max-height: min(62vh, 760px);
-  padding: 10px;
+  border: 1px solid rgba(133, 248, 184, 0.26);
+  border-radius: 16px;
+  overflow: hidden;
+  padding: 12px;
 }
 
-.billing-footer {
+.upgrade-state-card {
+  min-height: 320px;
   display: grid;
-  gap: 14px;
-}
-
-.billing-helper {
-  margin: 0;
-  color: var(--text-muted);
+  place-items: center;
   text-align: center;
+  gap: 16px;
+  padding: 28px;
+  border-radius: 16px;
+  border: 1px dashed rgba(133, 248, 184, 0.22);
+  background: rgba(255, 255, 255, 0.02);
 }
 
-.billing-actions {
-  margin-top: 0;
+.upgrade-state-card h2,
+.upgrade-state-card p {
+  margin: 0;
+}
+
+.upgrade-state-card p {
+  color: var(--text-muted);
+  max-width: 520px;
+}
+
+.upgrade-actions {
+  display: flex;
   flex-wrap: wrap;
+  gap: 12px;
+}
+
+.upgrade-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
 .billing-status-row {
@@ -617,22 +671,23 @@ a {
 }
 
 @media (max-width: 720px) {
-  .billing-modal {
-    width: min(96vw, 96vw);
-    padding: 22px 18px 20px;
+  .upgrade-shell {
+    padding: 16px;
   }
 
-  .billing-modal-header {
-    flex-direction: row;
-    align-items: flex-start;
+  .upgrade-hero h1 {
+    font-size: 30px;
   }
 
-  .billing-modal-subtitle {
-    text-align: left;
+  .upgrade-actions {
+    width: 100%;
   }
 
-  .billing-embed-shell {
-    min-height: 360px;
+  .upgrade-actions > * {
+    width: 100%;
+  }
+
+  .upgrade-checkout-shell {
     padding: 6px;
   }
 }
