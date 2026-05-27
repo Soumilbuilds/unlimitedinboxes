@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Sidebar from '../components/Sidebar';
 import api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
+import { useBilling } from '../context/BillingContext';
 
 function buildCsv(rows) {
   const header = ['email', 'password'];
@@ -38,8 +39,12 @@ function formatLogMessage(message) {
   if (/Verifying domain/i.test(text)) return 'Verifying domain...';
   if (/Adding Exchange DNS records/i.test(text)) return 'Applying DNS records...';
   if (/Preparing Microsoft Graph admin client/i.test(text)) return 'Preparing admin permissions...';
-  if (/Launching exchange browser/i.test(text)) return 'Starting mailbox provisioning...';
-  if (/Logging in to Microsoft 365/i.test(text)) return 'Signing in to Microsoft 365...';
+  if (/Microsoft app prerequisites/i.test(text)) return 'Preparing Microsoft automation...';
+  if (/Microsoft Graph app permissions/i.test(text)) return 'Checking Microsoft security permissions...';
+  if (/Security Defaults/i.test(text)) return text;
+  if (/Using Exchange organization/i.test(text)) return 'Preparing Exchange automation...';
+  if (/mailbox login verified/i.test(text)) return text.replace('Preflight: ', '');
+  if (/Sign-in enabled/i.test(text)) return text.replace('Preflight: ', '');
   if (/Preflight:/i.test(text)) return 'Initializing mailbox workflow...';
   if (/Creating mailbox/i.test(text)) {
     const match = text.match(/Creating mailbox\\s+(.+)$/i);
@@ -49,9 +54,7 @@ function formatLogMessage(message) {
     const match = text.match(/Creating:\\s*([^\\(]+)/i);
     if (match && match[1]) return `Creating mailbox: ${match[1].trim()}`;
   }
-  if (/Sign-in enabled/i.test(text)) return text.replace('Preflight: ', '');
-  if (/Global Admin assigned/i.test(text)) return text.replace('Preflight: ', '');
-  if (/Checking Exchange mail flow SMTP AUTH setting/i.test(text)) return 'Updating mail flow settings...';
+  if (/SMTP AUTH/i.test(text)) return text;
   if (/Configuring SPF/i.test(text)) return 'Configuring SPF / DKIM / DMARC...';
   if (/SPF record/i.test(text)) return text;
   if (/DMARC record/i.test(text)) return text;
@@ -61,8 +64,29 @@ function formatLogMessage(message) {
   return text;
 }
 
+const DEFAULT_MAILBOX_TOTAL = 100;
+
+function parseNameLines(text) {
+  if (!text) return [];
+  return text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => line.replace(/\s+/g, ' '));
+}
+
+function getDownloadRows(rows, billing) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!Number.isFinite(billing?.downloadAllowance)) {
+    return list;
+  }
+  const allowance = Math.max(Number(billing?.downloadAllowance || 0), 0);
+  return list.slice(0, allowance);
+}
+
 export default function Orders() {
-  const { user, refreshUser } = useAuth();
+  const { refreshUser } = useAuth();
+  const { billing, refreshBilling, openUpgrade, reviewUrl } = useBilling();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedOrderId, setSelectedOrderId] = useState(null);
@@ -74,16 +98,21 @@ export default function Orders() {
   const [wizardBusy, setWizardBusy] = useState(false);
   const [downloadNotice, setDownloadNotice] = useState(false);
   const [upgradeNotice, setUpgradeNotice] = useState(false);
+  const [processingLimitNotice, setProcessingLimitNotice] = useState(false);
 
   const [tenantEmail, setTenantEmail] = useState('');
   const [tenantPassword, setTenantPassword] = useState('');
   const [tenantId, setTenantId] = useState(null);
   const [domain, setDomain] = useState('');
   const [nameServers, setNameServers] = useState([]);
+  const [redirectChoice, setRedirectChoice] = useState('skip');
+  const [redirectUrl, setRedirectUrl] = useState('');
 
   const [orderName, setOrderName] = useState('');
   const [mailboxPassword, setMailboxPassword] = useState('');
   const [passwordTouched, setPasswordTouched] = useState(false);
+  const [nameMode, setNameMode] = useState('random');
+  const [customNamesInput, setCustomNamesInput] = useState('');
 
   const passwordRules = useMemo(() => {
     const lengthOk = mailboxPassword.length >= 8 && mailboxPassword.length <= 256;
@@ -103,24 +132,36 @@ export default function Orders() {
     };
   }, [mailboxPassword]);
 
+  const canUseCustomNames = Boolean(billing?.canUseCustomNames);
+  const canCreateMoreThanOneCompletedOrder = Boolean(billing?.canCreateMoreThanOneCompletedOrder);
+  const isAdvanced = Boolean(billing?.unlimitedConcurrency);
+  const stepTitles = canUseCustomNames
+    ? ['Tenant credentials', 'Microsoft consent', 'Domain setup', 'Domain redirect', 'Order details', 'Set names']
+    : ['Tenant credentials', 'Microsoft consent', 'Domain setup', 'Domain redirect', 'Order details'];
+  const totalSteps = stepTitles.length;
+
   const selectedOrder = useMemo(
     () => orders.find(o => o.id === selectedOrderId) || orders[0] || null,
     [orders, selectedOrderId]
   );
+  const completedOrderLimitTitle = Number(billing?.downloadAllowance) >= 100
+    ? 'Included Order Already Used'
+    : 'Free Trial Order Already Used';
 
   const hasActiveOrder = useMemo(
-    () => orders.some(o => ['pending', 'processing'].includes(o.status)),
+    () => orders.some(o => o.status === 'processing'),
     [orders]
   );
-  const freeCompletedOrder = useMemo(
-    () => user?.plan !== 'paid' && orders.some(o => o.status === 'completed'),
-    [orders, user?.plan]
+  const completedOrderLimitReached = useMemo(
+    () => Boolean(billing?.completedOrderQuotaReached) || (!canCreateMoreThanOneCompletedOrder && orders.some(o => o.status === 'completed')),
+    [billing?.completedOrderQuotaReached, orders, canCreateMoreThanOneCompletedOrder]
   );
 
   const fetchOrders = async () => {
     setLoading(true);
     try {
       await refreshUser();
+      await refreshBilling();
       const res = await api.get('/orders');
       setOrders(res.data);
       if (res.data.length > 0) {
@@ -168,9 +209,13 @@ export default function Orders() {
     setTenantId(null);
     setDomain('');
     setNameServers([]);
+    setRedirectChoice('skip');
+    setRedirectUrl('');
     setOrderName('');
     setMailboxPassword('');
     setPasswordTouched(false);
+    setNameMode('random');
+    setCustomNamesInput('');
   };
 
   const closeWizard = () => {
@@ -245,6 +290,9 @@ export default function Orders() {
       });
       const res = await api.post(`/tenants/${tenantId}/nameservers`);
       setNameServers(res.data.name_servers || []);
+      if (res.data.zone_active) {
+        setWizardStep(3);
+      }
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to get name servers');
     } finally {
@@ -266,7 +314,35 @@ export default function Orders() {
     }
   };
 
-  const handleStartOrder = async () => {
+  const handleRedirectStepNext = async () => {
+    if (!tenantId) return;
+    setWizardError('');
+
+    if (redirectChoice === 'skip') {
+      setWizardStep(4);
+      return;
+    }
+
+    if (!redirectUrl.trim()) {
+      setWizardError('Enter the redirect URL.');
+      return;
+    }
+
+    setWizardBusy(true);
+    try {
+      const res = await api.put(`/redirects/${tenantId}`, {
+        redirect_url: redirectUrl
+      });
+      setRedirectUrl(res.data?.redirect_url || redirectUrl.trim());
+      setWizardStep(4);
+    } catch (e) {
+      setWizardError(e.response?.data?.error || 'Failed to save the redirect');
+    } finally {
+      setWizardBusy(false);
+    }
+  };
+
+  const handleStartOrder = async (customNames = null) => {
     if (!tenantId) return;
     if (!passwordRules.valid) {
       setPasswordTouched(true);
@@ -280,15 +356,27 @@ export default function Orders() {
     setWizardBusy(true);
     setWizardError('');
     try {
-      const res = await api.post('/orders', {
+      const payload = {
         tenant_id: tenantId,
         mailbox_password: mailboxPassword,
         order_name: orderName.trim()
-      });
-      await api.post(`/orders/${res.data.id}/start`);
+      };
+      if (Array.isArray(customNames) && customNames.length > 0) {
+        payload.mailbox_names = customNames;
+      }
+      const res = await api.post('/orders', payload);
+      setSelectedOrderId(res.data.id);
+      try {
+        await api.post(`/orders/${res.data.id}/start`);
+      } catch (error) {
+        if (error.response?.data?.code === 'ORDER_CONCURRENCY_LIMIT') {
+          setProcessingLimitNotice(true);
+        } else {
+          throw error;
+        }
+      }
       closeWizard();
       await fetchOrders();
-      setSelectedOrderId(res.data.id);
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to start order');
     } finally {
@@ -296,11 +384,56 @@ export default function Orders() {
     }
   };
 
+  const handleOrderDetailsNext = () => {
+    if (!passwordRules.valid) {
+      setPasswordTouched(true);
+      return;
+    }
+    if (!orderName.trim()) {
+      setWizardError('Please add an order name.');
+      return;
+    }
+    setWizardError('');
+    if (canUseCustomNames) {
+      setWizardStep(5);
+    } else {
+      handleStartOrder();
+    }
+  };
+
+  const handleStartOrderWithNames = () => {
+    if (!canUseCustomNames) {
+      handleStartOrder();
+      return;
+    }
+    setWizardError('');
+    if (nameMode === 'random') {
+      handleStartOrder();
+      return;
+    }
+
+    const parsed = parseNameLines(customNamesInput);
+    if (parsed.length !== DEFAULT_MAILBOX_TOTAL) {
+      setWizardError(`Please enter exactly ${DEFAULT_MAILBOX_TOTAL} names (one per line).`);
+      return;
+    }
+    const invalid = parsed.find(name => name.split(' ').length < 2);
+    if (invalid) {
+      setWizardError('Each line must include a first and last name.');
+      return;
+    }
+    handleStartOrder(parsed);
+  };
+
   const startOrder = async (id) => {
     try {
       await api.post(`/orders/${id}/start`);
       fetchOrders();
     } catch (e) {
+      if (e.response?.data?.code === 'ORDER_CONCURRENCY_LIMIT') {
+        setProcessingLimitNotice(true);
+        return;
+      }
       alert(e.response?.data?.error || 'Failed to start');
     }
   };
@@ -332,7 +465,15 @@ export default function Orders() {
 
   const downloadCsv = (order) => {
     const rows = order?.created_mailboxes || [];
-    const csv = buildCsv(rows);
+    const downloadRows = getDownloadRows(rows, billing);
+    if (
+      Number.isFinite(billing?.downloadAllowance)
+      && billing?.downloadAllowance > 0
+      && rows.length > billing.downloadAllowance
+    ) {
+      setDownloadNotice(true);
+    }
+    const csv = buildCsv(downloadRows);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -342,12 +483,9 @@ export default function Orders() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    if (user?.plan === 'free') {
-      setDownloadNotice(true);
-    }
   };
 
-  const stepTitle = ['Tenant credentials', 'Microsoft consent', 'Domain setup', 'Order details'][wizardStep] || 'Order setup';
+  const stepTitle = stepTitles[wizardStep] || 'Order setup';
 
   return (
     <div className="app-layout">
@@ -356,25 +494,20 @@ export default function Orders() {
         <div className="page-header">
           <div>
             <h1>Orders</h1>
-            <p>Create and run one order at a time.</p>
+            <p>{isAdvanced ? 'Create and process multiple orders at once.' : 'Create orders freely and process one at a time on your current plan.'}</p>
           </div>
           <div className="page-actions">
             <button className="btn ghost" onClick={fetchOrders}>Refresh</button>
             <button
               className="btn primary"
               onClick={() => {
-                if (freeCompletedOrder) {
+                if (completedOrderLimitReached) {
                   setUpgradeNotice(true);
                   return;
                 }
                 setWizardOpen(true);
               }}
-              disabled={hasActiveOrder}
-              title={
-                hasActiveOrder
-                  ? 'Only one active order at a time'
-                  : 'Create a new order'
-              }
+              title="Create a new order"
             >
               New Order
             </button>
@@ -383,7 +516,9 @@ export default function Orders() {
 
         {hasActiveOrder && (
           <div className="alert info" style={{ marginBottom: 16 }}>
-            An order is already processing. Finish or stop it before creating another.
+            {isAdvanced
+              ? 'Advanced plan detected. Multiple orders can run in parallel.'
+              : 'An order is already processing. You can still prepare more orders, but only one can run at a time on this plan.'}
           </div>
         )}
 
@@ -433,7 +568,7 @@ export default function Orders() {
                     </div>
                   </div>
 
-                  {selectedOrder.error_message && (
+                  {selectedOrder.error_message && selectedOrder.status !== 'processing' && (
                     <div className="alert error">{selectedOrder.error_message}</div>
                   )}
 
@@ -486,7 +621,7 @@ export default function Orders() {
               <div className="wizard-header">
                 <div>
                   <h2>New Order</h2>
-                  <p>Step {wizardStep + 1} of 4 · {stepTitle}</p>
+                  <p>Step {wizardStep + 1} of {totalSteps} · {stepTitle}</p>
                 </div>
                 <button className="icon-btn" onClick={closeWizard} title="Close">✕</button>
               </div>
@@ -582,6 +717,63 @@ export default function Orders() {
 
               {wizardStep === 3 && (
                 <div className="form">
+                  <div className="helper-text" style={{ marginBottom: 12 }}>
+                    Do you want to redirect <strong>{domain}</strong> to another URL? You can skip this now and set it later from Redirects.
+                  </div>
+
+                  <div className="radio-group">
+                    <label className={`radio-card ${redirectChoice === 'skip' ? 'active' : ''}`}>
+                      <input
+                        type="radio"
+                        name="redirectChoice"
+                        value="skip"
+                        checked={redirectChoice === 'skip'}
+                        onChange={() => setRedirectChoice('skip')}
+                      />
+                      <div>
+                        <strong>Skip for now</strong>
+                        <div className="helper-text">Continue with mailbox creation and set the redirect later if you need it.</div>
+                      </div>
+                    </label>
+                    <label className={`radio-card ${redirectChoice === 'redirect' ? 'active' : ''}`}>
+                      <input
+                        type="radio"
+                        name="redirectChoice"
+                        value="redirect"
+                        checked={redirectChoice === 'redirect'}
+                        onChange={() => setRedirectChoice('redirect')}
+                      />
+                      <div>
+                        <strong>Set up redirect</strong>
+                        <div className="helper-text">We’ll point {domain} and www.{domain} to the destination you choose.</div>
+                      </div>
+                    </label>
+                  </div>
+
+                  {redirectChoice === 'redirect' && (
+                    <label style={{ marginTop: 12 }}>
+                      Redirect URL
+                      <input
+                        type="url"
+                        value={redirectUrl}
+                        onChange={(e) => setRedirectUrl(e.target.value)}
+                        placeholder="https://yourdestination.com"
+                        required
+                      />
+                    </label>
+                  )}
+
+                  <div className="modal-actions">
+                    <button className="btn ghost" onClick={() => setWizardStep(2)}>Back</button>
+                    <button className="btn primary" onClick={handleRedirectStepNext} disabled={wizardBusy}>
+                      {wizardBusy ? 'Saving...' : 'Continue'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {wizardStep === 4 && (
+                <div className="form">
                   <label>
                     Order name
                     <input
@@ -611,8 +803,68 @@ export default function Orders() {
                     )}
                   </label>
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(2)}>Back</button>
-                    <button className="btn primary" onClick={handleStartOrder} disabled={wizardBusy || !passwordRules.valid}>
+                    <button className="btn ghost" onClick={() => setWizardStep(3)}>Back</button>
+                    <button className="btn primary" onClick={handleOrderDetailsNext} disabled={wizardBusy || !passwordRules.valid}>
+                      {wizardBusy ? 'Starting...' : (canUseCustomNames ? 'Continue' : 'Start Order')}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {wizardStep === 5 && canUseCustomNames && (
+                <div className="form">
+                  <div className="helper-text" style={{ marginBottom: 12 }}>
+                    Choose how mailbox names should be created for this order.
+                  </div>
+                  <div className="radio-group">
+                    <label className={`radio-card ${nameMode === 'random' ? 'active' : ''}`}>
+                      <input
+                        type="radio"
+                        name="nameMode"
+                        value="random"
+                        checked={nameMode === 'random'}
+                        onChange={() => setNameMode('random')}
+                      />
+                      <div>
+                        <strong>Random names</strong>
+                        <div className="helper-text">We’ll generate names automatically (current behavior).</div>
+                      </div>
+                    </label>
+                    <label className={`radio-card ${nameMode === 'custom' ? 'active' : ''}`}>
+                      <input
+                        type="radio"
+                        name="nameMode"
+                        value="custom"
+                        checked={nameMode === 'custom'}
+                        onChange={() => setNameMode('custom')}
+                      />
+                      <div>
+                        <strong>Define names</strong>
+                        <div className="helper-text">
+                          Enter {DEFAULT_MAILBOX_TOTAL} full names, one per line (First Last).
+                        </div>
+                      </div>
+                    </label>
+                  </div>
+
+                  {nameMode === 'custom' && (
+                    <label style={{ marginTop: 12 }}>
+                      Names list
+                      <textarea
+                        rows={10}
+                        value={customNamesInput}
+                        onChange={(e) => setCustomNamesInput(e.target.value)}
+                        placeholder={`John Doe\nJane Smith\n...`}
+                      />
+                      <div className="helper-text">
+                        {parseNameLines(customNamesInput).length}/{DEFAULT_MAILBOX_TOTAL} names entered.
+                      </div>
+                    </label>
+                  )}
+
+                  <div className="modal-actions">
+                    <button className="btn ghost" onClick={() => setWizardStep(4)}>Back</button>
+                    <button className="btn primary" onClick={handleStartOrderWithNames} disabled={wizardBusy}>
                       {wizardBusy ? 'Starting...' : 'Start Order'}
                     </button>
                   </div>
@@ -625,21 +877,16 @@ export default function Orders() {
         {downloadNotice && (
           <div className="modal-overlay" onClick={() => setDownloadNotice(false)}>
             <div className="modal wide upgrade-modal" onClick={(e) => e.stopPropagation()}>
-              <h2 className="modal-title">Account upgrade needed</h2>
+              <h2 className="modal-title">10 Inboxes Downloaded</h2>
               <p className="modal-subtitle">
-                Free users can’t download the mailboxes they create<br />
-                to prevent abuse of the platform.
-              </p>
-              <p className="modal-subtitle">
-                Upgrade your account or leave an honest review<br />
-                to unlock free mailboxes.
+                To Download All, Upgrade Or Leave A Review
               </p>
               <div className="modal-actions centered">
-                <a className="btn primary" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
+                <button className="btn accent" onClick={() => void openUpgrade('standard')}>
                   Upgrade
-                </a>
-                <a className="btn accent" href="https://unlimitedinboxes.com/freeinboxes" target="_blank" rel="noreferrer">
-                  Free Inboxes
+                </button>
+                <a className="btn ghost" href={reviewUrl} target="_blank" rel="noreferrer">
+                  Leave A Video Review
                 </a>
               </div>
             </div>
@@ -651,18 +898,41 @@ export default function Orders() {
             <div className="modal upgrade-modal" onClick={(e) => e.stopPropagation()}>
               <div className="wizard-header">
                 <div>
-                  <h2>Upgrade Required</h2>
+                  <h2>{completedOrderLimitTitle}</h2>
                 </div>
                 <button className="icon-btn" onClick={() => setUpgradeNotice(false)} title="Close">✕</button>
               </div>
               <p className="modal-subtitle">
-                Upgrade your account to create more inboxes<br />
-                and unlock unlimited downloads.
+                Leave A Video Review Or Upgrade To Continue
               </p>
               <div className="modal-actions centered">
-                <a className="btn accent" href="https://unlimitedinboxes.com/upgrade" target="_blank" rel="noreferrer">
+                <button className="btn accent" onClick={() => void openUpgrade('standard')}>
                   Upgrade
+                </button>
+                <a className="btn ghost" href={reviewUrl} target="_blank" rel="noreferrer">
+                  Leave A Video Review
                 </a>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {processingLimitNotice && (
+          <div className="modal-overlay" onClick={() => setProcessingLimitNotice(false)}>
+            <div className="modal upgrade-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="wizard-header">
+                <div>
+                  <h2>Account Upgrade Needed</h2>
+                </div>
+                <button className="icon-btn" onClick={() => setProcessingLimitNotice(false)} title="Close">✕</button>
+              </div>
+              <p className="modal-subtitle">
+                Multiple Tenant Processing At Once Is Only Supported On Advanced Plan
+              </p>
+              <div className="modal-actions centered">
+                <button className="btn accent" onClick={() => void openUpgrade('advanced')}>
+                  Upgrade
+                </button>
               </div>
             </div>
           </div>

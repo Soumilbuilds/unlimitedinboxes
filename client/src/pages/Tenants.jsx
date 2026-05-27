@@ -1,210 +1,105 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
-import api from '../lib/api';
 
-function NameServersModal({ tenant, onClose, onConfirm }) {
-  if (!tenant) return null;
-  const ns = Array.isArray(tenant.cloudflare_ns) ? tenant.cloudflare_ns : [];
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">Update Name Servers</h2>
-        <p className="modal-subtitle">Set these on your registrar, then confirm.</p>
-        <div className="ns-list">
-          {ns.map((server) => (
-            <div key={server} className="ns-item">{server}</div>
-          ))}
-        </div>
-        <div className="modal-actions">
-          <button className="btn ghost" onClick={onClose}>Close</button>
-          <button className="btn primary" onClick={onConfirm}>Nameservers Updated</button>
-        </div>
-      </div>
-    </div>
-  );
-}
+const LICENSE_OPTIONS = [
+  {
+    value: 'premium',
+    label: 'US IP',
+    unitPrice: 21.99
+  },
+  {
+    value: 'normal',
+    label: 'Asia IP',
+    unitPrice: 16.99
+  }
+];
 
 export default function Tenants() {
   const navigate = useNavigate();
-  const [tenants, setTenants] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [nsModalTenant, setNsModalTenant] = useState(null);
-  const [formData, setFormData] = useState({
-    name: '',
-    domain: '',
-    admin_email: '',
-    admin_password: ''
-  });
+  const [quantity, setQuantity] = useState(1);
+  const [licenseType, setLicenseType] = useState('');
 
-  const fetchTenants = async () => {
-    setLoading(true);
-    try {
-      const res = await api.get('/tenants');
-      setTenants(res.data);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
+  const handleSubmit = (event) => {
+    event.preventDefault();
+
+    if (!licenseType || quantity < 1) {
+      return;
     }
-  };
 
-  useEffect(() => {
-    fetchTenants();
-  }, []);
+    const params = new URLSearchParams({
+      quantity: String(quantity),
+      license: licenseType
+    });
 
-  const handleCreateTenant = async (e) => {
-    e.preventDefault();
-    try {
-      await api.post('/tenants', formData);
-      setFormData({ name: '', domain: '', admin_email: '', admin_password: '' });
-      setModalOpen(false);
-      fetchTenants();
-    } catch (e) {
-      alert(e.response?.data?.error || 'Failed to create tenant');
-    }
-  };
-
-  const handleConnect = async (tenantId) => {
-    try {
-      const res = await api.post(`/tenants/${tenantId}/connect`);
-      if (res.data.consentUrl) {
-        window.open(res.data.consentUrl, 'MicrosoftConsent', 'width=600,height=700');
-      }
-    } catch (e) {
-      alert(e.response?.data?.error || 'Failed to start consent');
-    }
-  };
-
-  const handleGetNameServers = async (tenant) => {
-    try {
-      const res = await api.post(`/tenants/${tenant.id}/nameservers`);
-      const updated = { ...tenant, cloudflare_ns: res.data.name_servers };
-      setNsModalTenant(updated);
-    } catch (e) {
-      alert(e.response?.data?.error || 'Failed to get name servers');
-    }
-  };
-
-  const handleNameServersUpdated = async () => {
-    try {
-      await api.patch(`/tenants/${nsModalTenant.id}/status`, { status: 'ready' });
-      setNsModalTenant(null);
-      fetchTenants();
-    } catch (e) {
-      alert(e.response?.data?.error || 'Failed to update status');
-    }
-  };
-
-  const handleDelete = async (id) => {
-    if (!confirm('Delete this tenant?')) return;
-    try {
-      await api.delete(`/tenants/${id}`);
-      fetchTenants();
-    } catch (e) {
-      alert(e.response?.data?.error || 'Failed to delete tenant');
-    }
+    navigate(`/tenants/checkout?${params.toString()}`);
   };
 
   return (
     <div className="app-layout">
       <Sidebar />
-      <main className="main-content">
-        <div className="page-header">
-          <div>
-            <h1>Tenants</h1>
-            <p>Connect Microsoft tenants and custom domains.</p>
+      <main className="main-content tenants-page">
+        <div className="tenant-order-layout">
+          <div className="tenant-order-intro">
+            <h1 className="tenant-order-title">Get Microsoft Tenants In Bulk</h1>
           </div>
-          <div className="page-actions">
-            <button className="btn ghost" onClick={fetchTenants}>Refresh</button>
-            <button className="btn primary" onClick={() => setModalOpen(true)}>Add Tenant</button>
+
+          <div className="tenant-order-card">
+            <form className="form tenant-order-form" onSubmit={handleSubmit}>
+              <label className="tenant-field">
+                <span>Number Of Tenants Needed</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="1000"
+                  step="1"
+                  value={quantity}
+                  onChange={(event) => {
+                    const nextValue = Number.parseInt(event.target.value, 10);
+                    setQuantity(Number.isInteger(nextValue) && nextValue > 0 ? nextValue : 1);
+                  }}
+                  required
+                />
+              </label>
+
+              {quantity >= 1 && (
+                <div className="tenant-license-section">
+                  <div className="tenant-section-label">What Type Of Tenant Do You Want?</div>
+                  <div className="tenant-license-grid">
+                    {LICENSE_OPTIONS.map((option) => (
+                      <label
+                        key={option.value}
+                        className={`tenant-license-card ${licenseType === option.value ? 'active' : ''}`}
+                      >
+                        <input
+                          type="radio"
+                          name="licenseType"
+                          value={option.value}
+                          checked={licenseType === option.value}
+                          onChange={() => setLicenseType(option.value)}
+                        />
+                        <div className="tenant-license-copy">
+                          <strong>{option.label}</strong>
+                          <div className="helper-text">${option.unitPrice} / tenant</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="tenant-order-actions">
+                <button
+                  type="submit"
+                  className="btn accent tenant-submit-btn"
+                  disabled={!licenseType || quantity < 1}
+                >
+                  Get Tenants
+                </button>
+              </div>
+            </form>
           </div>
         </div>
-
-        {loading ? (
-          <div className="center-screen"><div className="spinner" /></div>
-        ) : tenants.length === 0 ? (
-          <div className="empty-state">
-            <h3>No tenants yet</h3>
-            <p>Create your first tenant to begin.</p>
-          </div>
-        ) : (
-          <div className="grid">
-            {tenants.map((tenant) => (
-              <div className="card" key={tenant.id}>
-                <div className="card-header">
-                  <div>
-                    <h3>{tenant.name}</h3>
-                    <span className={`status ${tenant.status}`}>{tenant.status}</span>
-                  </div>
-                  <button className="icon-btn" onClick={() => handleDelete(tenant.id)} title="Delete">
-                    ✕
-                  </button>
-                </div>
-                <div className="card-meta">
-                  <div>
-                    <span>Domain</span>
-                    <strong>{tenant.domain}</strong>
-                  </div>
-                  <div>
-                    <span>Admin Email</span>
-                    <strong>{tenant.admin_email}</strong>
-                  </div>
-                </div>
-
-                <div className="card-actions">
-                  {tenant.status === 'pending_consent' && (
-                    <button className="btn primary" onClick={() => handleConnect(tenant.id)}>Connect</button>
-                  )}
-                  {tenant.status === 'pending_ns' && (
-                    <button className="btn primary" onClick={() => handleGetNameServers(tenant)}>Get Name Servers</button>
-                  )}
-                  {tenant.status === 'ready' && (
-                    <button className="btn success" onClick={() => navigate(`/orders?tenant=${tenant.id}`)}>Create Order</button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {modalOpen && (
-          <div className="modal-overlay" onClick={() => setModalOpen(false)}>
-            <div className="modal" onClick={(e) => e.stopPropagation()}>
-              <h2 className="modal-title">Add Tenant</h2>
-              <form className="form" onSubmit={handleCreateTenant}>
-                <label>
-                  Friendly Name
-                  <input value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} required />
-                </label>
-                <label>
-                  Custom Domain
-                  <input value={formData.domain} onChange={(e) => setFormData({ ...formData, domain: e.target.value })} required />
-                </label>
-                <label>
-                  Admin Email
-                  <input type="email" value={formData.admin_email} onChange={(e) => setFormData({ ...formData, admin_email: e.target.value })} required />
-                </label>
-                <label>
-                  Admin Password
-                  <input type="password" value={formData.admin_password} onChange={(e) => setFormData({ ...formData, admin_password: e.target.value })} required />
-                </label>
-                <div className="modal-actions">
-                  <button type="button" className="btn ghost" onClick={() => setModalOpen(false)}>Cancel</button>
-                  <button type="submit" className="btn primary">Create Tenant</button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        <NameServersModal
-          tenant={nsModalTenant}
-          onClose={() => setNsModalTenant(null)}
-          onConfirm={handleNameServersUpdated}
-        />
       </main>
     </div>
   );

@@ -13,6 +13,14 @@ function buildCsv(rows) {
   return lines.join('\n');
 }
 
+function getDownloadRows(rows, allowance = null) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!Number.isFinite(allowance)) {
+    return list;
+  }
+  return list.slice(0, Math.max(Number(allowance || 0), 0));
+}
+
 export default function Mailboxes() {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -51,7 +59,7 @@ export default function Mailboxes() {
   }, [orders]);
 
   const downloadCsv = () => {
-    const csv = buildCsv(mailboxes);
+    const csv = buildCsv(getDownloadRows(mailboxes));
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

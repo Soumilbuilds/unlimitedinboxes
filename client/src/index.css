@@ -67,49 +67,131 @@ a {
 }
 
 .login-card {
-  width: min(420px, 90vw);
+  width: min(500px, 92vw);
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 36px;
+  border-radius: 20px;
+  padding: 44px 40px 40px;
   box-shadow: var(--shadow);
   text-align: center;
 }
 
 .login-title {
-  margin: 0 0 6px;
-  font-size: 26px;
-  letter-spacing: 0.1px;
+  margin: 0 0 8px;
+  font-size: 36px;
+  line-height: 1.05;
+  letter-spacing: -0.04em;
 }
 
 .login-subtitle {
-  margin: 0 0 24px;
+  margin: 0 0 28px;
   color: var(--text-muted);
+  font-size: 15px;
+  opacity: 0.82;
 }
 
 .login-form label {
   display: flex;
   flex-direction: column;
   text-align: left;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--text-muted);
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .login-form input {
-  margin-top: 8px;
+  margin-top: 10px;
   background: var(--bg-soft);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px 14px;
+  border: 1px solid rgba(134, 247, 184, 0.34);
+  border-radius: 12px;
+  padding: 16px 18px;
   color: var(--text);
-  font-size: 14px;
+  font-size: 16px;
+  outline: none;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.login-form input:focus {
+  border-color: rgba(134, 247, 184, 0.8);
+  box-shadow: 0 0 0 4px rgba(134, 247, 184, 0.08);
 }
 
 .login-form input::placeholder,
 .form input::placeholder {
   color: var(--text);
   opacity: 1;
+}
+
+.auth-card {
+  position: relative;
+}
+
+.auth-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 28px;
+  padding: 6px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.auth-toggle-btn {
+  border: none;
+  background: transparent;
+  color: rgba(245, 245, 245, 0.7);
+  border-radius: 10px;
+  padding: 13px 16px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.auth-toggle-btn:hover {
+  color: var(--text);
+}
+
+.auth-toggle-btn.active {
+  background: var(--accent);
+  color: #000;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.auth-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 2px 0 6px;
+  text-align: left;
+}
+
+.auth-inline-link {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.auth-submit {
+  width: 100%;
+  margin-top: 8px;
+  padding: 15px 18px;
+  font-size: 16px;
+  border-radius: 12px;
 }
 
 .login-demo {
@@ -197,6 +279,54 @@ a {
 .sidebar-footer .btn {
   width: 100%;
   text-align: center;
+}
+
+.sidebar-settings {
+  position: relative;
+}
+
+.sidebar-settings-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 12px);
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(134, 247, 184, 0.2);
+  background: rgba(9, 9, 9, 0.96);
+  box-shadow: 0 22px 50px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(18px);
+  text-align: left;
+}
+
+.sidebar-settings-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.sidebar-settings-copy strong {
+  font-size: 14px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.sidebar-settings-label {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(245, 245, 245, 0.46);
+}
+
+.sidebar-settings-action {
+  justify-content: center;
+}
+
+.sidebar-settings-trigger.active {
+  border-color: var(--border-strong);
+  color: var(--text);
+  background: rgba(123, 231, 163, 0.08);
 }
 
 .main-content {
@@ -431,6 +561,41 @@ a {
   color: var(--text);
 }
 
+.form textarea {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: var(--text);
+  resize: vertical;
+  min-height: 160px;
+}
+
+.radio-group {
+  display: grid;
+  gap: 12px;
+}
+
+.radio-card {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  cursor: pointer;
+}
+
+.radio-card input {
+  margin-top: 3px;
+}
+
+.radio-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.15);
+}
+
 .form-actions {
   display: flex;
   justify-content: flex-end;
@@ -477,39 +642,501 @@ a {
 }
 
 .modal.upgrade-modal {
-  width: min(760px, 94vw);
-  padding: 42px 44px 40px;
-  min-height: 300px;
+  width: min(640px, 92vw);
+  padding: 34px 36px 32px;
+  min-height: 0;
 }
 
 .modal.upgrade-modal .modal-title {
-  font-size: 26px;
-  margin-bottom: 18px;
+  font-size: 28px;
+  margin-bottom: 12px;
 }
 
 .modal.upgrade-modal .wizard-header h2 {
-  font-size: 26px;
-  margin-bottom: 14px;
+  font-size: 28px;
+  margin-bottom: 10px;
+  line-height: 1.12;
+  letter-spacing: -0.03em;
 }
 
 .modal.upgrade-modal .wizard-header {
-  margin-bottom: 18px;
+  margin-bottom: 12px;
 }
 
 .modal.upgrade-modal .modal-subtitle {
-  font-size: 17px;
-  line-height: 1.75;
-  margin-bottom: 22px;
+  font-size: 16px;
+  line-height: 1.65;
+  margin-bottom: 20px;
 }
 
 .modal.upgrade-modal .btn {
-  padding: 16px 30px;
-  font-size: 16px;
-  min-width: 150px;
+  padding: 14px 24px;
+  font-size: 15px;
+  min-width: 148px;
 }
 
 .modal.upgrade-modal .modal-subtitle + .modal-subtitle {
   margin-top: -6px;
+}
+
+.billing-modal {
+  width: min(940px, 96vw);
+  min-height: 0;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 30px 32px 28px;
+}
+
+.billing-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 0;
+}
+
+.billing-modal-subtitle {
+  text-align: left;
+  margin: 6px 0 0;
+  max-width: 640px;
+}
+
+.billing-alert {
+  margin-bottom: 0;
+}
+
+.billing-loading-shell {
+  min-height: 320px;
+  display: grid;
+  place-items: center;
+  gap: 16px;
+  text-align: center;
+}
+
+.billing-loading-shell.compact {
+  min-height: 240px;
+}
+
+.billing-loading-shell p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.billing-embed-shell {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+  min-height: 0;
+  max-height: none;
+  padding: 0;
+}
+
+.billing-footer {
+  display: grid;
+  gap: 14px;
+}
+
+.billing-page {
+  min-height: 100vh;
+  background: #000;
+  display: grid;
+  place-items: center;
+  padding: 52px 24px 64px;
+}
+
+.billing-page-shell {
+  width: min(760px, 100%);
+  display: grid;
+  gap: 18px;
+}
+
+.billing-page-copy {
+  display: grid;
+  gap: 6px;
+  text-align: center;
+}
+
+.billing-page-copy h1 {
+  margin: 0;
+  font-size: 34px;
+  line-height: 1.04;
+  letter-spacing: -0.04em;
+}
+
+.billing-page-copy p {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.4;
+  color: rgba(245, 245, 245, 0.7);
+  font-weight: 600;
+}
+
+.billing-page-loading {
+  min-height: 540px;
+  display: grid;
+  place-items: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.billing-page-empty {
+  min-height: 420px;
+  display: grid;
+  place-items: center;
+  gap: 18px;
+}
+
+.billing-page-status {
+  margin: 0;
+  color: rgba(245, 245, 245, 0.72);
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 600;
+}
+
+.billing-page-retry {
+  min-width: 180px;
+}
+
+.billing-page-embed-wrap {
+  display: grid;
+  gap: 14px;
+}
+
+.billing-page-alert {
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.billing-page-embed {
+  min-height: 640px;
+  max-height: none;
+}
+
+.billing-page-embed.is-verifying {
+  opacity: 0.76;
+  pointer-events: none;
+}
+
+.checkout-modal {
+  width: min(920px, 95vw);
+  max-height: 92vh;
+  padding: 28px 30px 26px;
+  background: #050505;
+  border-color: rgba(134, 247, 184, 0.62);
+  display: grid;
+  gap: 16px;
+  position: relative;
+}
+
+.checkout-modal-copy {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+  text-align: center;
+}
+
+.checkout-modal-copy h2 {
+  margin: 0;
+  font-size: 32px;
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+}
+
+.checkout-modal-subheadline {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.45;
+  color: rgba(245, 245, 245, 0.84);
+  font-weight: 600;
+}
+
+.checkout-modal-description {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: rgba(245, 245, 245, 0.66);
+}
+
+.checkout-modal-close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+}
+
+.checkout-embed-shell {
+  min-height: 520px;
+  max-height: min(62vh, 760px);
+}
+
+.checkout-modal-footer {
+  display: grid;
+  gap: 12px;
+}
+
+.billing-gate-modal {
+  width: min(620px, 94vw);
+  padding: 40px 42px 36px;
+  border-radius: 18px;
+  background: #050505;
+  border-color: rgba(134, 247, 184, 0.52);
+  display: grid;
+  gap: 0;
+}
+
+.billing-gate-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  text-align: center;
+}
+
+.billing-gate-header.closable {
+  justify-content: space-between;
+  align-items: flex-start;
+  text-align: left;
+}
+
+.billing-gate-copy {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+
+.billing-gate-header h2 {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.08;
+  letter-spacing: -0.025em;
+  font-weight: 700;
+}
+
+.billing-gate-subheadline {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.45;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.billing-gate-description {
+  margin: 18px auto 0;
+  max-width: 460px;
+  color: rgba(245, 245, 245, 0.76);
+  font-size: 15px;
+  line-height: 1.65;
+  text-align: center;
+}
+
+.billing-gate-actions {
+  margin-top: 28px;
+}
+
+.billing-copy-line {
+  display: block;
+}
+
+.billing-gate-modal .btn {
+  min-width: 210px;
+  padding: 14px 28px;
+  font-size: 16px;
+  border-radius: 10px;
+  font-weight: 700;
+}
+
+.billing-gate-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #020202;
+}
+
+.billing-gate-primary:hover {
+  background: #95fac2;
+  border-color: #95fac2;
+  color: #020202;
+}
+
+.billing-helper {
+  margin: 0;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.billing-actions {
+  margin-top: 0;
+  flex-wrap: wrap;
+}
+
+.billing-status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.billing-inline-spinner {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.tenants-page {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.tenant-order-layout {
+  width: min(860px, 100%);
+  display: grid;
+  gap: 38px;
+  justify-items: center;
+}
+
+.tenant-order-intro {
+  display: grid;
+  gap: 18px;
+  justify-items: center;
+  text-align: center;
+}
+
+.tenant-order-title {
+  margin: 0;
+  max-width: none;
+  font-size: clamp(32px, 3.8vw, 44px);
+  line-height: 1.02;
+  letter-spacing: -0.05em;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.tenant-order-card {
+  width: min(820px, 100%);
+  background: #090909;
+  border: 1px solid rgba(134, 247, 184, 0.18);
+  border-radius: 24px;
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.32);
+  padding: 40px 42px;
+}
+
+.tenant-order-form {
+  width: min(560px, 100%);
+  margin: 0 auto;
+  text-align: left;
+}
+
+.tenant-field {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 52px;
+}
+
+.tenant-field > span {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.tenant-license-section {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.tenant-section-label {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.tenant-license-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.tenant-license-card {
+  display: flex;
+  align-items: flex-start;
+  padding: 18px 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(134, 247, 184, 0.12);
+  background: #090909;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.tenant-license-card input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.tenant-license-card.active {
+  border-color: var(--accent);
+  background: #090909;
+  transform: translateY(-1px);
+}
+
+.tenant-license-card:focus-within {
+  border-color: var(--accent);
+}
+
+.tenant-license-copy {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  flex: 1;
+}
+
+.tenant-license-copy strong {
+  font-size: 15px;
+  display: block;
+}
+
+.tenant-order-actions {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin-top: 40px;
+}
+
+.tenant-submit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 220px;
+  min-height: 54px;
+  padding: 14px 30px;
+  border-radius: 14px;
+  font-size: 15px;
+  letter-spacing: 0.01em;
+}
+
+.tenant-checkout-page {
+  min-height: 100vh;
+  background: #000;
+  display: grid;
+  place-items: center;
+  padding: 24px 18px;
+}
+
+.tenant-checkout-shell {
+  width: min(760px, 100%);
+  min-height: 640px;
+  display: grid;
+  gap: 18px;
+}
+
+.tenant-checkout-loading {
+  min-height: 70vh;
+  display: grid;
+  place-items: center;
 }
 
 .modal-title {
@@ -535,6 +1162,112 @@ a {
   justify-content: center;
   margin-top: 26px;
   gap: 18px;
+}
+
+@media (max-width: 720px) {
+  .modal.upgrade-modal {
+    width: min(92vw, 92vw);
+    padding: 28px 22px 24px;
+  }
+
+  .modal.upgrade-modal .modal-title,
+  .modal.upgrade-modal .wizard-header h2 {
+    font-size: 24px;
+  }
+
+  .checkout-modal {
+    width: min(96vw, 96vw);
+    padding: 22px 18px 18px;
+  }
+
+  .billing-page {
+    padding: 28px 14px 40px;
+  }
+
+  .billing-page-copy h1 {
+    font-size: 28px;
+  }
+
+  .billing-page-copy p {
+    font-size: 16px;
+  }
+
+  .billing-page-embed {
+    min-height: 540px;
+  }
+
+  .checkout-modal-copy h2 {
+    font-size: 26px;
+  }
+
+  .checkout-modal-subheadline {
+    font-size: 16px;
+  }
+
+  .checkout-embed-shell {
+    min-height: 440px;
+  }
+
+  .billing-gate-modal {
+    width: min(94vw, 94vw);
+    padding: 30px 20px 24px;
+  }
+
+  .billing-gate-header {
+    gap: 12px;
+  }
+
+  .billing-gate-header h2 {
+    font-size: 26px;
+  }
+
+  .billing-gate-subheadline {
+    font-size: 17px;
+  }
+
+  .billing-modal {
+    width: min(96vw, 96vw);
+    padding: 22px 18px 20px;
+  }
+
+  .billing-modal-header {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .billing-modal-subtitle {
+    text-align: left;
+  }
+
+  .billing-embed-shell {
+    min-height: 0;
+    padding: 0;
+  }
+
+  .tenants-page {
+    align-items: flex-start;
+  }
+
+  .tenant-order-layout {
+    gap: 28px;
+  }
+
+  .tenant-order-title {
+    font-size: clamp(28px, 7.2vw, 34px);
+    white-space: normal;
+  }
+
+  .tenant-order-card {
+    padding: 28px 20px;
+  }
+
+  .tenant-checkout-page {
+    padding: 14px;
+  }
+
+  .tenant-checkout-shell {
+    min-height: 540px;
+  }
 }
 
 .ns-list {
@@ -669,6 +1402,21 @@ a {
   gap: 6px;
 }
 
+.redirect-meta {
+  min-width: 0;
+}
+
+.redirect-target {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.redirect-target.empty {
+  color: var(--text-muted);
+}
+
 .order-row {
   background: var(--panel);
   border: 1px solid transparent;
@@ -758,6 +1506,16 @@ a {
   text-align: center;
 }
 
+.redirect-summary {
+  display: grid;
+  gap: 6px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+
 @media (max-width: 960px) {
   .app-layout {
     grid-template-columns: 1fr;
@@ -773,6 +1531,12 @@ a {
 
   .sidebar-nav {
     flex-direction: row;
+  }
+
+  .sidebar-settings-panel {
+    left: auto;
+    right: 0;
+    min-width: 250px;
   }
 
   .main-content {
