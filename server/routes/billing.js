@@ -89,6 +89,8 @@ router.post('/checkout', async (req, res) => {
 
     return res.json({
       sessionId: checkout.sessionId,
+      clientSecret: checkout.clientSecret,
+      url: checkout.url,
       purchaseUrl: checkout.url,
       checkoutUrl: checkout.url,
       provider: 'stripe',

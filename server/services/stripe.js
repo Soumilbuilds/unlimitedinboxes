@@ -31,34 +31,29 @@ export function isStripeConfigured() {
   return !!(STRIPE_SECRET && STRIPE_SECRET.startsWith('sk_'));
 }
 
+export const STRIPE_PUBLISHABLE_KEY = process.env.STRIPE_PUBLISHABLE_KEY || 'pk_live_51TXFGYAxRfptSO4wkESkYbJULJfUNAc6B2Y7p1Io5gFxMFy1i2qPuhXbs19YeHU5duPTEflZzn2P5m9aPkNZpSzX00jQnvph3v';
+
 // --- Checkout Sessions ---
 
 /**
  * Create a Stripe Checkout Session for plan purchase.
  * @param {Object} user - { id, email, name }
  * @param {string} planKey - 'intro' | 'standard' | 'advanced'
- * @param {Object} opts - { quantity, successUrl, cancelUrl, metadata }
+ * @param {Object} opts - { quantity, metadata }
  */
 export async function createStripeCheckoutSession(user, planKey, opts = {}) {
-  const { quantity = 1, metadata = {}, returnUrl } = opts;
+  const { quantity = 1, metadata = {} } = opts;
   const priceId = STRIPE_PRICES[planKey];
   if (!priceId) throw new Error(`Unknown plan key: ${planKey}`);
 
   const isTrial = planKey === 'intro';
-  const isTenant = planKey === 'usTenant' || planKey === 'asiaTenant';
-
-  // Build line items
-  const lineItems = [{
-    price: priceId,
-    quantity,
-  }];
 
   const sessionParams = {
     mode: 'subscription',
+    ui_mode: 'embedded_page',
     customer_email: user.email,
-    line_items: lineItems,
-    success_url: `${APP_BASE_URL}/orders?billing=success&session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: returnUrl || `${APP_BASE_URL}/billing`,
+    line_items: [{ price: priceId, quantity }],
+    return_url: `${APP_BASE_URL}/orders?billing=success&session_id={CHECKOUT_SESSION_ID}`,
     metadata: {
       user_id: String(user.id),
       user_email: user.email,
@@ -67,19 +62,14 @@ export async function createStripeCheckoutSession(user, planKey, opts = {}) {
     },
     allow_promotion_codes: false,
     billing_address_collection: 'auto',
-    // tax_id_collection removed — Stripe rejects false, only accepts true
     phone_number_collection: { enabled: false },
     submit_type: isTrial ? undefined : 'pay',
   };
 
-  // 3-day trial for intro plan
   if (isTrial) {
     sessionParams.subscription_data = {
       trial_period_days: PLAN_TRIAL_DAYS.intro,
-      metadata: {
-        user_id: String(user.id),
-        plan_key: planKey,
-      },
+      metadata: { user_id: String(user.id), plan_key: planKey },
     };
   }
 
@@ -87,6 +77,7 @@ export async function createStripeCheckoutSession(user, planKey, opts = {}) {
 
   return {
     sessionId: session.id,
+    clientSecret: session.client_secret,
     url: session.url,
     customerId: session.customer,
   };
