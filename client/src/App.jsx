@@ -1,8 +1,13 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { BillingProvider } from './context/BillingContext';
 import Login from './pages/Login';
 import Orders from './pages/Orders';
 import Inboxes from './pages/Inboxes';
+import Tenants from './pages/Tenants';
+import TenantCheckout from './pages/TenantCheckout';
+import Redirects from './pages/Redirects';
+import BillingCheckout from './pages/BillingCheckout';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -26,27 +31,62 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route
-            path="/orders"
-            element={
-              <ProtectedRoute>
-                <Orders />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/inboxes"
-            element={
-              <ProtectedRoute>
-                <Inboxes />
-              </ProtectedRoute>
-            }
-          />
-          <Route path="/" element={<Navigate to="/orders" replace />} />
-          <Route path="*" element={<Navigate to="/orders" replace />} />
-        </Routes>
+        <BillingProvider>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="/access" element={<Login />} />
+            <Route
+              path="/billing"
+              element={
+                <ProtectedRoute>
+                  <BillingCheckout />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/orders"
+              element={
+                <ProtectedRoute>
+                  <Orders />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/tenants"
+              element={
+                <ProtectedRoute>
+                  <Tenants />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/tenants/checkout"
+              element={
+                <ProtectedRoute>
+                  <TenantCheckout />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/inboxes"
+              element={
+                <ProtectedRoute>
+                  <Inboxes />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/redirects"
+              element={
+                <ProtectedRoute>
+                  <Redirects />
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/" element={<Navigate to="/orders" replace />} />
+            <Route path="*" element={<Navigate to="/orders" replace />} />
+          </Routes>
+        </BillingProvider>
       </BrowserRouter>
     </AuthProvider>
   );
