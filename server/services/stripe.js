@@ -67,7 +67,7 @@ export async function createStripeCheckoutSession(user, planKey, opts = {}) {
     },
     allow_promotion_codes: false,
     billing_address_collection: 'auto',
-    tax_id_collection: false,
+    // tax_id_collection removed — Stripe rejects false, only accepts true
     phone_number_collection: { enabled: false },
     submit_type: isTrial ? undefined : 'pay',
   };
@@ -115,7 +115,7 @@ export async function createTenantCheckoutSession(user, tenantType, quantity, op
       quantity: String(quantity),
     },
     billing_address_collection: 'auto',
-    tax_id_collection: false,
+    // tax_id_collection removed — Stripe rejects false, only accepts true
     phone_number_collection: { enabled: false },
     allow_promotion_codes: false,
   });
