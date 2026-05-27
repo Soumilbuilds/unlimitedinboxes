@@ -5,13 +5,15 @@ import {
   getOrderById,
   getOrderByIdForUser,
   getTenantByIdForUser,
+  getTenants,
   getUserByEmail,
   updateOrderStatus,
   addOrderLog,
   deleteOrder,
   getOrderLogs as getStoredLogs
 } from '../db/database.js';
-import { processOrder, cancelOrder, getOrderLogs } from '../services/orderProcessor.js';
+import { getUserAccessState } from '../services/access.js';
+import { processOrder, cancelOrder, getOrderLogs, hasActiveJob } from '../services/orderProcessor.js';
 
 const router = Router();
 
@@ -24,6 +26,30 @@ function isValidMailboxPassword(password) {
   if (/[0-9]/.test(password)) categories += 1;
   if (/[^A-Za-z0-9]/.test(password)) categories += 1;
   return categories >= 3;
+}
+
+function parseMailboxNames(input) {
+  if (!input) return null;
+  if (Array.isArray(input)) {
+    return input
+      .map(item => (typeof item === 'string' ? item.trim() : ''))
+      .filter(Boolean)
+      .map(item => item.replace(/\s+/g, ' '));
+  }
+  if (typeof input === 'string') {
+    return input
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(line => line.replace(/\s+/g, ' '));
+  }
+  return null;
+}
+
+function isValidFullName(name) {
+  if (!name || typeof name !== 'string') return false;
+  const parts = name.trim().split(/\s+/);
+  return parts.length >= 2;
 }
 
 const requireAuth = (req, res, next) => {
@@ -39,29 +65,16 @@ const requireAuth = (req, res, next) => {
 router.use(requireAuth);
 router.use((req, _res, next) => {
   if (req.session.user?.email) {
-    const latest = getUserByEmail(req.session.user.email);
-    if (latest) {
-      req.session.user.plan = latest.plan || 'free';
-      req.session.user.id = latest.id;
-    }
+      const latest = getUserByEmail(req.session.user.email);
+      if (latest) {
+        req.session.user.plan = latest.plan || 'free';
+        req.session.user.id = latest.id;
+        req.session.user.billingStatus = latest.stripe_subscription_status || null;
+        req.accessState = getUserAccessState(latest);
+      }
   }
   next();
 });
-
-const FREE_PLANS = new Set(['free', '25', '50', '100']);
-
-function isFreePlan(plan) {
-  return FREE_PLANS.has(String(plan || 'free'));
-}
-
-function getDownloadAllowance(plan) {
-  const normalized = String(plan || 'free');
-  if (normalized === 'paid') return Number.POSITIVE_INFINITY;
-  if (normalized === '100') return 100;
-  if (normalized === '50') return 50;
-  if (normalized === '25') return 25;
-  return 0;
-}
 
 function maskEmail(email) {
   if (!email || typeof email !== 'string') return email;
@@ -92,6 +105,78 @@ function maskName(name) {
   return `${first}*****${last}`;
 }
 
+function normalizeTenantIdentityValue(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function isSameTenantIdentity(left, right) {
+  if (!left || !right) return false;
+
+  const leftTenantId = normalizeTenantIdentityValue(left.tenant_id || left.ms_tenant_id);
+  const rightTenantId = normalizeTenantIdentityValue(right.tenant_id || right.ms_tenant_id);
+  if (leftTenantId && rightTenantId && leftTenantId === rightTenantId) {
+    return true;
+  }
+
+  const leftAdminEmail = normalizeTenantIdentityValue(left.admin_email);
+  const rightAdminEmail = normalizeTenantIdentityValue(right.admin_email);
+  return Boolean(leftAdminEmail && rightAdminEmail && leftAdminEmail === rightAdminEmail);
+}
+
+function getOrdersForSameTenantIdentity(userId, tenantLike) {
+  if (!tenantLike) return [];
+
+  const tenantIds = new Set(
+    getTenants(userId)
+      .filter(candidate => isSameTenantIdentity(candidate, tenantLike))
+      .map(candidate => candidate.id)
+  );
+
+  if (!tenantIds.size && tenantLike.id != null) {
+    tenantIds.add(tenantLike.id);
+  }
+
+  return getOrders(userId)
+    .filter(order => tenantIds.has(order.tenant_id) && order.status !== 'cancelled')
+    .sort((left, right) => left.id - right.id);
+}
+
+function buildTenantConflictMessage(existingOrder, tenantLike) {
+  const targetDomain = tenantLike?.domain || tenantLike?.tenant_domain || 'this domain';
+  const existingDomain = existingOrder?.tenant_domain || 'another domain';
+  return `This Microsoft tenant is already attached to order #${existingOrder.id} for ${existingDomain}. Use a different Microsoft tenant for ${targetDomain}, or restart the existing order instead of creating another one.`;
+}
+
+function sanitizeImplementationText(text) {
+  if (!text) return text;
+  let output = String(text);
+
+  output = output.replace(/\bshared mailbox\b/gi, 'mailbox');
+  output = output.replace(/\bExchange PowerShell\b/gi, 'automatic recovery');
+  output = output.replace(/Mailbox API create unavailable; falling back to UI flow \(\d+\)\.?/gi, 'Retrying mailbox creation...');
+  output = output.replace(/Mailbox setup screen did not open cleanly \(attempt \d+\/\d+\)\. Reloading Exchange page\.\.\./gi, 'Mailbox setup screen did not open cleanly. Retrying...');
+  output = output.replace(/Shared mailbox dialog did not open cleanly \(attempt \d+\/\d+\)\. Reloading Exchange page\.\.\./gi, 'Mailbox setup screen did not open cleanly. Retrying...');
+  output = output.replace(/Browser mailbox creation did not complete\.[^.]*$/gi, 'Mailbox creation did not complete in the browser. Trying an automatic recovery step...');
+  output = output.replace(/Exchange PowerShell created or confirmed [^\s]+/gi, 'Automatic recovery created or confirmed the mailbox.');
+  output = output.replace(/Exchange PowerShell mailbox creation failed[^:]*:\s*.+$/gi, 'Automatic recovery is currently unavailable.');
+  output = output.replace(/spawn pwsh ENOENT/gi, 'automatic recovery is currently unavailable');
+  output = output.replace(/Create mailbox error:\s*Waiting for selector `[^`]+` failed: Waiting failed: \d+ms exceeded/gi, 'Mailbox setup screen did not load in time.');
+  output = output.replace(/Preflight failed during mailbox creation:\s*Waiting for selector `[^`]+` failed: Waiting failed: \d+ms exceeded/gi, 'Mailbox setup screen did not load in time. Please try again.');
+  output = output.replace(/Preflight failed during mailbox creation:\s*Mailbox setup screen did not load in time\./gi, 'Mailbox setup screen did not load in time. Please try again.');
+  output = output.replace(/Mailbox creation action not found/gi, 'Mailbox creation action was not available in Microsoft 365.');
+  output = output.replace(/Email authentication setup failed:\s*DKIM setup failed:\s*/gi, '');
+  output = output.replace(/DKIM setup failed:\s*/gi, '');
+  output = output.replace(/\|Microsoft\.Exchange\.Management\.Tasks\.ValidationException\|/gi, '');
+  output = output.replace(/CNAME record does not exist for this config\.[\s\S]*?Return and retry this step later\./gi, 'DKIM signing is not ready in Microsoft yet. Inboxes are ready to download, and DKIM can be enabled later in Microsoft Defender.');
+  output = output.replace(/"DiagnosticContext":"[^"]*"/gi, '');
+  output = output.replace(/"Time":"[^"]*"/gi, '');
+  output = output.replace(/"ExceptionType":"[^"]*"/gi, '');
+  output = output.replace(/\{?\s*"Message":"([^"]+)".*$/gi, '$1');
+  output = output.replace(/\s+/g, ' ').trim();
+
+  return output;
+}
+
 function maskNamesInText(text) {
   if (!text) return text;
   let output = String(text);
@@ -115,15 +200,22 @@ function maskNamesInText(text) {
 }
 
 function maskSensitiveText(text) {
-  return maskEmailsInText(maskNamesInText(text));
+  return sanitizeImplementationText(maskEmailsInText(maskNamesInText(text)));
 }
 
-function maybeMaskOrder(order, plan) {
-  if (plan === 'paid' || !order) return order;
-  const allowance = getDownloadAllowance(plan);
+function maybeMaskOrder(order, accessState) {
+  if (!order) return order;
+  const allowance = accessState?.downloadAllowance ?? 0;
+  if (allowance === Number.POSITIVE_INFINITY) {
+    return {
+      ...order,
+      error_message: sanitizeImplementationText(order.error_message)
+    };
+  }
   const created = Array.isArray(order.created_mailboxes) ? order.created_mailboxes : [];
   return {
     ...order,
+    error_message: maskSensitiveText(order.error_message),
     created_mailboxes: created.map((m, idx) => {
       if (allowance > idx) {
         return m;
@@ -131,7 +223,8 @@ function maybeMaskOrder(order, plan) {
       return {
         ...m,
         name: m?.name ? maskName(m.name) : m?.name,
-        email: m?.email ? maskEmail(m.email) : m?.email
+        email: '',
+        password: ''
       };
     })
   };
@@ -140,11 +233,11 @@ function maybeMaskOrder(order, plan) {
 router.get('/', (req, res) => {
   try {
     const orders = getOrders(req.session.user.id);
-    const plan = req.session.user.plan || 'free';
+    const accessState = req.accessState || getUserAccessState(req.session.user);
     res.json(orders.map(order => maybeMaskOrder({
       ...order,
       created_mailboxes: JSON.parse(order.created_mailboxes || '[]')
-    }, plan)));
+    }, accessState)));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -152,7 +245,7 @@ router.get('/', (req, res) => {
 
 router.post('/', (req, res) => {
   try {
-    const { tenant_id, total_mailboxes, mailbox_password, order_name } = req.body;
+    const { tenant_id, total_mailboxes, mailbox_password, order_name, mailbox_names } = req.body;
     if (!tenant_id) return res.status(400).json({ error: 'Tenant ID is required' });
     if (!isValidMailboxPassword(mailbox_password)) {
       return res.status(400).json({
@@ -163,18 +256,58 @@ router.post('/', (req, res) => {
     const tenant = getTenantByIdForUser(tenant_id, req.session.user.id);
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
-    const plan = req.session.user.plan || 'free';
-    if (isFreePlan(plan)) {
+    const sameTenantOrders = getOrdersForSameTenantIdentity(req.session.user.id, tenant);
+    if (sameTenantOrders.length > 0) {
+      return res.status(409).json({
+        code: 'TENANT_ALREADY_USED',
+        error: buildTenantConflictMessage(sameTenantOrders[0], tenant)
+      });
+    }
+
+    const accessState = req.accessState || getUserAccessState(req.session.user);
+    if (!accessState.canAccessApp) {
+      return res.status(403).json({
+        code: 'BILLING_REQUIRED',
+        error: accessState.needsIntroOffer
+          ? 'Start the introductory checkout before creating an order.'
+          : 'No active trial or subscription found. Upgrade to continue.'
+      });
+    }
+
+    if (!accessState.canCreateMoreThanOneCompletedOrder) {
       const existing = getOrders(req.session.user.id);
-      const hasCompleted = existing.some(o => o.status === 'completed');
+      const hasCompleted = accessState.completedOrderQuotaReached || existing.some(o => o.status === 'completed');
       if (hasCompleted) {
-        return res.status(403).json({ error: 'Free plan allows only one completed order.' });
+        return res.status(403).json({ error: 'This account has already used its included completed order. Upgrade to continue.' });
       }
     }
 
     const safeName = typeof order_name === 'string' && order_name.trim() ? order_name.trim() : null;
-    const mailboxTotal = isFreePlan(plan) ? 100 : (total_mailboxes || 100);
-    const orderId = createOrder(tenant_id, mailboxTotal, mailbox_password, safeName, req.session.user.id);
+    const mailboxTotal = total_mailboxes || 100;
+    const parsedNames = parseMailboxNames(mailbox_names);
+
+    if (parsedNames && !accessState.canUseCustomNames) {
+      return res.status(403).json({ error: 'Custom mailbox names are available only on Standard and Advanced plans.' });
+    }
+
+    if (parsedNames) {
+      if (parsedNames.length !== mailboxTotal) {
+        return res.status(400).json({ error: `Please provide exactly ${mailboxTotal} full names (one per line).` });
+      }
+      const invalid = parsedNames.find(name => !isValidFullName(name));
+      if (invalid) {
+        return res.status(400).json({ error: 'Each line must include a first and last name.' });
+      }
+    }
+
+    const orderId = createOrder(
+      tenant_id,
+      mailboxTotal,
+      mailbox_password,
+      safeName,
+      req.session.user.id,
+      parsedNames
+    );
     const order = getOrderById(orderId);
 
     res.status(201).json({
@@ -190,9 +323,55 @@ router.post('/:id/start', (req, res) => {
   try {
     const order = getOrderByIdForUser(parseInt(req.params.id, 10), req.session.user.id);
     if (!order) return res.status(404).json({ error: 'Order not found' });
+    const earlierSameTenantOrder = getOrdersForSameTenantIdentity(req.session.user.id, order)
+      .find(existing => existing.id !== order.id && existing.id < order.id);
+    if (earlierSameTenantOrder) {
+      return res.status(409).json({
+        code: 'TENANT_ALREADY_USED',
+        error: buildTenantConflictMessage(earlierSameTenantOrder, order)
+      });
+    }
+    const accessState = req.accessState || getUserAccessState(req.session.user);
+
+    if (!accessState.canAccessApp) {
+      return res.status(403).json({
+        code: 'BILLING_REQUIRED',
+        error: accessState.needsIntroOffer
+          ? 'Start the introductory checkout before processing an order.'
+          : 'No active trial or subscription found. Upgrade to continue.'
+      });
+    }
+
+    if (
+      !accessState.canCreateMoreThanOneCompletedOrder
+      && accessState.completedOrderQuotaReached
+      && order.status !== 'completed'
+    ) {
+      return res.status(403).json({
+        code: 'ORDER_LIMIT_REACHED',
+        error: 'This account has already used its included completed order. Upgrade to continue.'
+      });
+    }
 
     if (order.status === 'processing') {
-      return res.status(400).json({ error: 'Order is already processing' });
+      if (hasActiveJob(order.id)) {
+        return res.status(400).json({ error: 'Order is already processing' });
+      }
+
+      processOrder(order.id);
+      return res.json({ success: true, message: 'Processing resumed' });
+    }
+
+    const processingOrders = getOrders(req.session.user.id)
+      .filter(existing => existing.id !== order.id && existing.status === 'processing');
+    if (
+      accessState.maxConcurrentOrders !== Number.POSITIVE_INFINITY
+      && processingOrders.length >= accessState.maxConcurrentOrders
+    ) {
+      return res.status(409).json({
+        code: 'ORDER_CONCURRENCY_LIMIT',
+        error: 'Only one order can be processed at a time on the current plan.'
+      });
     }
 
     updateOrderStatus(order.id, 'processing');
@@ -229,6 +408,9 @@ router.delete('/:id', (req, res) => {
     if (order.status === 'processing') {
       return res.status(400).json({ error: 'Cannot delete order that is being processed' });
     }
+    if (hasActiveJob(order.id)) {
+      return res.status(400).json({ error: 'Cannot delete order while its background job is still active. Please wait a few seconds after cancelling.' });
+    }
 
     deleteOrder(order.id);
     res.json({ success: true });
@@ -242,17 +424,17 @@ router.get('/:id/logs', (req, res) => {
     const orderId = parseInt(req.params.id, 10);
     const order = getOrderByIdForUser(orderId, req.session.user.id);
     if (!order) return res.status(404).json({ error: 'Order not found' });
-    const plan = req.session.user.plan || 'free';
+    const accessState = req.accessState || getUserAccessState(req.session.user);
     const inMemory = getOrderLogs(orderId);
     if (inMemory) {
-      const mapped = plan === 'paid'
+      const mapped = accessState.canDownloadAll
         ? inMemory
         : inMemory.map(entry => ({ ...entry, message: maskSensitiveText(entry.message) }));
       return res.json(mapped);
     }
 
     const stored = getStoredLogs(orderId);
-    const mapped = plan === 'paid'
+    const mapped = accessState.canDownloadAll
       ? stored
       : stored.map(entry => ({ ...entry, message: maskSensitiveText(entry.message) }));
     res.json(mapped);

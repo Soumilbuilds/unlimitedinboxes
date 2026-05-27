@@ -6,8 +6,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import authRoutes from './routes/auth.js';
+import billingRoutes from './routes/billing.js';
 import tenantRoutes from './routes/tenants.js';
 import orderRoutes from './routes/orders.js';
+import redirectRoutes from './routes/redirects.js';
+import { resumeInterruptedOrders } from './services/orderProcessor.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +18,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const isProd = process.env.NODE_ENV === 'production';
+const orderResumeIntervalMs = Math.max(Number(process.env.ORDER_RESUME_INTERVAL_MS || 30000) || 30000, 5000);
 const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000')
   .split(',')
   .map(origin => origin.trim())
@@ -25,7 +29,11 @@ app.use(cors({
   origin: corsOrigins,
   credentials: true
 }));
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, buffer) => {
+    req.rawBody = buffer.toString('utf8');
+  }
+}));
 app.use(session({
   secret: process.env.SESSION_SECRET || 'unlimited-mailboxes-secret',
   resave: false,
@@ -40,23 +48,50 @@ app.use(session({
 }));
 
 app.use('/api/auth', authRoutes);
+app.use('/api/billing', billingRoutes);
 app.use('/api/tenants', tenantRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/redirects', redirectRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../client/dist')));
+  app.use(express.static(path.join(__dirname, '../client/dist'), {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        return;
+      }
+
+      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    }
+  }));
   app.get('*', (req, res) => {
     if (req.path.startsWith('/api')) {
       return res.status(404).json({ error: 'API route not found' });
     }
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.sendFile(path.join(__dirname, '../client/dist', 'index.html'));
   });
 }
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on http://localhost:${PORT}`);
+  resumeInterruptedOrders();
+
+  const resumer = setInterval(() => {
+    resumeInterruptedOrders();
+  }, orderResumeIntervalMs);
+
+  if (typeof resumer.unref === 'function') {
+    resumer.unref();
+  }
 });
