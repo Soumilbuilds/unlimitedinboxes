@@ -56,9 +56,17 @@ function planForProduct(product, status) {
 }
 
 function centsForTenantPurchase(tenantType, quantity) {
+  return centsForTenantUnit(tenantType) * quantity;
+}
+
+function centsForTenantUnit(tenantType) {
   const unit = PLAN_PRICES[tenantType];
   if (!unit) throw new Error(`Unknown tenant type: ${tenantType}`);
-  return Math.round(unit * 100) * quantity;
+  return Math.round(unit * 100);
+}
+
+function tenantProductName(tenantType) {
+  return tenantType === 'usTenant' ? 'US Tenant' : 'Asia Tenant';
 }
 
 function customerParam(user) {
@@ -118,7 +126,39 @@ export async function createStripeCheckoutSession(user, planKey, opts = {}) {
 
 export async function createTenantCheckoutSession(user, tenantType, quantity, opts = {}) {
   const priceId = STRIPE_PRICES[tenantType];
-  if (!priceId) throw new Error(`Unknown tenant type: ${tenantType}`);
+  const unitAmount = centsForTenantUnit(tenantType);
+  let lineItem = {
+    price_data: {
+      currency: 'usd',
+      product_data: { name: tenantProductName(tenantType) },
+      unit_amount: unitAmount,
+    },
+    quantity,
+  };
+
+  if (priceId) {
+    try {
+      const configuredPrice = await client().prices.retrieve(priceId);
+      if (configuredPrice.recurring) {
+        const productId = typeof configuredPrice.product === 'string'
+          ? configuredPrice.product
+          : configuredPrice.product?.id;
+        lineItem = {
+          price_data: compactObject({
+            currency: configuredPrice.currency || 'usd',
+            product: productId || undefined,
+            product_data: productId ? undefined : { name: tenantProductName(tenantType) },
+            unit_amount: unitAmount,
+          }),
+          quantity,
+        };
+      } else {
+        lineItem = { price: priceId, quantity };
+      }
+    } catch {
+      // Fall back to inline one-time price data if the configured price cannot be read.
+    }
+  }
 
   const successUrl = `${baseUrl(opts)}/tenants?tenant_purchase=success&session_id={CHECKOUT_SESSION_ID}`;
   const cancelUrl = opts.cancelUrl || `${baseUrl(opts)}/tenants`;
@@ -127,7 +167,7 @@ export async function createTenantCheckoutSession(user, tenantType, quantity, op
     mode: 'payment',
     ...customerParam(user),
     customer_creation: user.stripe_customer_id ? undefined : 'always',
-    line_items: [{ price: priceId, quantity }],
+    line_items: [lineItem],
     success_url: successUrl,
     cancel_url: cancelUrl,
     metadata: {

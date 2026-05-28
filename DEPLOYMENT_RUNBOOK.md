@@ -189,3 +189,4 @@ Do not reintroduce `@stripe/react-stripe-js`, `@stripe/stripe-js`, `CheckoutElem
 - Missing trial/subscription is a soft gate: let the user enter the app, but when they click New Order or try to process an order, show the trial/upgrade prompt and send them to hosted Checkout.
 - Overdue billing (`past_due`, `unpaid`, or `incomplete`) is a hard gate: redirect to `/billing?intent=retry` and show the open Stripe invoice or billing portal.
 - Completed trial order usage is tracked on the user record so deleting an old completed order does not reset the one-order trial limit.
+- Tenant purchases are one-time Stripe Checkout payments. If `STRIPE_PRICE_US_TENANT` or `STRIPE_PRICE_ASIA_TENANT` points at a recurring Stripe price, the server intentionally creates inline one-time price data instead of using that recurring price directly.
