@@ -169,11 +169,14 @@ fuser -k 3000/tcp
 
 Those bypass or fight systemd and can leave production running stale code.
 
-## Immediate Stripe Cleanup Before Next Ship
+## Stripe Checkout Flow
 
-Before the next production deploy, choose one Stripe integration and keep frontend/backend aligned:
+Billing uses Stripe-hosted Checkout, not embedded Elements.
 
-- Embedded Checkout page flow: backend creates Checkout Sessions for embedded checkout, frontend uses Stripe embedded checkout provider/component.
-- Custom Elements Checkout flow: backend creates Checkout Sessions for Elements checkout, frontend uses the Checkout Elements provider and calls `checkoutState.checkout.confirm()`.
+- Backend creates hosted Checkout Sessions with `success_url` and `cancel_url`.
+- User email is prefilled through the Checkout Session customer/customer email params.
+- Frontend posts to `/api/billing/checkout` and immediately redirects to Stripe's hosted `url`.
+- Stripe returns users to `/billing?billing=success&session_id=...&intent=...`.
+- The return page calls `/api/billing/return`, refreshes billing status, then sends the user to `/orders`.
 
-Do not mix both. With `useCheckoutElements()`, the hook returns a state wrapper. Only call `checkoutState.checkout.confirm()` after `checkoutState.type === 'success'`.
+Do not reintroduce `@stripe/react-stripe-js`, `@stripe/stripe-js`, `CheckoutElementsProvider`, `PaymentElement`, `ui_mode: elements`, or embedded checkout unless the whole product decision changes.

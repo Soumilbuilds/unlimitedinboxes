@@ -76,14 +76,15 @@ export async function createStripeCheckoutSession(user, planKey, opts = {}) {
   if (!priceId) throw new Error(`Unknown plan key: ${planKey}`);
 
   const isTrial = planKey === 'intro';
-  const returnUrl = `${baseUrl(opts)}/billing?billing=success&session_id={CHECKOUT_SESSION_ID}&intent=${planKey}`;
+  const successUrl = `${baseUrl(opts)}/billing?billing=success&session_id={CHECKOUT_SESSION_ID}&intent=${planKey}`;
+  const cancelUrl = opts.cancelUrl || `${baseUrl(opts)}/billing?intent=${planKey}`;
 
   const sessionParams = compactObject({
     mode: 'subscription',
-    ui_mode: 'elements',
     ...customerParam(user),
     line_items: [{ price: priceId, quantity: opts.quantity || 1 }],
-    return_url: returnUrl,
+    success_url: successUrl,
+    cancel_url: cancelUrl,
     metadata: {
       type: 'subscription',
       user_id: String(user.id),
@@ -100,6 +101,7 @@ export async function createStripeCheckoutSession(user, planKey, opts = {}) {
     }),
     billing_address_collection: 'auto',
     phone_number_collection: { enabled: false },
+    payment_method_collection: 'always',
     allow_promotion_codes: false,
   });
 
