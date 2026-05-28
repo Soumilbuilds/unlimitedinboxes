@@ -112,11 +112,12 @@ What the script does:
 2. Fetches `origin/main` into `/opt/unlimited-inboxes/repo`.
 3. Copies the GitHub version into `/opt/unlimited-inboxes/releases/<timestamp>`.
 4. Links shared `.env` and shared `app.db` into the release.
-5. Installs dependencies and builds the client inside the release.
-6. Moves `/opt/unlimited-inboxes/current` to the new release.
-7. Restarts `unlimited-inboxes.service`.
-8. Health-checks `http://127.0.0.1:3000/api/health`.
-9. Rolls back the symlink and restarts the service if the health check fails.
+5. Installs server dependencies inside the release.
+6. Builds the client locally by default and rsyncs `client/dist` into the release to avoid VPS OOM during Vite builds.
+7. Moves `/opt/unlimited-inboxes/current` to the new release.
+8. Restarts `unlimited-inboxes.service`.
+9. Health-checks `http://127.0.0.1:3000/api/health`.
+10. Rolls back the symlink and restarts the service if the health check fails.
 
 ## Manual VPS Checks
 

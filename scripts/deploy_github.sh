@@ -18,6 +18,7 @@ DEPLOY_PATH="${DEPLOY_PATH:-/opt/unlimited-inboxes}"
 SYNC_ENV="${SYNC_ENV:-1}"
 AUTO_COMMIT="${AUTO_COMMIT:-0}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
+BUILD_CLIENT_LOCAL="${BUILD_CLIENT_LOCAL:-1}"
 
 REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
 REPO_DIR="${DEPLOY_PATH}/repo"
@@ -60,6 +61,11 @@ elif [ "$ALLOW_DIRTY" = "1" ] && [ -n "$(git -C "$ROOT_DIR" status --porcelain)"
   git -C "$ROOT_DIR" status --short
 fi
 
+if [ "$BUILD_CLIENT_LOCAL" = "1" ]; then
+  echo "Building client locally..."
+  (cd "$ROOT_DIR/client" && (npm ci || npm install) && npm run build)
+fi
+
 echo "Pushing to GitHub..."
 git -C "$ROOT_DIR" push origin "$BRANCH"
 
@@ -88,7 +94,12 @@ $SSH_CMD "$REMOTE" "ln -sfn \"$SHARED_DIR/.env\" \"$RELEASE_DIR/server/.env\""
 $SSH_CMD "$REMOTE" "touch \"$SHARED_DIR/db/app.db\"; ln -sfn \"$SHARED_DIR/db/app.db\" \"$RELEASE_DIR/server/db/app.db\""
 
 $SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/server\" && (npm ci --omit=dev || npm install --omit=dev)"
-$SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/client\" && (npm ci || npm install) && npm run build"
+if [ "$BUILD_CLIENT_LOCAL" = "1" ]; then
+  $SSH_CMD "$REMOTE" "mkdir -p \"$RELEASE_DIR/client/dist\""
+  rsync -az --delete -e "$RSYNC_RSH" "$ROOT_DIR/client/dist/" "$REMOTE:$RELEASE_DIR/client/dist/"
+else
+  $SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/client\" && (npm ci || npm install) && npm run build"
+fi
 
 PREVIOUS_RELEASE="$($SSH_CMD "$REMOTE" "readlink -f \"$DEPLOY_PATH/current\" 2>/dev/null || true")"
 

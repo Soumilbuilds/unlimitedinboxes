@@ -73,6 +73,8 @@ rsync -az --delete -e "$RSYNC_RSH" \
   --exclude server/node_modules \
   --exclude server/db/app.db \
   --exclude server/.env \
+  --exclude landing \
+  --exclude .next \
   --exclude .DS_Store \
   "$ROOT_DIR/" "$REMOTE:$RELEASE_DIR/"
 
