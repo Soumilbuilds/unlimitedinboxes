@@ -1,7 +1,23 @@
 import express from 'express';
-import { createTenant, getTenants, getTenantByIdForUser, updateTenantCloudflare, updateTenantStatus, updateTenantDetails, deleteTenant } from '../db/database.js';
+import {
+  createTenant,
+  createTenantPurchaseRecord,
+  getTenants,
+  getTenantByIdForUser,
+  getUserByEmail,
+  updateTenantCloudflare,
+  updateTenantStatus,
+  updateTenantDetails,
+  deleteTenant
+} from '../db/database.js';
 import { createZone } from '../services/cloudflare.js';
 import { ensureSpfRecord, ensureDmarcRecord, ensureDkimRecords } from '../services/emailAuth.js';
+import {
+  chargeSavedPaymentMethodForTenantPurchase,
+  createTenantCheckoutSession,
+  getTenantPurchaseAmountCents,
+  isStripeConfigured
+} from '../services/stripe.js';
 import {
   loginToSecurityCenter,
   ensureDkimSelectors,
@@ -22,6 +38,108 @@ const requireAuth = (req, res, next) => {
 };
 
 router.use(requireAuth);
+
+function getRequestBaseUrl(req) {
+  const origin = req.get('origin');
+  const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+
+  if (
+    origin
+    && (
+      allowedOrigins.includes(origin)
+      || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)
+    )
+  ) {
+    return origin;
+  }
+
+  return process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com';
+}
+
+function normalizeTenantPurchase(body = {}) {
+  const quantity = Number.parseInt(body.quantity, 10);
+  const licenseType = String(body.licenseType || '').trim().toLowerCase();
+  const tenantType = licenseType === 'premium'
+    ? 'usTenant'
+    : (licenseType === 'normal' ? 'asiaTenant' : null);
+
+  return {
+    quantity,
+    licenseType,
+    tenantType,
+  };
+}
+
+router.post('/purchase-checkout', async (req, res) => {
+  if (!isStripeConfigured()) {
+    return res.status(503).json({ error: 'Stripe is not configured.' });
+  }
+
+  const user = getUserByEmail(req.session.user.email);
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+  const { quantity, tenantType } = normalizeTenantPurchase(req.body);
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 1000 || !tenantType) {
+    return res.status(400).json({ error: 'Choose a valid tenant type and quantity.' });
+  }
+
+  const amountCents = getTenantPurchaseAmountCents(tenantType, quantity);
+
+  try {
+    const savedCardCharge = await chargeSavedPaymentMethodForTenantPurchase(user, tenantType, quantity);
+    if (savedCardCharge.paid) {
+      createTenantPurchaseRecord({
+        user_id: user.id,
+        tenant_type: tenantType,
+        quantity,
+        amount_cents: amountCents,
+        status: 'paid',
+        stripe_payment_intent_id: savedCardCharge.paymentIntent.id,
+        stripe_customer_id: user.stripe_customer_id,
+      });
+
+      return res.json({
+        success: true,
+        paid: true,
+        provider: 'stripe',
+        paymentIntentId: savedCardCharge.paymentIntent.id,
+      });
+    }
+
+    const checkout = await createTenantCheckoutSession(user, tenantType, quantity, {
+      appBaseUrl: getRequestBaseUrl(req),
+      metadata: {
+        fallback_reason: savedCardCharge.reason || 'checkout_required',
+      },
+    });
+
+    createTenantPurchaseRecord({
+      user_id: user.id,
+      tenant_type: tenantType,
+      quantity,
+      amount_cents: amountCents,
+      status: 'pending',
+      stripe_checkout_session_id: checkout.sessionId,
+      stripe_customer_id: checkout.customerId || user.stripe_customer_id || null,
+      error_message: savedCardCharge.error?.message || null,
+    });
+
+    return res.json({
+      success: true,
+      paid: false,
+      provider: 'stripe',
+      sessionId: checkout.sessionId,
+      purchaseUrl: checkout.url,
+      checkoutUrl: checkout.url,
+    });
+  } catch (error) {
+    console.error('[tenants] Stripe tenant purchase failed:', error);
+    return res.status(500).json({ error: error.message || 'Failed to start tenant purchase.' });
+  }
+});
 
 router.get('/', (req, res) => {
   try {

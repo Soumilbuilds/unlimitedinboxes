@@ -15,6 +15,8 @@ DEPLOY_USER="${DEPLOY_USER:-root}"
 DEPLOY_PATH="${DEPLOY_PATH:-/opt/unlimited-inboxes}"
 SYNC_ENV="${SYNC_ENV:-1}"
 BUILD_CLIENT_LOCAL="${BUILD_CLIENT_LOCAL:-1}"
+KEEP_RELEASES="${KEEP_RELEASES:-10}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:3000/api/health}"
 
 REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
 RELEASES_DIR="${DEPLOY_PATH}/releases"
@@ -44,6 +46,7 @@ fi
 echo "Deploying to ${REMOTE}:${RELEASE_DIR}"
 
 $SSH_CMD "$REMOTE" "mkdir -p \"$RELEASES_DIR\" \"$SHARED_DIR/db\" \"$SHARED_DIR/logs\" \"$SHARED_DIR/pids\""
+$SSH_CMD "$REMOTE" "mkdir -p \"$SHARED_DIR/db/backups\"; if [ -s \"$SHARED_DIR/db/app.db\" ]; then cp \"$SHARED_DIR/db/app.db\" \"$SHARED_DIR/db/backups/app-$TIMESTAMP.db\"; fi"
 
 if [ "$BUILD_CLIENT_LOCAL" = "1" ]; then
   echo "Building client locally..."
@@ -80,9 +83,24 @@ $SSH_CMD "$REMOTE" "touch \"$SHARED_DIR/db/app.db\"; ln -sfn \"$SHARED_DIR/db/ap
 $SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/server\" && (npm ci --omit=dev || npm install --omit=dev)"
 $SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/client\" && (npm ci --omit=dev || npm install --omit=dev) || true"
 
+PREVIOUS_RELEASE="$($SSH_CMD "$REMOTE" "readlink -f \"$DEPLOY_PATH/current\" 2>/dev/null || true")"
+
 $SSH_CMD "$REMOTE" "ln -sfn \"$RELEASE_DIR\" \"$DEPLOY_PATH/current\""
 
-$SSH_CMD "$REMOTE" "if command -v fuser >/dev/null 2>&1; then fuser -k 3000/tcp || true; else pkill -f \"node .*index.js\" >/dev/null 2>&1 || true; fi"
-$SSH_CMD "$REMOTE" "cd \"$DEPLOY_PATH/current/server\" && NODE_ENV=production nohup node index.js > \"$SHARED_DIR/logs/server.log\" 2>&1 & echo \$! > \"$SHARED_DIR/pids/server.pid\""
+echo "Restarting unlimited-inboxes.service..."
+$SSH_CMD "$REMOTE" "systemctl daemon-reload && systemctl restart unlimited-inboxes"
+
+echo "Checking health..."
+if ! $SSH_CMD "$REMOTE" "for i in \$(seq 1 30); do curl -fsS \"$HEALTH_URL\" >/dev/null && exit 0; sleep 1; done; exit 1"; then
+  echo "Health check failed."
+  if [ -n "$PREVIOUS_RELEASE" ]; then
+    echo "Rolling back to $PREVIOUS_RELEASE"
+    $SSH_CMD "$REMOTE" "ln -sfn \"$PREVIOUS_RELEASE\" \"$DEPLOY_PATH/current\" && systemctl restart unlimited-inboxes"
+  fi
+  $SSH_CMD "$REMOTE" "journalctl -u unlimited-inboxes -n 80 --no-pager" || true
+  exit 1
+fi
+
+$SSH_CMD "$REMOTE" "find \"$RELEASES_DIR\" -mindepth 1 -maxdepth 1 -type d | sort | head -n -$KEEP_RELEASES | xargs -r rm -rf"
 
 echo "Deploy complete."

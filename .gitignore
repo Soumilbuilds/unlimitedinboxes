@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .env.*
+.deploy.env
 node_modules/
 dist/
 build/

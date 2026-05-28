@@ -17,8 +17,10 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
 const isProd = process.env.NODE_ENV === 'production';
 const orderResumeIntervalMs = Math.max(Number(process.env.ORDER_RESUME_INTERVAL_MS || 30000) || 30000, 5000);
+const orderResumeEnabled = process.env.ORDER_RESUME_ENABLED !== 'false';
 const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000')
   .split(',')
   .map(origin => origin.trim())
@@ -83,8 +85,14 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
+
+  if (!orderResumeEnabled) {
+    console.log('Order resume worker disabled.');
+    return;
+  }
+
   resumeInterruptedOrders();
 
   const resumer = setInterval(() => {

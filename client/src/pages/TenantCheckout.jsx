@@ -29,9 +29,14 @@ export default function TenantCheckout() {
     api.post('/tenants/purchase-checkout', { quantity, licenseType })
       .then((response) => {
         if (cancelled) return;
+        if (response.data?.paid) {
+          window.location.replace('/tenants?tenant_purchase=success');
+          return;
+        }
         const url = response.data?.purchaseUrl || response.data?.checkoutUrl;
         if (url) {
           setCheckoutUrl(url);
+          window.location.assign(url);
         } else {
           setError('Failed to get checkout URL.');
         }
@@ -78,12 +83,10 @@ export default function TenantCheckout() {
           <div style={{ textAlign: 'center', padding: '40px 20px' }}>
             <div className="spinner" style={{ margin: '0 auto 20px' }} />
             <p style={{ color: '#fff', marginBottom: '20px', fontSize: '16px' }}>
-              Click below to purchase your tenant license securely via Stripe.
+              Opening secure Stripe checkout...
             </p>
             <a
               href={checkoutUrl}
-              target="_blank"
-              rel="noopener noreferrer"
               className="btn btn-primary"
               style={{
                 display: 'inline-block',
@@ -93,7 +96,7 @@ export default function TenantCheckout() {
                 borderRadius: '8px',
               }}
             >
-              Continue to Secure Checkout →
+              Continue to Secure Checkout
             </a>
           </div>
         </div>

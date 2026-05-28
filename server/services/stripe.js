@@ -1,18 +1,17 @@
 import Stripe from 'stripe';
 
-const STRIPE_SECRET = process.env.STRIPE_SECRET_KEY;
+const STRIPE_SECRET = process.env.STRIPE_SECRET_KEY || '';
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
 const APP_BASE_URL = process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com';
 
-const stripe = new Stripe(STRIPE_SECRET);
+const stripe = STRIPE_SECRET ? new Stripe(STRIPE_SECRET) : null;
 
-// Stripe Price IDs
 export const STRIPE_PRICES = {
-  intro: 'price_1TbHWaAxRfptSO4wXcE515Wk', // same as standard, but with 3-day trial
-  standard: 'price_1TbHWaAxRfptSO4wXcE515Wk',
-  advanced: 'price_1TbHWvAxRfptSO4wlWaP27vd',
-  usTenant: 'price_1TbHYGAxRfptSO4wUPFKNgvU',
-  asiaTenant: 'price_1TbHXwAxRfptSO4wcYK8gYnI',
+  intro: process.env.STRIPE_PRICE_STANDARD || 'price_1TbHWaAxRfptSO4wXcE515Wk',
+  standard: process.env.STRIPE_PRICE_STANDARD || 'price_1TbHWaAxRfptSO4wXcE515Wk',
+  advanced: process.env.STRIPE_PRICE_ADVANCED || 'price_1TbHWvAxRfptSO4wlWaP27vd',
+  usTenant: process.env.STRIPE_PRICE_US_TENANT || 'price_1TbHYGAxRfptSO4wUPFKNgvU',
+  asiaTenant: process.env.STRIPE_PRICE_ASIA_TENANT || 'price_1TbHXwAxRfptSO4wcYK8gYnI',
 };
 
 export const PLAN_PRICES = {
@@ -24,56 +23,87 @@ export const PLAN_PRICES = {
 };
 
 export const PLAN_TRIAL_DAYS = {
-  intro: 3,
+  intro: Number(process.env.STRIPE_INTRO_TRIAL_DAYS || 3),
 };
 
 export function isStripeConfigured() {
-  return !!(STRIPE_SECRET && STRIPE_SECRET.startsWith('sk_'));
+  return Boolean(STRIPE_SECRET && STRIPE_SECRET.startsWith('sk_') && stripe);
 }
 
-export const STRIPE_PUBLISHABLE_KEY = process.env.STRIPE_PUBLISHABLE_KEY || 'pk_live_51TXFGYAxRfptSO4wkESkYbJULJfUNAc6B2Y7p1Io5gFxMFy1i2qPuhXbs19YeHU5duPTEflZzn2P5m9aPkNZpSzX00jQnvph3v';
+function client() {
+  if (!isStripeConfigured()) {
+    throw new Error('Stripe is not configured.');
+  }
+  return stripe;
+}
 
-// --- Checkout Sessions ---
+function baseUrl(opts = {}) {
+  return String(opts.appBaseUrl || APP_BASE_URL).replace(/\/+$/, '');
+}
 
-/**
- * Create a Stripe Checkout Session for plan purchase.
- * @param {Object} user - { id, email, name }
- * @param {string} planKey - 'intro' | 'standard' | 'advanced'
- * @param {Object} opts - { quantity, metadata }
- */
+function compactObject(value) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entryValue]) => entryValue !== undefined)
+  );
+}
+
+function planForProduct(product, status) {
+  if (status === 'trialing') return 'intro';
+  if (product === 'advanced') return 'advanced';
+  if (product === 'standard' || product === 'intro') return 'standard';
+  return 'free';
+}
+
+function centsForTenantPurchase(tenantType, quantity) {
+  const unit = PLAN_PRICES[tenantType];
+  if (!unit) throw new Error(`Unknown tenant type: ${tenantType}`);
+  return Math.round(unit * 100) * quantity;
+}
+
+function customerParam(user) {
+  if (user?.stripe_customer_id) {
+    return { customer: user.stripe_customer_id };
+  }
+  return { customer_email: user.email };
+}
+
+export function getTenantPurchaseAmountCents(tenantType, quantity) {
+  return centsForTenantPurchase(tenantType, quantity);
+}
+
 export async function createStripeCheckoutSession(user, planKey, opts = {}) {
-  const { quantity = 1, metadata = {} } = opts;
   const priceId = STRIPE_PRICES[planKey];
   if (!priceId) throw new Error(`Unknown plan key: ${planKey}`);
 
   const isTrial = planKey === 'intro';
+  const returnUrl = `${baseUrl(opts)}/billing?billing=success&session_id={CHECKOUT_SESSION_ID}&intent=${planKey}`;
 
-  const sessionParams = {
+  const sessionParams = compactObject({
     mode: 'subscription',
-    ui_mode: 'embedded_page',
-    customer_email: user.email,
-    line_items: [{ price: priceId, quantity }],
-    return_url: `${APP_BASE_URL}/orders?billing=success&session_id={CHECKOUT_SESSION_ID}`,
+    ui_mode: 'elements',
+    ...customerParam(user),
+    line_items: [{ price: priceId, quantity: opts.quantity || 1 }],
+    return_url: returnUrl,
     metadata: {
+      type: 'subscription',
       user_id: String(user.id),
       user_email: user.email,
       plan_key: planKey,
-      ...metadata,
+      ...(opts.metadata || {}),
     },
-    allow_promotion_codes: false,
+    subscription_data: compactObject({
+      trial_period_days: isTrial ? PLAN_TRIAL_DAYS.intro : undefined,
+      metadata: {
+        user_id: String(user.id),
+        plan_key: planKey,
+      },
+    }),
     billing_address_collection: 'auto',
     phone_number_collection: { enabled: false },
-    submit_type: isTrial ? undefined : 'pay',
-  };
+    allow_promotion_codes: false,
+  });
 
-  if (isTrial) {
-    sessionParams.subscription_data = {
-      trial_period_days: PLAN_TRIAL_DAYS.intro,
-      metadata: { user_id: String(user.id), plan_key: planKey },
-    };
-  }
-
-  const session = await stripe.checkout.sessions.create(sessionParams);
+  const session = await client().checkout.sessions.create(sessionParams);
 
   return {
     sessionId: session.id,
@@ -83,33 +113,41 @@ export async function createStripeCheckoutSession(user, planKey, opts = {}) {
   };
 }
 
-/**
- * Create a Stripe Checkout Session for a one-time tenant purchase (no subscription).
- */
 export async function createTenantCheckoutSession(user, tenantType, quantity, opts = {}) {
   const priceId = STRIPE_PRICES[tenantType];
   if (!priceId) throw new Error(`Unknown tenant type: ${tenantType}`);
 
-  const session = await stripe.checkout.sessions.create({
+  const successUrl = `${baseUrl(opts)}/tenants?tenant_purchase=success&session_id={CHECKOUT_SESSION_ID}`;
+  const cancelUrl = opts.cancelUrl || `${baseUrl(opts)}/tenants`;
+
+  const session = await client().checkout.sessions.create(compactObject({
     mode: 'payment',
-    customer_email: user.email,
-    line_items: [{
-      price: priceId,
-      quantity,
-    }],
-    success_url: `${APP_BASE_URL}/tenants?billing=success&session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: opts.cancelUrl || `${APP_BASE_URL}/tenants`,
+    ...customerParam(user),
+    customer_creation: user.stripe_customer_id ? undefined : 'always',
+    line_items: [{ price: priceId, quantity }],
+    success_url: successUrl,
+    cancel_url: cancelUrl,
     metadata: {
+      type: 'tenant_purchase',
       user_id: String(user.id),
       user_email: user.email,
       tenant_type: tenantType,
       quantity: String(quantity),
+      ...(opts.metadata || {}),
+    },
+    payment_intent_data: {
+      setup_future_usage: 'off_session',
+      metadata: {
+        type: 'tenant_purchase',
+        user_id: String(user.id),
+        tenant_type: tenantType,
+        quantity: String(quantity),
+      },
     },
     billing_address_collection: 'auto',
-    // tax_id_collection removed — Stripe rejects false, only accepts true
     phone_number_collection: { enabled: false },
     allow_promotion_codes: false,
-  });
+  }));
 
   return {
     sessionId: session.id,
@@ -118,30 +156,87 @@ export async function createTenantCheckoutSession(user, tenantType, quantity, op
   };
 }
 
-// --- Session & Payment Verification ---
+async function getDefaultPaymentMethodId(user) {
+  if (!user?.stripe_customer_id) return null;
 
-/**
- * Retrieve a checkout session and verify it's complete.
- */
-export async function retrieveCheckoutSession(sessionId) {
-  const session = await stripe.checkout.sessions.retrieve(sessionId, {
-    expand: ['subscription', 'customer'],
+  if (user.stripe_subscription_id) {
+    try {
+      const sub = await client().subscriptions.retrieve(user.stripe_subscription_id, {
+        expand: ['default_payment_method'],
+      });
+      const subPaymentMethod = sub.default_payment_method;
+      if (typeof subPaymentMethod === 'string') return subPaymentMethod;
+      if (subPaymentMethod?.id) return subPaymentMethod.id;
+    } catch {
+      // Fall back to customer invoice settings.
+    }
+  }
+
+  const customer = await client().customers.retrieve(user.stripe_customer_id, {
+    expand: ['invoice_settings.default_payment_method'],
   });
-  return session;
+
+  const defaultMethod = customer?.invoice_settings?.default_payment_method;
+  if (typeof defaultMethod === 'string') return defaultMethod;
+  return defaultMethod?.id || null;
 }
 
-/**
- * Check if a checkout session is paid/complete.
- */
+export async function chargeSavedPaymentMethodForTenantPurchase(user, tenantType, quantity) {
+  if (!user?.stripe_customer_id) {
+    return { paid: false, reason: 'no_customer' };
+  }
+
+  const paymentMethodId = await getDefaultPaymentMethodId(user);
+  if (!paymentMethodId) {
+    return { paid: false, reason: 'no_default_payment_method' };
+  }
+
+  try {
+    const paymentIntent = await client().paymentIntents.create({
+      amount: centsForTenantPurchase(tenantType, quantity),
+      currency: 'usd',
+      customer: user.stripe_customer_id,
+      payment_method: paymentMethodId,
+      off_session: true,
+      confirm: true,
+      description: `${quantity} ${tenantType === 'usTenant' ? 'US IP' : 'Asia IP'} tenant${quantity === 1 ? '' : 's'}`,
+      metadata: {
+        type: 'tenant_purchase',
+        user_id: String(user.id),
+        tenant_type: tenantType,
+        quantity: String(quantity),
+      },
+    });
+
+    return {
+      paid: paymentIntent.status === 'succeeded',
+      paymentIntent,
+      reason: paymentIntent.status,
+    };
+  } catch (error) {
+    return {
+      paid: false,
+      reason: error.code || error.type || 'payment_failed',
+      error,
+    };
+  }
+}
+
+export async function retrieveCheckoutSession(sessionId) {
+  return client().checkout.sessions.retrieve(sessionId, {
+    expand: ['subscription', 'customer', 'payment_intent'],
+  });
+}
+
 export function isCheckoutSessionComplete(session) {
-  return session.payment_status === 'paid' || session.status === 'complete';
+  return session.payment_status === 'paid'
+    || session.payment_status === 'no_payment_required'
+    || session.status === 'complete';
 }
 
-/**
- * Get pending invoice for a customer (for past_due recovery).
- */
 export async function getPendingInvoice(customerId) {
-  const invoices = await stripe.invoices.list({
+  if (!customerId) return null;
+  const invoices = await client().invoices.list({
     customer: customerId,
     status: 'open',
     limit: 1,
@@ -149,116 +244,71 @@ export async function getPendingInvoice(customerId) {
   return invoices.data[0] || null;
 }
 
-// --- Subscriptions ---
-
-/**
- * Retrieve subscription details.
- */
 export async function getSubscription(subscriptionId) {
-  return stripe.subscriptions.retrieve(subscriptionId, {
-    expand: ['items.data.price', 'customer'],
+  return client().subscriptions.retrieve(subscriptionId, {
+    expand: ['items.data.price', 'customer', 'latest_invoice', 'default_payment_method'],
   });
 }
 
-/**
- * Create a customer portal session for self-service billing management.
- */
-export async function createCustomerPortalSession(user, stripeCustomerId) {
+export async function createCustomerPortalSession(_user, stripeCustomerId, opts = {}) {
   if (!stripeCustomerId) {
-    throw new Error('No Stripe customer ID for this user');
+    throw new Error('No Stripe customer ID for this user.');
   }
-  const session = await stripe.billingPortal.sessions.create({
+
+  return client().billingPortal.sessions.create({
     customer: stripeCustomerId,
-    return_url: `${APP_BASE_URL}/orders`,
+    return_url: `${baseUrl(opts)}/orders`,
   });
-  return session;
 }
 
-/**
- * Cancel a subscription (marks cancel_at_period_end = true).
- */
 export async function cancelSubscription(subscriptionId) {
-  const sub = await stripe.subscriptions.update(subscriptionId, {
+  return client().subscriptions.update(subscriptionId, {
     cancel_at_period_end: true,
   });
-  return sub;
 }
 
-/**
- * Immediately cancel a subscription.
- */
 export async function cancelSubscriptionNow(subscriptionId) {
-  return stripe.subscriptions.cancel(subscriptionId);
+  return client().subscriptions.cancel(subscriptionId);
 }
 
-// --- Customer Management ---
-
-/**
- * Get or create a Stripe customer by email.
- */
 export async function getOrCreateStripeCustomer(user) {
   if (user.stripe_customer_id) {
     try {
-      const customer = await stripe.customers.retrieve(user.stripe_customer_id);
+      const customer = await client().customers.retrieve(user.stripe_customer_id);
       if (!customer.deleted) return customer;
-    } catch (e) {
-      // customer not found, create new
+    } catch {
+      // Create a replacement customer below.
     }
   }
 
-  const customer = await stripe.customers.create({
+  return client().customers.create({
     email: user.email,
     name: user.name || user.email,
     metadata: { user_id: String(user.id) },
   });
-
-  return customer;
 }
 
-// --- Webhook Verification ---
-
-/**
- * Verify and parse a Stripe webhook payload.
- */
 export function verifyStripeWebhookSignature(payload, sig) {
   if (!STRIPE_WEBHOOK_SECRET) {
     console.warn('[stripe] STRIPE_WEBHOOK_SECRET not set - skipping webhook verification');
     return JSON.parse(payload);
   }
-  try {
-    return stripe.webhooks.constructEvent(payload, sig, STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
-    throw new Error(`Webhook signature verification failed: ${err.message}`);
-  }
+  return client().webhooks.constructEvent(payload, sig, STRIPE_WEBHOOK_SECRET);
 }
 
-// --- Billing State Serialization (for API responses) ---
-
-/**
- * Serialize Stripe billing state into the same shape used by Whop.
- * This keeps the frontend BillingContext unchanged.
- */
 export function serializeStripeBillingState(user) {
-  const subStatus = user.stripe_subscription_status;
-  const product = user.stripe_product;
+  const subStatus = String(user?.stripe_subscription_status || '').toLowerCase();
+  const product = String(user?.stripe_product || '').trim();
   const hasActiveSub = subStatus === 'active' || subStatus === 'trialing';
   const isPaid = subStatus === 'active';
   const isTrialing = subStatus === 'trialing';
-  const isPastDue = subStatus === 'past_due';
-  const isCanceled = subStatus === 'canceled' || subStatus === 'unpaid';
-  const isCancelledAtPeriodEnd = !!user.stripe_cancel_at_period_end;
+  const isPastDue = subStatus === 'past_due' || subStatus === 'unpaid';
+  const isCanceled = ['canceled', 'incomplete_expired', 'paused'].includes(subStatus);
+  const isCancelledAtPeriodEnd = !!user?.stripe_cancel_at_period_end;
+  const introOfferUsed = !!user?.stripe_intro_offer_used || !!user?.stripe_subscription_id;
 
-  const introOfferUsed = !!user.stripe_intro_offer_used;
-
-  let effectivePlan = 'free';
-  if (product === 'intro' || product === 'standard' || product === 'advanced') {
-    effectivePlan = product;
-  }
-
-  let subscriptionTier = null;
-  if (isPaid || isTrialing) {
-    subscriptionTier = effectivePlan;
-  }
+  const effectivePlan = hasActiveSub ? planForProduct(product, subStatus) : 'free';
+  const paidTier = isPaid ? planForProduct(product, subStatus) : null;
 
   let canAccessApp = false;
   let downloadAllowance = 0;
@@ -269,20 +319,20 @@ export function serializeStripeBillingState(user) {
   let canOpenInboxesPage = false;
   let unlimitedConcurrency = false;
 
-  if (isTrialing && product === 'standard') {
+  if (isTrialing) {
     canAccessApp = true;
     downloadAllowance = 10;
     maxConcurrentOrders = 1;
     canOpenInboxesPage = true;
-  } else if (isPaid && effectivePlan === 'standard') {
+  } else if (isPaid && paidTier === 'standard') {
     canAccessApp = true;
     downloadAllowance = Infinity;
     maxConcurrentOrders = 1;
     canUseCustomNames = true;
     canOpenInboxesPage = true;
     canDownloadAll = true;
-    canCreateMoreThanOneCompletedOrder = false;
-  } else if (isPaid && effectivePlan === 'advanced') {
+    canCreateMoreThanOneCompletedOrder = true;
+  } else if (isPaid && paidTier === 'advanced') {
     canAccessApp = true;
     downloadAllowance = Infinity;
     maxConcurrentOrders = Infinity;
@@ -296,18 +346,21 @@ export function serializeStripeBillingState(user) {
   let blockingReason = null;
   let needsIntroOffer = false;
   let needsPaidSubscription = false;
-  let needsPaymentMethodUpdate = isPastDue;
   let recommendedCheckoutIntent = null;
 
   if (!canAccessApp) {
-    if (!introOfferUsed && effectivePlan === 'free') {
-      needsIntroOffer = true;
+    if (isPastDue) {
+      blockingReason = 'payment_overdue';
+      needsPaidSubscription = true;
+      recommendedCheckoutIntent = 'retry';
+    } else if (!introOfferUsed) {
       blockingReason = 'needs_intro_offer';
+      needsIntroOffer = true;
       recommendedCheckoutIntent = 'intro';
     } else {
+      blockingReason = isCanceled ? 'subscription_inactive' : 'needs_paid_subscription';
       needsPaidSubscription = true;
-      blockingReason = isPastDue ? 'payment_overdue' : 'needs_paid_subscription';
-      recommendedCheckoutIntent = isPastDue ? 'retry' : 'standard';
+      recommendedCheckoutIntent = 'standard';
     }
   }
 
@@ -328,23 +381,25 @@ export function serializeStripeBillingState(user) {
     canCreateMoreThanOneCompletedOrder,
     completedOrderQuotaReached: false,
     downloadAllowance,
-    lifetimeCompletedOrders: user.lifetime_completed_orders || 0,
+    lifetimeCompletedOrders: user?.lifetime_completed_orders || 0,
     maxConcurrentOrders,
     unlimitedConcurrency,
-    subscriptionTier,
-    subscriptionStatus: subStatus,
-    paymentStatus: user.stripe_last_payment_status || 'unknown',
-    invoiceStatus: user.stripe_last_invoice_status || 'unknown',
-    renewalPeriodEnd: user.stripe_current_period_end,
+    subscriptionTier: isTrialing ? 'intro' : paidTier,
+    subscriptionStatus: subStatus || null,
+    paymentStatus: user?.stripe_last_payment_status || 'unknown',
+    invoiceStatus: user?.stripe_last_invoice_status || 'unknown',
+    renewalPeriodEnd: user?.stripe_current_period_end || null,
+    trialEndsAt: user?.stripe_trial_ends_at || null,
     cancelAtPeriodEnd: isCancelledAtPeriodEnd,
     needsIntroOffer,
     needsPaidSubscription,
-    needsPaymentMethodUpdate,
+    needsPaymentMethodUpdate: isPastDue,
     blockingReason,
     recommendedCheckoutIntent,
-    hasBillingPortal: !!user.stripe_customer_id,
+    hasBillingPortal: !!user?.stripe_customer_id,
     hasBillingIssue: isPastDue,
-    overdueInvoiceId: isPastDue ? user.stripe_last_invoice_id : null,
+    overdueInvoiceId: isPastDue ? user?.stripe_last_invoice_id || null : null,
+    overdueInvoiceUrl: isPastDue ? user?.stripe_last_invoice_url || null : null,
   };
 }
 

@@ -4,17 +4,18 @@ import {
   getUserById,
   getUserByStripeCustomerId,
   getUserByStripeSubscriptionId,
-  updateUserBillingById
+  updateUserBillingById,
+  updateTenantPurchaseByCheckoutSession
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
 import {
   createStripeCheckoutSession,
-  createTenantCheckoutSession,
   createCustomerPortalSession,
   cancelSubscription,
   retrieveCheckoutSession,
   isCheckoutSessionComplete,
   getSubscription,
+  getPendingInvoice,
   verifyStripeWebhookSignature,
   serializeStripeBillingState,
   isStripeConfigured,
@@ -39,7 +40,96 @@ const getCurrentUser = (req) => {
   return null;
 };
 
-// --- CHECKOUT ---
+function getRequestBaseUrl(req) {
+  const origin = req.get('origin');
+  const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+
+  if (
+    origin
+    && (
+      allowedOrigins.includes(origin)
+      || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)
+    )
+  ) {
+    return origin;
+  }
+
+  return process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com';
+}
+
+function idOf(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  return value.id || null;
+}
+
+function isoFromUnix(timestamp) {
+  return timestamp ? new Date(timestamp * 1000).toISOString() : null;
+}
+
+function planFromSubscription(sub, fallback = 'standard') {
+  const metadataPlan = sub?.metadata?.plan_key;
+  if (metadataPlan) return metadataPlan;
+
+  const priceId = sub?.items?.data?.[0]?.price?.id || null;
+  if (priceId === STRIPE_PRICES.advanced) return 'advanced';
+  if (priceId === STRIPE_PRICES.standard || priceId === STRIPE_PRICES.intro) return fallback || 'standard';
+  return fallback || 'standard';
+}
+
+async function resolveSubscription(subscriptionLike) {
+  const subscriptionId = idOf(subscriptionLike);
+  if (!subscriptionId) return null;
+  if (typeof subscriptionLike === 'object' && subscriptionLike.current_period_end) {
+    return subscriptionLike;
+  }
+  return getSubscription(subscriptionId);
+}
+
+async function resolveInvoiceForStatus(customerId, latestInvoice, subscriptionStatus) {
+  if (latestInvoice && typeof latestInvoice === 'object') {
+    return latestInvoice;
+  }
+  if (subscriptionStatus === 'past_due' || subscriptionStatus === 'unpaid') {
+    return getPendingInvoice(customerId);
+  }
+  return null;
+}
+
+async function buildSubscriptionUpdate(user, sub, fallbackPlan = 'standard', invoiceOverride = null) {
+  const customerId = idOf(sub.customer) || user.stripe_customer_id || null;
+  const latestInvoice = await resolveInvoiceForStatus(
+    customerId,
+    invoiceOverride || sub.latest_invoice,
+    sub.status
+  );
+  const planKey = planFromSubscription(sub, fallbackPlan);
+  const storedPlan = sub.status === 'trialing'
+    ? 'intro'
+    : (planKey === 'advanced' ? 'advanced' : 'standard');
+
+  return {
+    plan: ['active', 'trialing'].includes(sub.status) ? storedPlan : (user.plan || 'free'),
+    stripe_customer_id: customerId,
+    stripe_subscription_id: sub.id,
+    stripe_subscription_status: sub.status,
+    stripe_product: planKey,
+    stripe_plan_id: sub.items?.data?.[0]?.price?.id || null,
+    stripe_current_period_end: isoFromUnix(sub.current_period_end),
+    stripe_trial_ends_at: isoFromUnix(sub.trial_end),
+    stripe_cancel_at_period_end: sub.cancel_at_period_end ? 1 : 0,
+    stripe_default_payment_method_id: idOf(sub.default_payment_method),
+    stripe_last_payment_status: latestInvoice?.status === 'paid' ? 'paid' : (latestInvoice?.status || 'unknown'),
+    stripe_last_invoice_id: latestInvoice?.id || null,
+    stripe_last_invoice_status: latestInvoice?.status || null,
+    stripe_last_invoice_url: latestInvoice?.hosted_invoice_url || null,
+    stripe_intro_offer_used: planKey === 'intro' || user.stripe_intro_offer_used ? 1 : 0,
+  };
+}
+
 router.post('/checkout', async (req, res) => {
   if (!req.session.authenticated || !req.session.user?.id) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -63,6 +153,14 @@ router.post('/checkout', async (req, res) => {
   try {
     const access = getUserAccessState(user);
 
+    if (access.hasBillingIssue || user.stripe_subscription_status === 'past_due') {
+      const serialized = serializeStripeBillingState(user);
+      return res.status(402).json({
+        error: 'Invoice overdue. Pay the open Stripe invoice to restore access.',
+        overdueInvoiceUrl: serialized.overdueInvoiceUrl,
+      });
+    }
+
     if (intent === 'intro') {
       if (access.introOfferUsed && !access.trialActive) {
         return res.status(409).json({ error: 'Your three-day trial has already been used.' });
@@ -80,10 +178,9 @@ router.post('/checkout', async (req, res) => {
       return res.status(409).json({ error: 'Advanced is already active on this account.' });
     }
 
-    const checkout = await createStripeCheckoutSession(
-      { id: user.id, email: user.email, name: user.email },
-      intent
-    );
+    const checkout = await createStripeCheckoutSession(user, intent, {
+      appBaseUrl: getRequestBaseUrl(req),
+    });
 
     updateUserBillingById(user.id, { stripe_checkout_session_id: checkout.sessionId });
 
@@ -102,7 +199,6 @@ router.post('/checkout', async (req, res) => {
   }
 });
 
-// --- STATUS ---
 router.get('/status', async (req, res) => {
   if (!req.session.authenticated || !req.session.user?.id) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -111,45 +207,24 @@ router.get('/status', async (req, res) => {
   const user = getCurrentUser(req);
   if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-  // If user has a Stripe subscription, sync it from Stripe API
   if (isStripeConfigured() && user.stripe_subscription_id) {
     try {
       const sub = await getSubscription(user.stripe_subscription_id);
-      const latest = getUserById(user.id) || user;
+      const update = await buildSubscriptionUpdate(user, sub, user.stripe_product || 'standard');
+      updateUserBillingById(user.id, update);
 
-      const periodEnd = sub.current_period_end
-        ? new Date(sub.current_period_end * 1000).toISOString()
-        : null;
-
-      updateUserBillingById(latest.id, {
-        stripe_subscription_status: sub.status,
-        stripe_product: sub.metadata?.plan_key || latest.stripe_product || 'standard',
-        stripe_current_period_end: periodEnd,
-        stripe_cancel_at_period_end: sub.cancel_at_period_end ? 1 : 0,
-        stripe_last_payment_status: sub.latest_invoice?.status === 'paid' ? 'paid' : (sub.latest_invoice?.status || 'unknown'),
-        stripe_last_invoice_id: sub.latest_invoice?.id || null,
-        stripe_last_invoice_status: sub.latest_invoice?.status || null,
-      });
-
-      const refreshed = getUserById(latest.id);
-      const serialized = serializeStripeBillingState(refreshed || latest);
-      req.session.user = serializeSessionUser(refreshed || latest);
-      return res.json(serialized);
+      const refreshed = getUserById(user.id) || user;
+      req.session.user = serializeSessionUser(refreshed);
+      return res.json(serializeStripeBillingState(refreshed));
     } catch (error) {
       console.error('[billing] Stripe status sync failed:', error.message);
-      // If sync fails, return what we have in the DB
-      const latest = getUserById(user.id) || user;
-      req.session.user = serializeSessionUser(latest);
-      return res.json(serializeStripeBillingState(latest));
     }
   }
 
-  // No Stripe subscription — return Stripe state from DB
   req.session.user = serializeSessionUser(user);
   return res.json(serializeStripeBillingState(user));
 });
 
-// --- PORTAL ---
 router.get('/portal', async (req, res) => {
   if (!req.session.authenticated || !req.session.user?.id) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -164,22 +239,19 @@ router.get('/portal', async (req, res) => {
 
   try {
     if (user.stripe_customer_id) {
-      const session = await createCustomerPortalSession(user, user.stripe_customer_id);
+      const session = await createCustomerPortalSession(user, user.stripe_customer_id, {
+        appBaseUrl: getRequestBaseUrl(req),
+      });
       return res.json({ url: session.url });
     }
 
-    // No customer ID yet — direct to the account's billing portal
-    return res.json({
-      url: 'https://billing.stripe.com/p/login/eVq8wOgwS8aB76uc3n28800',
-      fallback: true
-    });
+    return res.status(404).json({ error: 'No Stripe customer exists for this account yet.' });
   } catch (error) {
     console.error('[billing] Stripe portal failed:', error.message);
     return res.status(500).json({ error: error.message || 'Failed to open billing portal.' });
   }
 });
 
-// --- CANCEL ---
 router.post('/cancel', async (req, res) => {
   if (!req.session.authenticated || !req.session.user?.id) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -189,21 +261,22 @@ router.post('/cancel', async (req, res) => {
   if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
   if (!user.stripe_subscription_id) {
-    return res.status(503).json({ error: 'No active subscription to cancel.' });
+    return res.status(400).json({ error: 'No active subscription to cancel.' });
   }
 
   try {
-    await cancelSubscription(user.stripe_subscription_id);
-    const latest = getUserById(user.id);
-    req.session.user = serializeSessionUser(latest || user);
-    return res.json({ success: true, message: 'Subscription will cancel at end of billing period.' });
+    const sub = await cancelSubscription(user.stripe_subscription_id);
+    const update = await buildSubscriptionUpdate(user, sub, user.stripe_product || 'standard');
+    updateUserBillingById(user.id, update);
+    const latest = getUserById(user.id) || user;
+    req.session.user = serializeSessionUser(latest);
+    return res.json({ success: true, message: 'Subscription will cancel at the end of the billing period.' });
   } catch (error) {
     console.error('[billing] Stripe cancel failed:', error);
     return res.status(500).json({ error: error.message });
   }
 });
 
-// --- RETURN (after Stripe redirect) ---
 router.post('/return', async (req, res) => {
   if (!req.session.authenticated || !req.session.user?.id) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -224,39 +297,22 @@ router.post('/return', async (req, res) => {
       return res.status(400).json({ error: 'Payment not complete.' });
     }
 
-    const subscription = session.subscription;
-    const customerId = typeof session.customer === 'string'
-      ? session.customer
-      : session.customer?.id;
+    const sub = await resolveSubscription(session.subscription);
+    if (!sub) {
+      return res.status(400).json({ error: 'Checkout session did not include a subscription.' });
+    }
 
-    const periodEnd = subscription?.current_period_end
-      ? new Date(subscription.current_period_end * 1000).toISOString()
-      : null;
+    const planKey = session.metadata?.plan_key || sub.metadata?.plan_key || 'standard';
+    const update = await buildSubscriptionUpdate(user, sub, planKey);
+    update.stripe_checkout_session_id = null;
+    update.stripe_intro_offer_used = planKey === 'intro' ? 1 : (user.stripe_intro_offer_used || 0);
+    updateUserBillingById(user.id, update);
 
-    const planKey = session.metadata?.plan_key
-      || subscription?.metadata?.plan_key
-      || 'standard';
-
-    updateUserBillingById(user.id, {
-      stripe_customer_id: customerId,
-      stripe_subscription_id: subscription?.id || null,
-      stripe_subscription_status: subscription?.status || 'active',
-      stripe_product: planKey,
-      stripe_plan_id: subscription?.items?.data?.[0]?.price?.id || null,
-      stripe_current_period_end: periodEnd,
-      stripe_cancel_at_period_end: subscription?.cancel_at_period_end ? 1 : 0,
-      stripe_checkout_session_id: null,
-      stripe_intro_offer_used: planKey === 'intro' ? 1 : (user.stripe_intro_offer_used || 0),
-      stripe_last_payment_status: 'paid',
-      stripe_last_invoice_status: 'paid',
-      stripe_last_invoice_id: session.invoice || null,
-    });
-
-    const latest = getUserById(user.id);
-    req.session.user = serializeSessionUser(latest || user);
+    const latest = getUserById(user.id) || user;
+    req.session.user = serializeSessionUser(latest);
 
     return res.json({
-      ...serializeStripeBillingState(latest || user),
+      ...serializeStripeBillingState(latest),
       provider: 'stripe',
     });
   } catch (error) {
@@ -265,7 +321,6 @@ router.post('/return', async (req, res) => {
   }
 });
 
-// --- STRIPE WEBHOOK ---
 router.post('/webhook', async (req, res) => {
   if (!isStripeConfigured()) {
     return res.status(503).json({ error: 'Stripe not configured.' });
@@ -289,73 +344,65 @@ router.post('/webhook', async (req, res) => {
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object;
+
+        if (session.metadata?.type === 'tenant_purchase') {
+          updateTenantPurchaseByCheckoutSession(session.id, {
+            status: session.payment_status === 'paid' ? 'paid' : 'complete',
+            stripe_payment_intent_id: idOf(session.payment_intent),
+            stripe_customer_id: idOf(session.customer),
+          });
+          break;
+        }
+
         const userId = session.metadata?.user_id;
         if (!userId) break;
 
         const user = getUserById(Number(userId));
         if (!user) break;
 
-        const subscription = session.subscription;
-        const customerId = typeof session.customer === 'string'
-          ? session.customer
-          : session.customer?.id;
-        const planKey = session.metadata?.plan_key || 'standard';
+        const sub = await resolveSubscription(session.subscription);
+        if (!sub) break;
 
-        const periodEnd = subscription?.current_period_end
-          ? new Date(subscription.current_period_end * 1000).toISOString()
-          : null;
-
-        updateUserBillingById(user.id, {
-          stripe_customer_id: customerId,
-          stripe_subscription_id: subscription?.id || null,
-          stripe_subscription_status: subscription?.status || 'active',
-          stripe_product: planKey,
-          stripe_plan_id: subscription?.items?.data?.[0]?.price?.id || null,
-          stripe_current_period_end: periodEnd,
-          stripe_cancel_at_period_end: subscription?.cancel_at_period_end ? 1 : 0,
-          stripe_last_payment_status: 'paid',
-          stripe_last_invoice_status: 'paid',
-          stripe_last_invoice_id: session.invoice || null,
-          stripe_intro_offer_used: planKey === 'intro' ? 1 : (user.stripe_intro_offer_used || 0),
-        });
+        const planKey = session.metadata?.plan_key || sub.metadata?.plan_key || 'standard';
+        const update = await buildSubscriptionUpdate(user, sub, planKey);
+        update.stripe_checkout_session_id = null;
+        update.stripe_intro_offer_used = planKey === 'intro' ? 1 : (user.stripe_intro_offer_used || 0);
+        updateUserBillingById(user.id, update);
         break;
       }
 
       case 'customer.subscription.updated': {
         const sub = event.data.object;
-        const user = getUserByStripeSubscriptionId(sub.id) || getUserByStripeCustomerId(sub.customer);
+        const user = getUserByStripeSubscriptionId(sub.id) || getUserByStripeCustomerId(idOf(sub.customer));
         if (!user) break;
 
-        const periodEnd = sub.current_period_end
-          ? new Date(sub.current_period_end * 1000).toISOString()
-          : null;
-
-        updateUserBillingById(user.id, {
-          stripe_subscription_status: sub.status,
-          stripe_current_period_end: periodEnd,
-          stripe_cancel_at_period_end: sub.cancel_at_period_end ? 1 : 0,
-          stripe_last_payment_status: sub.latest_invoice?.status === 'paid' ? 'paid' : 'unknown',
-          stripe_last_invoice_status: sub.latest_invoice?.status || null,
-        });
+        const update = await buildSubscriptionUpdate(user, sub, user.stripe_product || 'standard');
+        updateUserBillingById(user.id, update);
         break;
       }
 
       case 'customer.subscription.deleted': {
         const sub = event.data.object;
-        const user = getUserByStripeSubscriptionId(sub.id);
+        const user = getUserByStripeSubscriptionId(sub.id) || getUserByStripeCustomerId(idOf(sub.customer));
         if (!user) break;
-        updateUserBillingById(user.id, { stripe_subscription_status: 'canceled' });
+        updateUserBillingById(user.id, {
+          plan: 'free',
+          stripe_subscription_status: 'canceled',
+          stripe_cancel_at_period_end: 0,
+        });
         break;
       }
 
       case 'invoice.payment_failed': {
         const invoice = event.data.object;
-        const user = getUserByStripeCustomerId(invoice.customer);
+        const user = getUserByStripeSubscriptionId(idOf(invoice.subscription))
+          || getUserByStripeCustomerId(idOf(invoice.customer));
         if (!user) break;
         updateUserBillingById(user.id, {
           stripe_subscription_status: 'past_due',
           stripe_last_invoice_id: invoice.id,
-          stripe_last_invoice_status: 'open',
+          stripe_last_invoice_status: invoice.status || 'open',
+          stripe_last_invoice_url: invoice.hosted_invoice_url || user.stripe_last_invoice_url || null,
           stripe_last_payment_status: 'failed',
         });
         break;
@@ -363,14 +410,23 @@ router.post('/webhook', async (req, res) => {
 
       case 'invoice.paid': {
         const invoice = event.data.object;
-        const user = getUserByStripeCustomerId(invoice.customer);
+        const user = getUserByStripeSubscriptionId(idOf(invoice.subscription))
+          || getUserByStripeCustomerId(idOf(invoice.customer));
         if (!user) break;
-        updateUserBillingById(user.id, {
-          stripe_subscription_status: 'active',
-          stripe_last_invoice_id: invoice.id,
-          stripe_last_invoice_status: 'paid',
-          stripe_last_payment_status: 'paid',
-        });
+
+        const sub = invoice.subscription ? await resolveSubscription(invoice.subscription) : null;
+        if (sub) {
+          const update = await buildSubscriptionUpdate(user, sub, user.stripe_product || 'standard', invoice);
+          updateUserBillingById(user.id, update);
+        } else {
+          updateUserBillingById(user.id, {
+            stripe_subscription_status: 'active',
+            stripe_last_invoice_id: invoice.id,
+            stripe_last_invoice_status: 'paid',
+            stripe_last_invoice_url: invoice.hosted_invoice_url || null,
+            stripe_last_payment_status: 'paid',
+          });
+        }
         break;
       }
 

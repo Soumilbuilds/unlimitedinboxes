@@ -3,9 +3,16 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import BillingCheckoutEmbed from '../components/BillingCheckoutEmbed';
 import { useBilling } from '../context/BillingContext';
 
-const VALID_INTENTS = new Set(['intro', 'standard', 'advanced']);
+const VALID_INTENTS = new Set(['intro', 'standard', 'advanced', 'retry']);
 
 function getBillingCopy(intent, billing) {
+  if (intent === 'retry' || billing?.blockingReason === 'payment_overdue') {
+    return {
+      headline: 'Invoice Overdue',
+      subheadline: 'Pay the open Stripe invoice to restore access'
+    };
+  }
+
   if (intent === 'advanced') {
     return {
       headline: 'Upgrade To Access Advanced',
@@ -39,10 +46,40 @@ function redirectToOrders() {
   }
 }
 
+function OverdueInvoiceRecovery({ billing, refreshBilling, openBillingPortal }) {
+  const invoiceUrl = billing?.overdueInvoiceUrl;
+
+  return (
+    <div className="billing-overdue-panel">
+      <div className="alert error billing-page-alert">
+        Invoice overdue. Access is paused until the open Stripe invoice is paid.
+      </div>
+      <div className="billing-overdue-actions">
+        {invoiceUrl ? (
+          <a className="btn primary" href={invoiceUrl} target="_blank" rel="noreferrer">
+            Pay Overdue Invoice
+          </a>
+        ) : (
+          <button className="btn primary" type="button" onClick={() => void openBillingPortal()}>
+            Open Billing Portal
+          </button>
+        )}
+        <button
+          className="btn ghost"
+          type="button"
+          onClick={() => void refreshBilling({ force: true, minIntervalMs: 0 })}
+        >
+          I Paid, Refresh
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function BillingCheckout() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
-  const { billing, refreshBilling } = useBilling();
+  const { billing, refreshBilling, openBillingPortal } = useBilling();
 
   const intent = useMemo(() => {
     const raw = searchParams.get('intent');
@@ -79,17 +116,25 @@ export default function BillingCheckout() {
           {copy.subheadline ? <p>{copy.subheadline}</p> : null}
         </div>
 
-        <BillingCheckoutEmbed
-          intent={intent}
-          onSynced={() => {
-            redirectToOrders();
-          }}
-          onError={(_message, error) => {
-            if (error?.response?.status === 409) {
+        {intent === 'retry' || billing?.blockingReason === 'payment_overdue' ? (
+          <OverdueInvoiceRecovery
+            billing={billing}
+            refreshBilling={refreshBilling}
+            openBillingPortal={openBillingPortal}
+          />
+        ) : (
+          <BillingCheckoutEmbed
+            intent={intent}
+            onSynced={() => {
               redirectToOrders();
-            }
-          }}
-        />
+            }}
+            onError={(_message, error) => {
+              if (error?.response?.status === 409) {
+                redirectToOrders();
+              }
+            }}
+          />
+        )}
       </div>
     </main>
   );

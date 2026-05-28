@@ -20,10 +20,10 @@ function matchesProduct(productId, ...envKeys) {
 }
 
 export function getSubscriptionTierFromProduct(productId) {
-  if (matchesProduct(productId, 'DODO_PRODUCT_ADVANCED_ID')) {
+  if (matchesProduct(productId, 'STRIPE_PRICE_ADVANCED')) {
     return 'advanced';
   }
-  if (matchesProduct(productId, 'DODO_PRODUCT_STANDARD_ID', 'DODO_PRODUCT_STANDARD_TRIAL_ID')) {
+  if (matchesProduct(productId, 'STRIPE_PRICE_STANDARD')) {
     return 'standard';
   }
   return null;

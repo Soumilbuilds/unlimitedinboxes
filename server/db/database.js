@@ -59,10 +59,39 @@ db.exec(`
     message TEXT NOT NULL,
     FOREIGN KEY(order_id) REFERENCES orders(id)
   );
+
+  CREATE TABLE IF NOT EXISTS tenant_purchases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    tenant_type TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    currency TEXT DEFAULT 'usd',
+    status TEXT DEFAULT 'pending',
+    stripe_checkout_session_id TEXT UNIQUE,
+    stripe_payment_intent_id TEXT UNIQUE,
+    stripe_customer_id TEXT,
+    error_message TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
 `);
 
+function tableColumns(tableName) {
+  return db.prepare(`PRAGMA table_info(${tableName})`).all();
+}
+
+function ensureColumn(tableName, columnName, definition) {
+  const columns = tableColumns(tableName);
+  const exists = columns.some(col => col.name === columnName);
+  if (!exists) {
+    db.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`).run();
+  }
+}
+
 function ensureOrdersPasswordColumn() {
-  const columns = db.prepare('PRAGMA table_info(orders)').all();
+  const columns = tableColumns('orders');
   const hasPassword = columns.some(col => col.name === 'mailbox_password');
   if (!hasPassword) {
     db.prepare('ALTER TABLE orders ADD COLUMN mailbox_password TEXT').run();
@@ -70,7 +99,7 @@ function ensureOrdersPasswordColumn() {
 }
 
 function ensureOrdersNameColumn() {
-  const columns = db.prepare('PRAGMA table_info(orders)').all();
+  const columns = tableColumns('orders');
   const hasName = columns.some(col => col.name === 'order_name');
   if (!hasName) {
     db.prepare('ALTER TABLE orders ADD COLUMN order_name TEXT').run();
@@ -78,25 +107,55 @@ function ensureOrdersNameColumn() {
 }
 
 function ensureTenantsUserColumn() {
-  const columns = db.prepare('PRAGMA table_info(tenants)').all();
+  const columns = tableColumns('tenants');
   const hasUser = columns.some(col => col.name === 'user_id');
   if (!hasUser) {
     db.prepare('ALTER TABLE tenants ADD COLUMN user_id INTEGER').run();
   }
 }
 
+function ensureTenantsRedirectColumn() {
+  ensureColumn('tenants', 'redirect_url', 'TEXT');
+}
+
 function ensureOrdersUserColumn() {
-  const columns = db.prepare('PRAGMA table_info(orders)').all();
+  const columns = tableColumns('orders');
   const hasUser = columns.some(col => col.name === 'user_id');
   if (!hasUser) {
     db.prepare('ALTER TABLE orders ADD COLUMN user_id INTEGER').run();
   }
 }
 
+function ensureUserBillingColumns() {
+  ensureColumn('users', 'lifetime_completed_orders', 'INTEGER DEFAULT 0');
+
+  ensureColumn('users', 'stripe_customer_id', 'TEXT');
+  ensureColumn('users', 'stripe_subscription_id', 'TEXT');
+  ensureColumn('users', 'stripe_subscription_status', 'TEXT');
+  ensureColumn('users', 'stripe_product', 'TEXT');
+  ensureColumn('users', 'stripe_plan_id', 'TEXT');
+  ensureColumn('users', 'stripe_current_period_end', 'TEXT');
+  ensureColumn('users', 'stripe_cancel_at_period_end', 'INTEGER DEFAULT 0');
+  ensureColumn('users', 'stripe_checkout_session_id', 'TEXT');
+  ensureColumn('users', 'stripe_intro_offer_used', 'INTEGER DEFAULT 0');
+  ensureColumn('users', 'stripe_last_payment_status', 'TEXT');
+  ensureColumn('users', 'stripe_last_invoice_id', 'TEXT');
+  ensureColumn('users', 'stripe_last_invoice_status', 'TEXT');
+  ensureColumn('users', 'stripe_last_invoice_url', 'TEXT');
+  ensureColumn('users', 'stripe_trial_ends_at', 'TEXT');
+  ensureColumn('users', 'stripe_default_payment_method_id', 'TEXT');
+
+  ensureColumn('users', 'whop_membership_id', 'TEXT');
+  ensureColumn('users', 'whop_membership_status', 'TEXT');
+  ensureColumn('users', 'whop_plan_id', 'TEXT');
+}
+
 ensureOrdersPasswordColumn();
 ensureOrdersNameColumn();
 ensureTenantsUserColumn();
+ensureTenantsRedirectColumn();
 ensureOrdersUserColumn();
+ensureUserBillingColumns();
 
 // --- USERS ---
 
@@ -112,6 +171,14 @@ export function getUserByEmail(email) {
   return db.prepare('SELECT * FROM users WHERE email = ?').get(email);
 }
 
+export function getUserById(id) {
+  return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+}
+
+export function deleteUserByEmail(email) {
+  return db.prepare('DELETE FROM users WHERE email = ?').run(email);
+}
+
 export function updateUserPlanByEmail(email, plan) {
   const stmt = db.prepare(`
     UPDATE users
@@ -119,6 +186,58 @@ export function updateUserPlanByEmail(email, plan) {
     WHERE email = ?
   `);
   return stmt.run(plan, email);
+}
+
+export function getUserByStripeCustomerId(customerId) {
+  return db.prepare('SELECT * FROM users WHERE stripe_customer_id = ?').get(customerId);
+}
+
+export function getUserByStripeSubscriptionId(subscriptionId) {
+  return db.prepare('SELECT * FROM users WHERE stripe_subscription_id = ?').get(subscriptionId);
+}
+
+const USER_BILLING_COLUMNS = new Set([
+  'plan',
+  'lifetime_completed_orders',
+  'stripe_customer_id',
+  'stripe_subscription_id',
+  'stripe_subscription_status',
+  'stripe_product',
+  'stripe_plan_id',
+  'stripe_current_period_end',
+  'stripe_cancel_at_period_end',
+  'stripe_checkout_session_id',
+  'stripe_intro_offer_used',
+  'stripe_last_payment_status',
+  'stripe_last_invoice_id',
+  'stripe_last_invoice_status',
+  'stripe_last_invoice_url',
+  'stripe_trial_ends_at',
+  'stripe_default_payment_method_id',
+  'whop_membership_id',
+  'whop_membership_status',
+  'whop_plan_id'
+]);
+
+export function updateUserBillingById(id, updates = {}) {
+  const entries = Object.entries(updates)
+    .filter(([key, value]) => USER_BILLING_COLUMNS.has(key) && value !== undefined);
+
+  if (!entries.length) {
+    return { changes: 0 };
+  }
+
+  const assignments = entries.map(([key]) => `${key} = @${key}`).join(',\n        ');
+  const values = Object.fromEntries(entries);
+  values.id = id;
+
+  const stmt = db.prepare(`
+    UPDATE users
+    SET ${assignments},
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = @id
+  `);
+  return stmt.run(values);
 }
 
 // --- TENANTS ---
@@ -180,6 +299,31 @@ export function updateTenantDetails(id, updates = {}) {
     WHERE id = ?
   `);
   return stmt.run(name, domain, admin_email, admin_password, id);
+}
+
+export function updateTenantRedirect(id, redirectUrl) {
+  const stmt = db.prepare('UPDATE tenants SET redirect_url = ? WHERE id = ?');
+  return stmt.run(redirectUrl, id);
+}
+
+export function getRedirectableDomains(userId) {
+  return db.prepare(`
+    SELECT
+      tenants.id AS tenant_id,
+      tenants.domain,
+      tenants.redirect_url,
+      tenants.cloudflare_zone_id,
+      tenants.cloudflare_ns,
+      COUNT(orders.id) AS completed_orders
+    FROM tenants
+    JOIN orders ON orders.tenant_id = tenants.id
+    WHERE tenants.user_id = ?
+      AND orders.status = 'completed'
+      AND tenants.domain IS NOT NULL
+      AND tenants.domain != ''
+    GROUP BY tenants.id
+    ORDER BY MAX(orders.updated_at) DESC, tenants.created_at DESC
+  `).all(userId);
 }
 
 export function deleteTenant(id) {
@@ -287,6 +431,95 @@ export function getOrderLogs(orderId) {
     WHERE order_id = ?
     ORDER BY id ASC
   `).all(orderId);
+}
+
+// --- TENANT PURCHASES ---
+
+export function createTenantPurchaseRecord(record) {
+  const stmt = db.prepare(`
+    INSERT INTO tenant_purchases (
+      user_id,
+      tenant_type,
+      quantity,
+      amount_cents,
+      currency,
+      status,
+      stripe_checkout_session_id,
+      stripe_payment_intent_id,
+      stripe_customer_id,
+      error_message
+    )
+    VALUES (
+      @user_id,
+      @tenant_type,
+      @quantity,
+      @amount_cents,
+      COALESCE(@currency, 'usd'),
+      COALESCE(@status, 'pending'),
+      @stripe_checkout_session_id,
+      @stripe_payment_intent_id,
+      @stripe_customer_id,
+      @error_message
+    )
+  `);
+
+  return stmt.run({
+    user_id: record.user_id,
+    tenant_type: record.tenant_type,
+    quantity: record.quantity,
+    amount_cents: record.amount_cents,
+    currency: record.currency || 'usd',
+    status: record.status || 'pending',
+    stripe_checkout_session_id: record.stripe_checkout_session_id || null,
+    stripe_payment_intent_id: record.stripe_payment_intent_id || null,
+    stripe_customer_id: record.stripe_customer_id || null,
+    error_message: record.error_message || null
+  });
+}
+
+const TENANT_PURCHASE_COLUMNS = new Set([
+  'status',
+  'stripe_checkout_session_id',
+  'stripe_payment_intent_id',
+  'stripe_customer_id',
+  'error_message'
+]);
+
+function updateTenantPurchase(whereColumn, whereValue, updates = {}) {
+  const entries = Object.entries(updates)
+    .filter(([key, value]) => TENANT_PURCHASE_COLUMNS.has(key) && value !== undefined);
+
+  if (!entries.length) {
+    return { changes: 0 };
+  }
+
+  const assignments = entries.map(([key]) => `${key} = @${key}`).join(',\n        ');
+  const values = Object.fromEntries(entries);
+  values.whereValue = whereValue;
+
+  const stmt = db.prepare(`
+    UPDATE tenant_purchases
+    SET ${assignments},
+        updated_at = CURRENT_TIMESTAMP
+    WHERE ${whereColumn} = @whereValue
+  `);
+  return stmt.run(values);
+}
+
+export function updateTenantPurchaseByCheckoutSession(sessionId, updates = {}) {
+  return updateTenantPurchase('stripe_checkout_session_id', sessionId, updates);
+}
+
+export function updateTenantPurchaseByPaymentIntent(paymentIntentId, updates = {}) {
+  return updateTenantPurchase('stripe_payment_intent_id', paymentIntentId, updates);
+}
+
+export function getTenantPurchaseByCheckoutSession(sessionId) {
+  return db.prepare('SELECT * FROM tenant_purchases WHERE stripe_checkout_session_id = ?').get(sessionId);
+}
+
+export function getTenantPurchaseByPaymentIntent(paymentIntentId) {
+  return db.prepare('SELECT * FROM tenant_purchases WHERE stripe_payment_intent_id = ?').get(paymentIntentId);
 }
 
 export default db;

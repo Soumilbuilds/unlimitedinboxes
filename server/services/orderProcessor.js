@@ -21,6 +21,7 @@ import {
 import { generateMailboxName, resetUsedNames } from './nameGenerator.js';
 import {
   getOrderById,
+  getOrders,
   getTenantById,
   updateOrderStatus,
   updateOrderProgress,
@@ -129,6 +130,10 @@ export function getOrderLogs(orderId) {
   return job ? job.logs : null;
 }
 
+export function hasActiveJob(orderId) {
+  return activeJobs.has(orderId);
+}
+
 export function cancelOrder(orderId) {
   const job = activeJobs.get(orderId);
   if (job) {
@@ -138,6 +143,16 @@ export function cancelOrder(orderId) {
     return true;
   }
   return false;
+}
+
+export function resumeInterruptedOrders() {
+  const interrupted = getOrders()
+    .filter(order => order.status === 'processing' && !activeJobs.has(order.id));
+
+  for (const order of interrupted) {
+    logMessage(order.id, 'Resuming interrupted order processing...');
+    processOrder(order.id);
+  }
 }
 
 export async function processOrder(orderId) {
@@ -292,6 +307,10 @@ export async function processOrder(orderId) {
     const signinWeight = 20;
     const adminWeight = 10;
 
+    // Enable SMTP AUTH BEFORE any mailbox creation — PlusVibe requires this
+    logMessage(orderId, 'Ensuring SMTP AUTH is enabled before mailbox creation...');
+    await ensureSmtpAuthSetting(orderId, page);
+
     // Preflight: create 1 mailbox and fully enable sign-in + password + GA
     logMessage(orderId, 'Preflight: creating 1 mailbox and enabling sign-in + Global Admin...');
     {
@@ -362,7 +381,6 @@ export async function processOrder(orderId) {
     if (checkCancelled(orderId)) return;
 
     if (total === 1) {
-      await ensureSmtpAuthSetting(orderId, page);
       updateOrderProgress(orderId, 100, createdMailboxes);
       updateOrderStatus(orderId, 'completed');
       logMessage(orderId, 'Order completed successfully.');
@@ -403,7 +421,6 @@ export async function processOrder(orderId) {
       await new Promise(r => setTimeout(r, 1500));
     }
 
-    await ensureSmtpAuthSetting(orderId, page);
     if (checkCancelled(orderId)) return;
 
     logMessage(orderId, 'Enabling sign-in and setting passwords for all mailboxes...');

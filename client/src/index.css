@@ -802,8 +802,7 @@ a {
 }
 
 .billing-page-embed-wrap {
-  display: grid;
-  gap: 14px;
+  display: block;
 }
 
 .billing-page-alert {
@@ -812,6 +811,7 @@ a {
 }
 
 .billing-page-embed {
+  width: 100%;
   min-height: 640px;
   max-height: none;
 }
@@ -819,6 +819,44 @@ a {
 .billing-page-embed.is-verifying {
   opacity: 0.76;
   pointer-events: none;
+}
+
+/* Checkout Elements form */
+.billing-checkout-form {
+  display: grid;
+  gap: 20px;
+}
+
+.billing-checkout-section {
+  min-height: 280px;
+}
+
+.billing-checkout-submit {
+  display: grid;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.billing-checkout-disclaimer {
+  text-align: center;
+  font-size: 12px;
+  color: rgba(245, 245, 245, 0.4);
+  margin: 0;
+}
+
+.billing-overdue-panel {
+  min-height: 360px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 18px;
+}
+
+.billing-overdue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
 }
 
 .checkout-modal {
@@ -1016,8 +1054,8 @@ a {
 .tenant-order-card {
   width: min(820px, 100%);
   background: #090909;
-  border: 1px solid rgba(134, 247, 184, 0.18);
-  border-radius: 24px;
+  border: 0;
+  border-radius: 8px;
   box-shadow: 0 16px 34px rgba(0, 0, 0, 0.32);
   padding: 40px 42px;
 }
