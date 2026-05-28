@@ -57,6 +57,26 @@ function buildBlockingCheckout(billing) {
 }
 
 function buildUpgradeCheckout(intent) {
+  if (intent === 'intro') {
+    return {
+      intent: 'intro',
+      allowClose: true,
+      headline: 'Start Three-Day Free Trial',
+      subheadline: 'Create Your First Order And Download 10 Inboxes',
+      description: null
+    };
+  }
+
+  if (intent === 'retry') {
+    return {
+      intent: 'retry',
+      allowClose: false,
+      headline: 'Payment Overdue',
+      subheadline: 'Pay The Open Invoice To Restore Access',
+      description: null
+    };
+  }
+
   if (intent === 'advanced') {
     return {
       intent: 'advanced',
@@ -209,7 +229,7 @@ export function BillingProvider({ children }) {
   const blockingCheckout = buildBlockingCheckout(billing);
 
   useEffect(() => {
-    if (!user?.id || !blockingCheckout) {
+    if (!user?.id || !blockingCheckout || billing?.blockingReason !== 'payment_overdue') {
       return;
     }
 
@@ -218,7 +238,7 @@ export function BillingProvider({ children }) {
     }
 
     redirectToBilling(blockingCheckout.intent, { replace: true });
-  }, [user?.id, blockingCheckout?.intent, location.pathname]);
+  }, [user?.id, billing?.blockingReason, blockingCheckout?.intent, location.pathname]);
 
   return (
     <BillingContext.Provider value={value}>

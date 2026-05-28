@@ -93,7 +93,7 @@ async function resolveInvoiceForStatus(customerId, latestInvoice, subscriptionSt
   if (latestInvoice && typeof latestInvoice === 'object') {
     return latestInvoice;
   }
-  if (subscriptionStatus === 'past_due' || subscriptionStatus === 'unpaid') {
+  if (['past_due', 'unpaid', 'incomplete'].includes(subscriptionStatus)) {
     return getPendingInvoice(customerId);
   }
   return null;

@@ -84,6 +84,38 @@ function getDownloadRows(rows, billing) {
   return list.slice(0, allowance);
 }
 
+function buildBillingRequiredNotice(billing, responseData = {}) {
+  const blockingReason = responseData.blockingReason || billing?.blockingReason;
+  const recommendedCheckoutIntent = responseData.recommendedCheckoutIntent
+    || billing?.recommendedCheckoutIntent
+    || (blockingReason === 'needs_intro_offer' ? 'intro' : (blockingReason === 'payment_overdue' ? 'retry' : 'standard'));
+
+  if (blockingReason === 'payment_overdue') {
+    return {
+      intent: 'retry',
+      title: 'Payment Overdue',
+      subtitle: 'Pay the open invoice to restore access.',
+      action: 'Pay Invoice'
+    };
+  }
+
+  if (blockingReason === 'needs_intro_offer' || recommendedCheckoutIntent === 'intro') {
+    return {
+      intent: 'intro',
+      title: 'Free Trial Not Found',
+      subtitle: 'Start your three-day trial to create one order and download 10 inboxes.',
+      action: 'Start Free Trial'
+    };
+  }
+
+  return {
+    intent: recommendedCheckoutIntent || 'standard',
+    title: 'Active Subscription Not Found',
+    subtitle: 'Upgrade to continue creating and processing orders.',
+    action: 'Upgrade'
+  };
+}
+
 export default function Orders() {
   const { refreshUser } = useAuth();
   const { billing, refreshBilling, openUpgrade, reviewUrl } = useBilling();
@@ -99,6 +131,7 @@ export default function Orders() {
   const [downloadNotice, setDownloadNotice] = useState(false);
   const [upgradeNotice, setUpgradeNotice] = useState(false);
   const [processingLimitNotice, setProcessingLimitNotice] = useState(false);
+  const [billingRequiredNotice, setBillingRequiredNotice] = useState(null);
 
   const [tenantEmail, setTenantEmail] = useState('');
   const [tenantPassword, setTenantPassword] = useState('');
@@ -156,6 +189,10 @@ export default function Orders() {
     () => Boolean(billing?.completedOrderQuotaReached) || (!canCreateMoreThanOneCompletedOrder && orders.some(o => o.status === 'completed')),
     [billing?.completedOrderQuotaReached, orders, canCreateMoreThanOneCompletedOrder]
   );
+
+  const handleBillingRequired = (responseData = {}) => {
+    setBillingRequiredNotice(buildBillingRequiredNotice(billing, responseData));
+  };
 
   const fetchOrders = async () => {
     setLoading(true);
@@ -371,6 +408,8 @@ export default function Orders() {
       } catch (error) {
         if (error.response?.data?.code === 'ORDER_CONCURRENCY_LIMIT') {
           setProcessingLimitNotice(true);
+        } else if (error.response?.data?.code === 'BILLING_REQUIRED') {
+          handleBillingRequired(error.response.data);
         } else {
           throw error;
         }
@@ -378,6 +417,10 @@ export default function Orders() {
       closeWizard();
       await fetchOrders();
     } catch (e) {
+      if (e.response?.data?.code === 'BILLING_REQUIRED') {
+        handleBillingRequired(e.response.data);
+        return;
+      }
       setWizardError(e.response?.data?.error || 'Failed to start order');
     } finally {
       setWizardBusy(false);
@@ -432,6 +475,10 @@ export default function Orders() {
     } catch (e) {
       if (e.response?.data?.code === 'ORDER_CONCURRENCY_LIMIT') {
         setProcessingLimitNotice(true);
+        return;
+      }
+      if (e.response?.data?.code === 'BILLING_REQUIRED') {
+        handleBillingRequired(e.response.data);
         return;
       }
       alert(e.response?.data?.error || 'Failed to start');
@@ -501,6 +548,10 @@ export default function Orders() {
             <button
               className="btn primary"
               onClick={() => {
+                if (!billing?.canAccessApp) {
+                  handleBillingRequired();
+                  return;
+                }
                 if (completedOrderLimitReached) {
                   setUpgradeNotice(true);
                   return;
@@ -912,6 +963,30 @@ export default function Orders() {
                 <a className="btn ghost" href={reviewUrl} target="_blank" rel="noreferrer">
                   Leave A Video Review
                 </a>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {billingRequiredNotice && (
+          <div className="modal-overlay" onClick={() => setBillingRequiredNotice(null)}>
+            <div className="modal upgrade-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="wizard-header">
+                <div>
+                  <h2>{billingRequiredNotice.title}</h2>
+                </div>
+                <button className="icon-btn" onClick={() => setBillingRequiredNotice(null)} title="Close">✕</button>
+              </div>
+              <p className="modal-subtitle">
+                {billingRequiredNotice.subtitle}
+              </p>
+              <div className="modal-actions centered">
+                <button
+                  className="btn accent"
+                  onClick={() => void openUpgrade(billingRequiredNotice.intent)}
+                >
+                  {billingRequiredNotice.action}
+                </button>
               </div>
             </div>
           </div>

@@ -180,3 +180,12 @@ Billing uses Stripe-hosted Checkout, not embedded Elements.
 - The return page calls `/api/billing/return`, refreshes billing status, then sends the user to `/orders`.
 
 Do not reintroduce `@stripe/react-stripe-js`, `@stripe/stripe-js`, `CheckoutElementsProvider`, `PaymentElement`, `ui_mode: elements`, or embedded checkout unless the whole product decision changes.
+
+## Billing Access Rules
+
+- Active trial (`trialing`) can access the app, create one completed order, and download 10 inboxes.
+- Active Standard subscription can access the app, create more than one completed order, download all inboxes, and process one order at a time.
+- Active Advanced subscription can access the app, download all inboxes, use custom mailbox names, and process multiple orders at once.
+- Missing trial/subscription is a soft gate: let the user enter the app, but when they click New Order or try to process an order, show the trial/upgrade prompt and send them to hosted Checkout.
+- Overdue billing (`past_due`, `unpaid`, or `incomplete`) is a hard gate: redirect to `/billing?intent=retry` and show the open Stripe invoice or billing portal.
+- Completed trial order usage is tracked on the user record so deleting an old completed order does not reset the one-order trial limit.

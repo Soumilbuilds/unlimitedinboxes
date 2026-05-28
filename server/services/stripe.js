@@ -1,4 +1,5 @@
 import Stripe from 'stripe';
+import { getUserAccessState } from './access.js';
 
 const STRIPE_SECRET = process.env.STRIPE_SECRET_KEY || '';
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
@@ -301,90 +302,34 @@ export function verifyStripeWebhookSignature(payload, sig) {
 export function serializeStripeBillingState(user) {
   const subStatus = String(user?.stripe_subscription_status || '').toLowerCase();
   const product = String(user?.stripe_product || '').trim();
-  const hasActiveSub = subStatus === 'active' || subStatus === 'trialing';
+  const access = getUserAccessState(user);
   const isPaid = subStatus === 'active';
   const isTrialing = subStatus === 'trialing';
-  const isPastDue = subStatus === 'past_due' || subStatus === 'unpaid';
+  const isPastDue = access.hasBillingIssue;
   const isCanceled = ['canceled', 'incomplete_expired', 'paused'].includes(subStatus);
   const isCancelledAtPeriodEnd = !!user?.stripe_cancel_at_period_end;
-  const introOfferUsed = !!user?.stripe_intro_offer_used || !!user?.stripe_subscription_id;
-
-  const effectivePlan = hasActiveSub ? planForProduct(product, subStatus) : 'free';
-  const paidTier = isPaid ? planForProduct(product, subStatus) : null;
-
-  let canAccessApp = false;
-  let downloadAllowance = 0;
-  let maxConcurrentOrders = 0;
-  let canUseCustomNames = false;
-  let canDownloadAll = false;
-  let canCreateMoreThanOneCompletedOrder = false;
-  let canOpenInboxesPage = false;
-  let unlimitedConcurrency = false;
-
-  if (isTrialing) {
-    canAccessApp = true;
-    downloadAllowance = 10;
-    maxConcurrentOrders = 1;
-    canOpenInboxesPage = true;
-  } else if (isPaid && paidTier === 'standard') {
-    canAccessApp = true;
-    downloadAllowance = Infinity;
-    maxConcurrentOrders = 1;
-    canUseCustomNames = true;
-    canOpenInboxesPage = true;
-    canDownloadAll = true;
-    canCreateMoreThanOneCompletedOrder = true;
-  } else if (isPaid && paidTier === 'advanced') {
-    canAccessApp = true;
-    downloadAllowance = Infinity;
-    maxConcurrentOrders = Infinity;
-    canUseCustomNames = true;
-    canOpenInboxesPage = true;
-    canDownloadAll = true;
-    canCreateMoreThanOneCompletedOrder = true;
-    unlimitedConcurrency = true;
-  }
-
-  let blockingReason = null;
-  let needsIntroOffer = false;
-  let needsPaidSubscription = false;
-  let recommendedCheckoutIntent = null;
-
-  if (!canAccessApp) {
-    if (isPastDue) {
-      blockingReason = 'payment_overdue';
-      needsPaidSubscription = true;
-      recommendedCheckoutIntent = 'retry';
-    } else if (!introOfferUsed) {
-      blockingReason = 'needs_intro_offer';
-      needsIntroOffer = true;
-      recommendedCheckoutIntent = 'intro';
-    } else {
-      blockingReason = isCanceled ? 'subscription_inactive' : 'needs_paid_subscription';
-      needsPaidSubscription = true;
-      recommendedCheckoutIntent = 'standard';
-    }
-  }
+  const paidTier = access.subscriptionTier || (isPaid ? planForProduct(product, subStatus) : null);
+  const unlimitedConcurrency = access.maxConcurrentOrders === Number.POSITIVE_INFINITY;
 
   return {
     configured: isStripeConfigured(),
     provider: 'stripe',
-    plan: effectivePlan,
+    plan: access.effectivePlan,
     isPaid,
     isTrialing,
     isPastDue,
     isCanceled,
     isCancelledAtPeriodEnd,
-    introOfferUsed,
-    canAccessApp,
-    canUseCustomNames,
-    canOpenInboxesPage,
-    canDownloadAll,
-    canCreateMoreThanOneCompletedOrder,
-    completedOrderQuotaReached: false,
-    downloadAllowance,
-    lifetimeCompletedOrders: user?.lifetime_completed_orders || 0,
-    maxConcurrentOrders,
+    introOfferUsed: access.introOfferUsed,
+    canAccessApp: access.canAccessApp,
+    canUseCustomNames: access.canUseCustomNames,
+    canOpenInboxesPage: access.canOpenInboxesPage,
+    canDownloadAll: access.canDownloadAll,
+    canCreateMoreThanOneCompletedOrder: access.canCreateMoreThanOneCompletedOrder,
+    completedOrderQuotaReached: access.completedOrderQuotaReached,
+    downloadAllowance: access.downloadAllowance,
+    lifetimeCompletedOrders: access.lifetimeCompletedOrders,
+    maxConcurrentOrders: access.maxConcurrentOrders,
     unlimitedConcurrency,
     subscriptionTier: isTrialing ? 'intro' : paidTier,
     subscriptionStatus: subStatus || null,
@@ -393,13 +338,13 @@ export function serializeStripeBillingState(user) {
     renewalPeriodEnd: user?.stripe_current_period_end || null,
     trialEndsAt: user?.stripe_trial_ends_at || null,
     cancelAtPeriodEnd: isCancelledAtPeriodEnd,
-    needsIntroOffer,
-    needsPaidSubscription,
-    needsPaymentMethodUpdate: isPastDue,
-    blockingReason,
-    recommendedCheckoutIntent,
+    needsIntroOffer: access.needsIntroOffer,
+    needsPaidSubscription: access.needsPaidSubscription,
+    needsPaymentMethodUpdate: access.needsPaymentMethodUpdate,
+    blockingReason: access.blockingReason,
+    recommendedCheckoutIntent: access.recommendedCheckoutIntent,
     hasBillingPortal: !!user?.stripe_customer_id,
-    hasBillingIssue: isPastDue,
+    hasBillingIssue: access.hasBillingIssue,
     overdueInvoiceId: isPastDue ? user?.stripe_last_invoice_id || null : null,
     overdueInvoiceUrl: isPastDue ? user?.stripe_last_invoice_url || null : null,
   };

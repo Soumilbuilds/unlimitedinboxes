@@ -147,6 +147,31 @@ function buildTenantConflictMessage(existingOrder, tenantLike) {
   return `This Microsoft tenant is already attached to order #${existingOrder.id} for ${existingDomain}. Use a different Microsoft tenant for ${targetDomain}, or restart the existing order instead of creating another one.`;
 }
 
+function billingRequiredPayload(accessState, actionLabel) {
+  const blockingReason = accessState.blockingReason
+    || (accessState.hasBillingIssue
+      ? 'payment_overdue'
+      : (accessState.needsIntroOffer ? 'needs_intro_offer' : 'needs_paid_subscription'));
+  const recommendedCheckoutIntent = accessState.recommendedCheckoutIntent
+    || (blockingReason === 'payment_overdue'
+      ? 'retry'
+      : (blockingReason === 'needs_intro_offer' ? 'intro' : 'standard'));
+
+  let error = `No active trial or subscription found. Start checkout before ${actionLabel}.`;
+  if (blockingReason === 'needs_intro_offer') {
+    error = `Free trial not found. Start the introductory checkout before ${actionLabel}.`;
+  } else if (blockingReason === 'payment_overdue') {
+    error = 'A Stripe invoice is overdue. Pay the open invoice to restore access.';
+  }
+
+  return {
+    code: 'BILLING_REQUIRED',
+    blockingReason,
+    recommendedCheckoutIntent,
+    error,
+  };
+}
+
 function sanitizeImplementationText(text) {
   if (!text) return text;
   let output = String(text);
@@ -266,12 +291,7 @@ router.post('/', (req, res) => {
 
     const accessState = req.accessState || getUserAccessState(req.session.user);
     if (!accessState.canAccessApp) {
-      return res.status(403).json({
-        code: 'BILLING_REQUIRED',
-        error: accessState.needsIntroOffer
-          ? 'Start the introductory checkout before creating an order.'
-          : 'No active trial or subscription found. Upgrade to continue.'
-      });
+      return res.status(403).json(billingRequiredPayload(accessState, 'creating an order'));
     }
 
     if (!accessState.canCreateMoreThanOneCompletedOrder) {
@@ -334,12 +354,7 @@ router.post('/:id/start', (req, res) => {
     const accessState = req.accessState || getUserAccessState(req.session.user);
 
     if (!accessState.canAccessApp) {
-      return res.status(403).json({
-        code: 'BILLING_REQUIRED',
-        error: accessState.needsIntroOffer
-          ? 'Start the introductory checkout before processing an order.'
-          : 'No active trial or subscription found. Upgrade to continue.'
-      });
+      return res.status(403).json(billingRequiredPayload(accessState, 'processing an order'));
     }
 
     if (
@@ -351,6 +366,16 @@ router.post('/:id/start', (req, res) => {
         code: 'ORDER_LIMIT_REACHED',
         error: 'This account has already used its included completed order. Upgrade to continue.'
       });
+    }
+
+    if (!accessState.canCreateMoreThanOneCompletedOrder && order.status !== 'completed') {
+      const hasCompleted = getOrders(req.session.user.id).some(existing => existing.status === 'completed');
+      if (hasCompleted) {
+        return res.status(403).json({
+          code: 'ORDER_LIMIT_REACHED',
+          error: 'This account has already used its included completed order. Upgrade to continue.'
+        });
+      }
     }
 
     if (order.status === 'processing') {

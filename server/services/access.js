@@ -45,13 +45,17 @@ export function isPaymentMethodUpdateStatus(status) {
   return normalizeLower(status) === 'on_hold';
 }
 
+function isBillingIssueStatus(status) {
+  return ['past_due', 'unpaid', 'incomplete'].includes(normalizeLower(status));
+}
+
 function getStripeState(user) {
   const subStatus = normalizeLower(user?.stripe_subscription_status);
   const product = normalize(user?.stripe_product);
 
   const isActive = subStatus === 'active' || subStatus === 'trialing';
   const trialActive = subStatus === 'trialing';
-  const hasBillingIssue = subStatus === 'past_due';
+  const hasBillingIssue = isBillingIssueStatus(subStatus);
 
   let paidTier = null;
   if (isActive && !trialActive) {
@@ -73,7 +77,7 @@ function getStripeState(user) {
     membershipStatus: subStatus,
     introOfferUsed,
     hasBillingPortal: !!user?.stripe_customer_id,
-    isPastDue: subStatus === 'past_due',
+    isPastDue: hasBillingIssue,
   };
 }
 
@@ -136,6 +140,12 @@ export function getUserAccessState(user) {
   const usedIntroOffer = hasUsedIntroOffer(user);
   const needsIntroOffer = !canAccessApp && !usedIntroOffer;
   const needsPaidSubscription = !canAccessApp && usedIntroOffer && !stripeState.isPastDue;
+  const blockingReason = stripeState.isPastDue
+    ? 'payment_overdue'
+    : (needsIntroOffer ? 'needs_intro_offer' : (!canAccessApp ? 'needs_paid_subscription' : null));
+  const recommendedCheckoutIntent = stripeState.isPastDue
+    ? 'retry'
+    : (needsIntroOffer ? 'intro' : (!canAccessApp ? 'standard' : null));
   const completedOrderQuotaReached =
     !canCreateMoreThanOneCompletedOrder
     && lifetimeCompletedOrders >= 1;
@@ -159,6 +169,8 @@ export function getUserAccessState(user) {
     needsIntroOffer,
     needsPaidSubscription,
     needsPaymentMethodUpdate: stripeState.isPastDue,
+    blockingReason,
+    recommendedCheckoutIntent,
     isFullyPaid: paidTier === 'standard' || paidTier === 'advanced',
     hasBillingPortal: stripeState.hasBillingPortal,
     cleanupDueAt: null,

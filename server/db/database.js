@@ -150,12 +150,31 @@ function ensureUserBillingColumns() {
   ensureColumn('users', 'whop_plan_id', 'TEXT');
 }
 
+function backfillLifetimeCompletedOrders() {
+  db.prepare(`
+    UPDATE users
+    SET lifetime_completed_orders = (
+      SELECT COUNT(*)
+      FROM orders
+      WHERE orders.user_id = users.id
+        AND orders.status = 'completed'
+    )
+    WHERE COALESCE(lifetime_completed_orders, 0) < (
+      SELECT COUNT(*)
+      FROM orders
+      WHERE orders.user_id = users.id
+        AND orders.status = 'completed'
+    )
+  `).run();
+}
+
 ensureOrdersPasswordColumn();
 ensureOrdersNameColumn();
 ensureTenantsUserColumn();
 ensureTenantsRedirectColumn();
 ensureOrdersUserColumn();
 ensureUserBillingColumns();
+backfillLifetimeCompletedOrders();
 
 // --- USERS ---
 
@@ -383,12 +402,29 @@ export function getOrderByIdForUser(id, userId) {
 }
 
 export function updateOrderStatus(id, status) {
+  const existing = db.prepare('SELECT id, user_id, status FROM orders WHERE id = ?').get(id);
   const stmt = db.prepare(`
     UPDATE orders
     SET status = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `);
-  return stmt.run(status, id);
+  const result = stmt.run(status, id);
+
+  if (
+    result.changes > 0
+    && status === 'completed'
+    && existing?.status !== 'completed'
+    && existing?.user_id
+  ) {
+    db.prepare(`
+      UPDATE users
+      SET lifetime_completed_orders = COALESCE(lifetime_completed_orders, 0) + 1,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(existing.user_id);
+  }
+
+  return result;
 }
 
 export function updateOrderProgress(id, progress, createdMailboxes = null) {
