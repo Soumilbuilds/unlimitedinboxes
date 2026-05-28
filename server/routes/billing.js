@@ -346,11 +346,19 @@ router.post('/webhook', async (req, res) => {
         const session = event.data.object;
 
         if (session.metadata?.type === 'tenant_purchase') {
+          const custId = idOf(session.customer);
           updateTenantPurchaseByCheckoutSession(session.id, {
             status: session.payment_status === 'paid' ? 'paid' : 'complete',
             stripe_payment_intent_id: idOf(session.payment_intent),
-            stripe_customer_id: idOf(session.customer),
+            stripe_customer_id: custId,
           });
+          if (custId) {
+            const userId = Number(session.metadata?.user_id);
+            const user = userId ? getUserById(userId) : null;
+            if (user && !user.stripe_customer_id) {
+              updateUserBillingById(user.id, { stripe_customer_id: custId });
+            }
+          }
           break;
         }
 

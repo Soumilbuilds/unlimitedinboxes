@@ -125,6 +125,7 @@ export default function BillingCheckout() {
         ) : (
           <BillingCheckoutEmbed
             intent={intent}
+            openBillingPortal={openBillingPortal}
             onSynced={() => {
               redirectToOrders();
             }}

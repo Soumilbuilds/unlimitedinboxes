@@ -48,7 +48,7 @@ async function pollBilling(intent, sessionId, onSynced, onError, cancelled) {
   }
 }
 
-export default function BillingCheckoutEmbed({ intent = 'standard', onSynced, onError }) {
+export default function BillingCheckoutEmbed({ intent = 'standard', onSynced, onError, openBillingPortal }) {
   const { user } = useAuth();
   const [error, setError] = useState('');
   const [message, setMessage] = useState('Preparing secure checkout...');
@@ -85,6 +85,12 @@ export default function BillingCheckoutEmbed({ intent = 'standard', onSynced, on
 
     if (sessionId) {
       void finalizeReturn();
+    } else if (intent === 'retry') {
+      setError('');
+      setMessage('');
+      if (typeof openBillingPortal === 'function') {
+        void openBillingPortal();
+      }
     } else {
       void redirectToHostedCheckout();
     }
