@@ -126,48 +126,15 @@ export async function createStripeCheckoutSession(user, planKey, opts = {}) {
 
 export async function createTenantCheckoutSession(user, tenantType, quantity, opts = {}) {
   const priceId = STRIPE_PRICES[tenantType];
-  const unitAmount = centsForTenantUnit(tenantType);
-  let lineItem = {
-    price_data: {
-      currency: 'usd',
-      product_data: { name: tenantProductName(tenantType) },
-      unit_amount: unitAmount,
-    },
-    quantity,
-  };
-
-  if (priceId) {
-    try {
-      const configuredPrice = await client().prices.retrieve(priceId);
-      if (configuredPrice.recurring) {
-        const productId = typeof configuredPrice.product === 'string'
-          ? configuredPrice.product
-          : configuredPrice.product?.id;
-        lineItem = {
-          price_data: compactObject({
-            currency: configuredPrice.currency || 'usd',
-            product: productId || undefined,
-            product_data: productId ? undefined : { name: tenantProductName(tenantType) },
-            unit_amount: unitAmount,
-          }),
-          quantity,
-        };
-      } else {
-        lineItem = { price: priceId, quantity };
-      }
-    } catch {
-      // Fall back to inline one-time price data if the configured price cannot be read.
-    }
-  }
+  if (!priceId) throw new Error(`Unknown tenant type: ${tenantType}`);
 
   const successUrl = `${baseUrl(opts)}/tenants?tenant_purchase=success&session_id={CHECKOUT_SESSION_ID}`;
   const cancelUrl = opts.cancelUrl || `${baseUrl(opts)}/tenants`;
 
   const session = await client().checkout.sessions.create(compactObject({
-    mode: 'payment',
+    mode: 'subscription',
     ...customerParam(user),
-    customer_creation: user.stripe_customer_id ? undefined : 'always',
-    line_items: [lineItem],
+    line_items: [{ price: priceId, quantity }],
     success_url: successUrl,
     cancel_url: cancelUrl,
     metadata: {
@@ -178,14 +145,16 @@ export async function createTenantCheckoutSession(user, tenantType, quantity, op
       quantity: String(quantity),
       ...(opts.metadata || {}),
     },
-    payment_intent_data: {
-      setup_future_usage: 'off_session',
+    subscription_data: compactObject({
       metadata: {
         type: 'tenant_purchase',
         user_id: String(user.id),
         tenant_type: tenantType,
         quantity: String(quantity),
       },
+    }),
+    payment_intent_data: {
+      setup_future_usage: 'off_session',
     },
     billing_address_collection: 'auto',
     phone_number_collection: { enabled: false },
