@@ -14,6 +14,7 @@ import {
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
 import { processOrder, cancelOrder, getOrderLogs, hasActiveJob } from '../services/orderProcessor.js';
+import { validateApiKey } from '../services/apiKey.js';
 
 const router = Router();
 
@@ -52,18 +53,24 @@ function isValidFullName(name) {
   return parts.length >= 2;
 }
 
-const requireAuth = (req, res, next) => {
-  if (!req.session.authenticated) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  if (!req.session.user?.id) {
+const requireAuth = async (req, res, next) => {
+  // Check for API key first
+  const apiKey = req.headers['x-api-key'];
+  if (apiKey) {
+    const user = await validateApiKey(apiKey);
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid API key' });
+    }
+    req.session = { user, authenticated: true };
+    req.session.user = user;
+  } else if (!req.session.authenticated || !req.session.user?.id) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
 };
 
 router.use(requireAuth);
-router.use((req, _res, next) => {
+router.use(async (req, _res, next) => {
   if (req.session.user?.email) {
       const latest = getUserByEmail(req.session.user.email);
       if (latest) {
@@ -72,6 +79,9 @@ router.use((req, _res, next) => {
         req.session.user.billingStatus = latest.stripe_subscription_status || null;
         req.accessState = getUserAccessState(latest);
       }
+  } else if (req.session.user?.id) {
+    // API key auth - refresh from DB using ID
+    req.accessState = getUserAccessState(req.session.user);
   }
   next();
 });

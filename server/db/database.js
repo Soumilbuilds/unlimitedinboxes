@@ -76,6 +76,15 @@ db.exec(`
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
+
+  CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL UNIQUE,
+    key_hash TEXT NOT NULL UNIQUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_used_at DATETIME,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
 `);
 
 function tableColumns(tableName) {
@@ -556,6 +565,28 @@ export function getTenantPurchaseByCheckoutSession(sessionId) {
 
 export function getTenantPurchaseByPaymentIntent(paymentIntentId) {
   return db.prepare('SELECT * FROM tenant_purchases WHERE stripe_payment_intent_id = ?').get(paymentIntentId);
+}
+
+export function validateApiKeyForUser(keyHash) {
+  const row = db.prepare('SELECT user_id FROM api_keys WHERE key_hash = ?').get(keyHash);
+  return row ? row.user_id : null;
+}
+
+export function createApiKey(userId, keyHash) {
+  db.prepare('DELETE FROM api_keys WHERE user_id = ?').run(userId);
+  db.prepare('INSERT INTO api_keys (user_id, key_hash) VALUES (?, ?)').run(userId, keyHash);
+}
+
+export function getApiKey(userId) {
+  return db.prepare('SELECT created_at, last_used_at FROM api_keys WHERE user_id = ?').get(userId);
+}
+
+export function deleteApiKey(userId) {
+  return db.prepare('DELETE FROM api_keys WHERE user_id = ?').run(userId);
+}
+
+export function touchApiKey(userId) {
+  db.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE user_id = ?").run(userId);
 }
 
 export default db;

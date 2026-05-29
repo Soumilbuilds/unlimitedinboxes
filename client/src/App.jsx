@@ -4,6 +4,7 @@ import { BillingProvider } from './context/BillingContext';
 import Login from './pages/Login';
 import Orders from './pages/Orders';
 import Inboxes from './pages/Inboxes';
+import API from './pages/API';
 import Tenants from './pages/Tenants';
 import TenantCheckout from './pages/TenantCheckout';
 import Redirects from './pages/Redirects';
@@ -72,6 +73,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Inboxes />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/api"
+              element={
+                <ProtectedRoute>
+                  <API />
                 </ProtectedRoute>
               }
             />

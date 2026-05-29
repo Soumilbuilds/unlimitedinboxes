@@ -212,15 +212,23 @@ router.post('/:id/nameservers', async (req, res) => {
     if (tenant.cloudflare_zone_id && tenant.cloudflare_ns) {
       return res.json({
         success: true,
-        name_servers: JSON.parse(tenant.cloudflare_ns)
+        name_servers: JSON.parse(tenant.cloudflare_ns),
+        zone_active: false
       });
     }
 
     const zone = await createZone(tenant.domain);
     updateTenantCloudflare(tenant.id, zone.id, zone.name_servers);
 
-    res.json({ success: true, name_servers: zone.name_servers });
+    res.json({ success: true, name_servers: zone.name_servers, zone_active: true });
   } catch (error) {
+    const errorData = error.response?.data;
+    if (errorData?.errors?.[0]?.code === 0 &&
+        errorData.errors[0].message?.includes('zone.create')) {
+      return res.status(403).json({
+        error: 'Cloudflare token is missing the "Zone: Create" permission. Please update your Cloudflare API token to include zone creation access and try again.'
+      });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -240,9 +248,20 @@ router.post('/:id/email-auth', async (req, res) => {
 
     let zoneId = tenant.cloudflare_zone_id;
     if (!zoneId) {
-      const zone = await createZone(domain);
-      zoneId = zone.id;
-      updateTenantCloudflare(tenant.id, zone.id, zone.name_servers);
+      try {
+        const zone = await createZone(domain);
+        zoneId = zone.id;
+        updateTenantCloudflare(tenant.id, zone.id, zone.name_servers);
+      } catch (zoneError) {
+        const errorData = zoneError.response?.data;
+        if (errorData?.errors?.[0]?.code === 0 &&
+            errorData.errors[0].message?.includes('zone.create')) {
+          return res.status(403).json({
+            error: 'Cloudflare token is missing the "Zone: Create" permission. Please update your Cloudflare API token to include zone creation access and try again.'
+          });
+        }
+        throw zoneError;
+      }
     }
 
     const spfValue = process.env.SPF_VALUE || 'v=spf1 include:spf.protection.outlook.com -all';

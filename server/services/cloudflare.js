@@ -2,6 +2,7 @@ import axios from 'axios';
 
 const { CLOUDFLARE_API_TOKEN } = process.env;
 
+// Primary token: DNS records, zone management (read/write existing zones)
 const cf = axios.create({
   baseURL: 'https://api.cloudflare.com/client/v4',
   headers: {
@@ -13,19 +14,30 @@ const cf = axios.create({
 
 let cachedAccountId = null;
 
-async function getAccountId() {
-  if (cachedAccountId) return cachedAccountId;
-  const res = await cf.get('/accounts');
+async function getAccountId(client = cf) {
+  if (client === cf && cachedAccountId) return cachedAccountId;
+  const res = await client.get('/accounts');
   if (!res.data?.result?.length) throw new Error('No Cloudflare account found');
-  cachedAccountId = res.data.result[0].id;
-  return cachedAccountId;
+  const id = res.data.result[0].id;
+  if (client === cf) cachedAccountId = id;
+  return id;
 }
 
 export async function createZone(domain) {
+  const token = process.env.CLOUDFLARE_ZONE_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
+  const client = axios.create({
+    baseURL: 'https://api.cloudflare.com/client/v4',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    timeout: 30000
+  });
+
   try {
-    const res = await cf.post('/zones', {
+    const res = await client.post('/zones', {
       name: domain,
-      account: { id: await getAccountId() },
+      account: { id: await getAccountId(client) },
       type: 'full'
     });
 

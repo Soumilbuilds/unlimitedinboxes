@@ -88,9 +88,20 @@ router.put('/:tenantId', async (req, res) => {
 
     let zoneId = tenant.cloudflare_zone_id;
     if (!zoneId) {
-      const zone = await createZone(tenant.domain);
-      zoneId = zone.id;
-      updateTenantCloudflare(tenant.id, zone.id, zone.name_servers);
+      try {
+        const zone = await createZone(tenant.domain);
+        zoneId = zone.id;
+        updateTenantCloudflare(tenant.id, zone.id, zone.name_servers);
+      } catch (zoneError) {
+        const errorData = zoneError.response?.data;
+        if (errorData?.errors?.[0]?.code === 0 &&
+            errorData.errors[0].message?.includes('zone.create')) {
+          return res.status(403).json({
+            error: 'Cloudflare token is missing the "Zone: Create" permission. Please update your Cloudflare API token to include zone creation access and try again.'
+          });
+        }
+        throw zoneError;
+      }
     }
 
     const zoneStatus = await getZoneStatus(zoneId);

@@ -10,6 +10,8 @@ import billingRoutes from './routes/billing.js';
 import tenantRoutes from './routes/tenants.js';
 import orderRoutes from './routes/orders.js';
 import redirectRoutes from './routes/redirects.js';
+import apiRoutes from './routes/api.js';
+import apiKeyRoutes from './routes/apiKeys.js';
 import { resumeInterruptedOrders } from './services/orderProcessor.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -27,6 +29,7 @@ const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://lo
   .filter(Boolean);
 
 app.set('trust proxy', 1);
+const useSecureCookie = !isProd || process.env.FORCE_HTTPS === 'true';
 app.use(cors({
   origin: corsOrigins,
   credentials: true
@@ -42,22 +45,23 @@ app.use(session({
   saveUninitialized: false,
   proxy: isProd,
   cookie: {
-    secure: isProd,
+    secure: useSecureCookie,
     httpOnly: true,
     sameSite: 'lax',
     maxAge: 24 * 60 * 60 * 1000
   }
 }));
 
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
 app.use('/api/auth', authRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/tenants', tenantRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/redirects', redirectRoutes);
-
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+app.use('/api/keys', apiKeyRoutes);
+app.use('/api', apiRoutes);
 
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, '../client/dist'), {

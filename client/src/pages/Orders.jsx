@@ -997,6 +997,30 @@ export default function Orders() {
             <div className="modal upgrade-modal" onClick={(e) => e.stopPropagation()}>
               <div className="wizard-header">
                 <div>
+                  <h2>Regenerate API Key?</h2>
+                </div>
+                <button className="icon-btn" onClick={() => setShowRegenerateModal(false)} title="Close">✕</button>
+              </div>
+              <p className="modal-subtitle">
+                Your current key will be invalidated immediately. Make sure to update any integrations.
+              </p>
+              <div className="modal-actions centered">
+                <button className="btn ghost" onClick={() => setShowRegenerateModal(false)}>
+                  Cancel
+                </button>
+                <button className="btn accent" onClick={regenerateApiKey}>
+                  Regenerate
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {processingLimitNotice && (
+          <div className="modal-overlay" onClick={() => setProcessingLimitNotice(false)}>
+            <div className="modal upgrade-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="wizard-header">
+                <div>
                   <h2>Account Upgrade Needed</h2>
                 </div>
                 <button className="icon-btn" onClick={() => setProcessingLimitNotice(false)} title="Close">✕</button>

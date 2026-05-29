@@ -205,9 +205,20 @@ export async function processOrder(orderId) {
     // Step 1: Ensure Cloudflare zone + verify domain with Microsoft
     logMessage(orderId, 'Ensuring Cloudflare zone...');
     if (!zoneId) {
-      const zone = await createZone(domain);
-      zoneId = zone.id;
-      updateTenantCloudflare(tenant.id, zone.id, zone.name_servers);
+      try {
+        const zone = await createZone(domain);
+        zoneId = zone.id;
+        updateTenantCloudflare(tenant.id, zone.id, zone.name_servers);
+      } catch (zoneError) {
+        const errorData = zoneError.response?.data;
+        if (errorData?.errors?.[0]?.code === 0 &&
+            errorData.errors[0].message?.includes('zone.create')) {
+          setOrderError(orderId, 'Cloudflare token is missing the "Zone: Create" permission. Please update your Cloudflare API token to include zone creation access.');
+          logMessage(orderId, `Fatal error: ${errorData.errors[0].message}`);
+          return;
+        }
+        throw zoneError;
+      }
     }
     if (checkCancelled(orderId)) return;
 
