@@ -22,6 +22,15 @@ async function refreshAccessState(req) {
   }
 }
 
+router.get('/', (req, res) => {
+  res.json({
+    name: 'Unlimited Inboxes API',
+    version: '1.0',
+    description: 'Manage orders, status checks, and downloads programmatically.',
+    documentation: '/api'
+  });
+});
+
 const requireApiKey = async (req, res, next) => {
   const key = req.headers['x-api-key'];
   if (!key) return res.status(401).json({ error: 'Missing API key' });
@@ -37,9 +46,7 @@ const requireApiKey = async (req, res, next) => {
   next();
 };
 
-router.use(requireApiKey);
-
-router.get('/orders', async (req, res) => {
+router.get('/orders', requireApiKey, async (req, res) => {
   try {
     const orders = getOrders(req.session.user.id);
     res.json(orders.map(order => ({
@@ -58,7 +65,7 @@ router.get('/orders', async (req, res) => {
   }
 });
 
-router.get('/orders/:id', async (req, res) => {
+router.get('/orders/:id', requireApiKey, async (req, res) => {
   try {
     const orderId = parseInt(req.params.id, 10);
     const order = getOrderByIdForUser(orderId, req.session.user.id);
@@ -83,7 +90,7 @@ router.get('/orders/:id', async (req, res) => {
   }
 });
 
-router.post('/orders/:id/start', async (req, res) => {
+router.post('/orders/:id/start', requireApiKey, async (req, res) => {
   try {
     const orderId = parseInt(req.params.id, 10);
     const order = getOrderByIdForUser(orderId, req.session.user.id);
@@ -123,7 +130,7 @@ router.post('/orders/:id/start', async (req, res) => {
   }
 });
 
-router.get('/orders/:id/download', async (req, res) => {
+router.get('/orders/:id/download', requireApiKey, async (req, res) => {
   try {
     const orderId = parseInt(req.params.id, 10);
     const order = getOrderByIdForUser(orderId, req.session.user.id);
