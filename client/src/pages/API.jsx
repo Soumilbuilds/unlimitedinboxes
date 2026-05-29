@@ -8,8 +8,17 @@ export default function API() {
   const [apiKeyError, setApiKeyError] = useState('');
   const [showRegenerateModal, setShowRegenerateModal] = useState(false);
   const [copied, setCopied] = useState(null);
-  const [testResult, setTestResult] = useState(null);
-  const [testLoading, setTestLoading] = useState(false);
+  const [keyRevealed, setKeyRevealed] = useState(false);
+  const [testModal, setTestModal] = useState(null);
+  const [paramValue, setParamValue] = useState('');
+
+  const baseUrl = (() => {
+    if (typeof window !== 'undefined') {
+      const env = window.location.hostname;
+      if (env === 'localhost' || env === '127.0.0.1') return 'http://localhost:5173';
+    }
+    return 'https://app.unlimitedinboxes.com';
+  })();
 
   const fetchApiKey = async () => {
     try {
@@ -53,43 +62,11 @@ export default function API() {
     }
   };
 
-  const copyKey = () => {
-    if (apiKey?.rawKey) {
-      navigator.clipboard.writeText(apiKey.rawKey);
-      setCopied('key');
-      setTimeout(() => setCopied(null), 2000);
-    }
-  };
-
-  const copyCurl = (curlCmd, endpointId) => {
-    navigator.clipboard.writeText(curlCmd);
-    setCopied(endpointId);
+  const copyToClipboard = (text, id) => {
+    navigator.clipboard.writeText(text);
+    setCopied(id);
     setTimeout(() => setCopied(null), 2000);
   };
-
-  const testApiKey = async () => {
-    if (!apiKey?.rawKey) return;
-    setTestLoading(true);
-    setTestResult(null);
-    try {
-      const res = await api.get('/orders');
-      setTestResult({ success: true, data: res.data });
-    } catch (e) {
-      setTestResult({ success: false, error: e.response?.data?.error || e.message });
-    } finally {
-      setTestLoading(false);
-    }
-  };
-
-  const baseUrl = (() => {
-    if (typeof window !== 'undefined') {
-      const env = window.location.hostname;
-      if (env === 'localhost' || env === '127.0.0.1') return 'http://localhost:5173';
-    }
-    return 'https://unlimitedinboxes.com';
-  })();
-
-  const getKeyValue = () => apiKey?.rawKey || 'YOUR_API_KEY';
 
   const endpoints = [
     {
@@ -97,11 +74,9 @@ export default function API() {
       method: 'GET',
       path: '/api/orders',
       desc: 'List all your orders',
-      headers: { 'x-api-key': 'Required — your API key' },
       params: null,
-      body: null,
       response: {
-        description: 'Array of order objects with pagination info',
+        description: 'Array of order objects',
         example: {
           orders: [
             {
@@ -115,22 +90,16 @@ export default function API() {
           ],
           total: 1
         }
-      },
-      errors: [
-        { code: 401, message: 'Unauthorized — missing or invalid API key' }
-      ],
-      curl: `${baseUrl}/api/orders`
+      }
     },
     {
       id: 'get-order',
       method: 'GET',
       path: '/api/orders/:id',
-      desc: 'Get a specific order by ID with full details',
-      headers: { 'x-api-key': 'Required — your API key' },
-      params: { id: 'Order ID (integer, required)' },
-      body: null,
+      desc: 'Get a specific order by ID',
+      params: { id: 'Order ID' },
       response: {
-        description: 'Full order object with status and progress',
+        description: 'Full order object',
         example: {
           id: 1,
           status: 'pending',
@@ -140,21 +109,14 @@ export default function API() {
           createdAt: '2026-05-29T10:30:00.000Z',
           updatedAt: '2026-05-29T10:30:00.000Z'
         }
-      },
-      errors: [
-        { code: 401, message: 'Unauthorized — missing or invalid API key' },
-        { code: 404, message: 'Not Found — order does not exist' }
-      ],
-      curl: `${baseUrl}/api/orders/1`
+      }
     },
     {
       id: 'start-order',
       method: 'POST',
       path: '/api/orders/:id/start',
-      desc: 'Start processing an order to create mailboxes',
-      headers: { 'x-api-key': 'Required — your API key' },
-      params: { id: 'Order ID (integer, required)' },
-      body: null,
+      desc: 'Start processing an order',
+      params: { id: 'Order ID' },
       response: {
         description: 'Success confirmation',
         example: {
@@ -162,48 +124,50 @@ export default function API() {
           message: 'Processing started',
           orderId: 1
         }
-      },
-      errors: [
-        { code: 401, message: 'Unauthorized — missing or invalid API key' },
-        { code: 404, message: 'Not Found — order does not exist' },
-        { code: 409, message: 'Conflict — order already processing or completed' }
-      ],
-      curl: `-X POST ${baseUrl}/api/orders/1/start`
+      }
     },
     {
       id: 'download-csv',
       method: 'GET',
       path: '/api/orders/:id/download',
-      desc: 'Download mailbox credentials as a CSV file',
-      headers: { 'x-api-key': 'Required — your API key' },
-      params: { id: 'Order ID (integer, required)' },
-      body: null,
+      desc: 'Download mailbox credentials as CSV',
+      params: { id: 'Order ID' },
       response: {
-        description: 'CSV file download with columns: email, password',
-        example: 'email,password\nmailbox1@example.com,securePassword123\nmailbox2@example.com,securePassword456',
-        contentType: 'text/csv'
-      },
-      errors: [
-        { code: 401, message: 'Unauthorized — missing or invalid API key' },
-        { code: 403, message: 'Forbidden — download requires paid plan or completed order' },
-        { code: 404, message: 'Not Found — order does not exist' }
-      ],
-      curl: `${baseUrl}/api/orders/1/download`
+        description: 'CSV file download',
+        example: 'email,password\nmailbox1@example.com,securePassword123'
+      }
     }
   ];
 
-  const generateCurl = (ep) => {
+  const generateCurl = (ep, paramId = null) => {
+    const key = apiKey?.rawKey || 'YOUR_API_KEY';
+    let url = `${baseUrl}${ep.path}`;
+    if (paramId) {
+      url = url.replace(':id', paramId);
+    }
     if (ep.method === 'POST') {
-      return `curl ${ep.curl} \\
-  -H "x-api-key: ${getKeyValue()}"`;
+      return `curl ${url} -X POST -H "x-api-key: ${key}"`;
     }
     if (ep.path.includes('/download')) {
-      return `curl ${ep.curl} \\
-  -H "x-api-key: ${getKeyValue()}" \\
-  -o mailboxes.csv`;
+      return `curl ${url} -H "x-api-key: ${key}" -o mailboxes.csv`;
     }
-    return `curl ${ep.curl} \\
-  -H "x-api-key: ${getKeyValue()}"`;
+    return `curl ${url} -H "x-api-key: ${key}"`;
+  };
+
+  const handleTestClick = (ep) => {
+    if (ep.params) {
+      setTestModal(ep);
+      setParamValue('');
+    } else {
+      copyToClipboard(generateCurl(ep), ep.id);
+    }
+  };
+
+  const handleModalSubmit = (ep) => {
+    if (paramValue.trim()) {
+      copyToClipboard(generateCurl(ep, paramValue.trim()), ep.id);
+      setTestModal(null);
+    }
   };
 
   return (
@@ -211,17 +175,25 @@ export default function API() {
       <Sidebar />
       <main className="main-content api-page">
         <div className="page-header">
-          <div>
-            <h1>API</h1>
-            <p>Programmatic access to your orders, status checks, and downloads.</p>
-          </div>
+          <h1>API Reference</h1>
+          <p>Programmatic access to your orders, status checks, and downloads.</p>
         </div>
 
         <div className="api-content">
+          {/* Authentication Section */}
+          <section className="api-section">
+            <h2 className="section-title">Authentication</h2>
+            <p className="section-desc">Include your API key in every request using the <code className="inline-code">x-api-key</code> header.</p>
+            <div className="code-block">
+              <div className="code-label">Request Header</div>
+              <pre>{`x-api-key: YOUR_API_KEY`}</pre>
+            </div>
+          </section>
+
           {/* API Key Section */}
           <section className="api-section">
             <h2 className="section-title">Your API Key</h2>
-            <p className="section-desc">Your API key authenticates all requests. Keep it secret.</p>
+            <p className="section-desc">Keep your API key secret. It will not be shown again after generation.</p>
 
             {apiKeyLoading ? (
               <div className="api-loading-state">
@@ -231,10 +203,27 @@ export default function API() {
             ) : apiKey?.hasKey && apiKey?.rawKey ? (
               <div className="key-display generated">
                 <div className="key-value">
-                  <code className="key-text">{apiKey.rawKey}</code>
-                  <button className="btn btn-copy" onClick={copyKey}>
-                    {copied === 'key' ? 'Copied' : 'Copy'}
-                  </button>
+                  <code className="key-text">
+                    {keyRevealed ? apiKey.rawKey : '•'.repeat(Math.min(apiKey.rawKey.length, 40))}
+                  </code>
+                  <div className="key-actions">
+                    <button className="btn btn-icon" onClick={() => setKeyRevealed(!keyRevealed)}>
+                      {keyRevealed ? (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                          <line x1="1" y1="1" x2="23" y2="23"/>
+                        </svg>
+                      ) : (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                          <circle cx="12" cy="12" r="3"/>
+                        </svg>
+                      )}
+                    </button>
+                    <button className="btn btn-copy" onClick={() => copyToClipboard(apiKey.rawKey, 'key')}>
+                      {copied === 'key' ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
                 </div>
                 <p className="key-warning">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -242,51 +231,24 @@ export default function API() {
                   </svg>
                   Save this key — it will not be shown again.
                 </p>
-                <div className="key-actions">
-                  <button className="btn btn-secondary" onClick={testApiKey} disabled={testLoading}>
-                    {testLoading ? 'Testing...' : 'Test Key'}
-                  </button>
+                <div className="key-footer">
                   <button className="btn btn-ghost" onClick={() => setShowRegenerateModal(true)}>
-                    Regenerate
+                    Regenerate Key
                   </button>
                 </div>
-                {testResult && (
-                  <div className={`test-result ${testResult.success ? 'success' : 'error'}`}>
-                    <pre>{JSON.stringify(testResult.success ? { connected: true, orderCount: testResult.data?.length || 0 } : { error: testResult.error }, null, 2)}</pre>
-                  </div>
-                )}
               </div>
             ) : apiKey?.hasKey ? (
               <div className="key-display existing">
-                <div className="key-masked">
-                  <code>{'•'.repeat(48)}</code>
-                  <span className="key-hint">Key on file — not shown for security</span>
-                </div>
-                <div className="key-meta">
-                  {apiKey.createdAt && (
-                    <span>Created {new Date(apiKey.createdAt).toLocaleDateString()}</span>
-                  )}
-                  {apiKey.lastUsedAt && (
-                    <span>Last used {new Date(apiKey.lastUsedAt).toLocaleDateString()}</span>
-                  )}
-                </div>
-                <div className="key-actions">
-                  <button className="btn btn-secondary" onClick={testApiKey} disabled={testLoading}>
-                    {testLoading ? 'Testing...' : 'Test Key'}
-                  </button>
+                <p className="key-info">Your API key is saved securely. Use Regenerate Key to get a new key (the old key will be invalidated).</p>
+                <div className="key-footer">
                   <button className="btn btn-primary" onClick={() => setShowRegenerateModal(true)}>
                     Regenerate Key
                   </button>
                 </div>
-                {testResult && (
-                  <div className={`test-result ${testResult.success ? 'success' : 'error'}`}>
-                    <pre>{JSON.stringify(testResult.success ? { connected: true, orderCount: testResult.data?.length || 0 } : { error: testResult.error }, null, 2)}</pre>
-                  </div>
-                )}
               </div>
             ) : (
               <div className="key-generate">
-                <p>No API key generated yet.</p>
+                <p>No API key generated yet. Create one to start making API requests.</p>
                 <button className="btn btn-primary btn-lg" onClick={generateApiKey}>
                   Generate API Key
                 </button>
@@ -298,25 +260,6 @@ export default function API() {
             )}
           </section>
 
-          {/* Authentication Section */}
-          <section className="api-section">
-            <h2 className="section-title">Authentication</h2>
-            <p className="section-desc">Include your API key in every request using the <code>x-api-key</code> header.</p>
-            <div className="code-block">
-              <div className="code-label">Request Header</div>
-              <pre>{`x-api-key: YOUR_API_KEY`}</pre>
-            </div>
-          </section>
-
-          {/* Base URL Section */}
-          <section className="api-section">
-            <h2 className="section-title">Base URL</h2>
-            <p className="section-desc">All API requests go to this base URL:</p>
-            <div className="base-url-display">
-              <code>{baseUrl}</code>
-            </div>
-          </section>
-
           {/* Endpoints Section */}
           <section className="api-section">
             <h2 className="section-title">Endpoints</h2>
@@ -324,134 +267,89 @@ export default function API() {
 
             <div className="endpoints-list">
               {endpoints.map((ep) => (
-                <div key={ep.path} className="endpoint-card">
-                  <div className="endpoint-main">
-                    <div className="endpoint-header">
-                      <span className={`method-badge ${ep.method.toLowerCase()}`}>{ep.method}</span>
-                      <code className="endpoint-path">{ep.path}</code>
-                    </div>
-                    <p className="endpoint-desc">{ep.desc}</p>
-                    <div className="endpoint-details">
-                      {/* Headers */}
-                      <div className="detail-row">
-                        <span className="detail-label">Headers:</span>
-                        <div className="detail-content">
-                          {ep.headers && Object.entries(ep.headers).map(([key, val]) => (
-                            <div key={key} className="header-row">
-                              <code className="header-key">{key}</code>
-                              <span className="header-val">{val}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Path Params */}
-                      {ep.params && (
-                        <div className="detail-row">
-                          <span className="detail-label">Path Params:</span>
-                          <div className="detail-content">
-                            {Object.entries(ep.params).map(([key, val]) => (
-                              <div key={key} className="param-row">
-                                <code className="param-key">{key}</code>
-                                <span className="param-val">{val}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Response */}
-                      <div className="detail-row">
-                        <span className="detail-label">Response:</span>
-                        <div className="detail-content">
-                          <p className="response-desc">{ep.response.description}</p>
-                          {typeof ep.response.example === 'string' ? (
-                            <pre className="response-preview csv">{ep.response.example}</pre>
-                          ) : (
-                            <div className="code-block response-block">
-                              <div className="code-label">Response Body</div>
-                              <pre>{JSON.stringify(ep.response.example, null, 2)}</pre>
-                            </div>
-                          )}
-                          {ep.response.contentType && (
-                            <span className="content-type-badge">{ep.response.contentType}</span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Error Responses */}
-                      {ep.errors && ep.errors.length > 0 && (
-                        <div className="detail-row">
-                          <span className="detail-label">Errors:</span>
-                          <div className="detail-content">
-                            {ep.errors.map((err, i) => (
-                              <div key={i} className="error-row">
-                                <span className="error-code">{err.code}</span>
-                                <span className="error-msg">{err.message}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                <div key={ep.id} className="endpoint-card" style={{ marginBottom: '24px', padding: '20px' }}>
+                  <div className="endpoint-header">
+                    <span className={`method-badge ${ep.method.toLowerCase()}`}>{ep.method}</span>
+                    <code className="endpoint-path">{ep.path}</code>
+                    <span className="endpoint-desc">{ep.desc}</span>
                   </div>
-                  <div className="endpoint-curl">
-                    <div className="curl-header">
-                      <span className="curl-label">curl</span>
-                      <button
-                        className="btn btn-copy-small"
-                        onClick={() => copyCurl(generateCurl(ep), ep.id)}
-                      >
-                        {copied === ep.id ? 'Copied' : 'Copy'}
-                      </button>
+
+                  {ep.params && (
+                    <div className="endpoint-params">
+                      <span className="param-label">{Object.keys(ep.params)[0]}:</span>
+                      <span className="param-desc">{Object.values(ep.params)[0]}</span>
                     </div>
-                    <pre className="curl-code">{generateCurl(ep)}</pre>
+                  )}
+
+                  <div className="endpoint-response">
+                    <span className="response-label">Response:</span>
+                    <span className="response-desc">{ep.response.description}</span>
+                  </div>
+
+                  <div className="endpoint-example">
+                    <div className="code-label">Response Body</div>
+                    <pre>{JSON.stringify(ep.response.example, null, 2)}</pre>
+                  </div>
+
+                  <div className="endpoint-actions">
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => handleTestClick(ep)}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <polygon points="5 3 19 12 5 21 5 3"/>
+                      </svg>
+                      Test
+                    </button>
                   </div>
                 </div>
               ))}
             </div>
           </section>
-
-          {/* Status Codes Section */}
-          <section className="api-section">
-            <h2 className="section-title">Status Codes</h2>
-            <div className="status-codes">
-              <div className="status-row">
-                <span className="status-code success">200</span>
-                <span>Success</span>
-              </div>
-              <div className="status-row">
-                <span className="status-code info">201</span>
-                <span>Created (new key generated)</span>
-              </div>
-              <div className="status-row">
-                <span className="status-code error">400</span>
-                <span>Bad Request — invalid parameters</span>
-              </div>
-              <div className="status-row">
-                <span className="status-code error">401</span>
-                <span>Unauthorized — missing or invalid API key</span>
-              </div>
-              <div className="status-row">
-                <span className="status-code error">403</span>
-                <span>Forbidden — not allowed (e.g. download requires paid plan)</span>
-              </div>
-              <div className="status-row">
-                <span className="status-code error">404</span>
-                <span>Not Found — order doesn't exist</span>
-              </div>
-              <div className="status-row">
-                <span className="status-code error">409</span>
-                <span>Conflict — order already processing</span>
-              </div>
-              <div className="status-row">
-                <span className="status-code error">500</span>
-                <span>Server Error — something went wrong</span>
-              </div>
-            </div>
-          </section>
         </div>
 
+        {/* Test Parameter Modal */}
+        {testModal && (
+          <div className="modal-overlay" onClick={() => setTestModal(null)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3>Enter {Object.keys(testModal.params)[0]}</h3>
+                <button className="modal-close" onClick={() => setTestModal(null)}>X</button>
+              </div>
+              <div className="modal-body">
+                <label className="form-label">
+                  {Object.keys(testModal.params)[0]}
+                  <span className="form-hint">{Object.values(testModal.params)[0]}</span>
+                </label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={paramValue}
+                  onChange={(e) => setParamValue(e.target.value)}
+                  placeholder={`Enter ${Object.keys(testModal.params)[0]}...`}
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && paramValue.trim()) {
+                      handleModalSubmit(testModal);
+                    }
+                  }}
+                />
+              </div>
+              <div className="modal-footer">
+                <button className="btn btn-ghost" onClick={() => setTestModal(null)}>Cancel</button>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => handleModalSubmit(testModal)}
+                  disabled={!paramValue.trim()}
+                >
+                  Copy curl
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Regenerate Modal */}
         {showRegenerateModal && (
           <div className="modal-overlay" onClick={() => setShowRegenerateModal(false)}>
             <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -460,15 +358,11 @@ export default function API() {
                 <button className="modal-close" onClick={() => setShowRegenerateModal(false)}>X</button>
               </div>
               <p className="modal-body">
-                Your current key will be invalidated immediately. Any scripts or integrations using the old key will stop working until updated.
+                Your current key will be invalidated immediately. Any scripts using the old key will stop working.
               </p>
               <div className="modal-footer">
-                <button className="btn btn-ghost" onClick={() => setShowRegenerateModal(false)}>
-                  Cancel
-                </button>
-                <button className="btn btn-primary" onClick={regenerateApiKey}>
-                  Regenerate Key
-                </button>
+                <button className="btn btn-ghost" onClick={() => setShowRegenerateModal(false)}>Cancel</button>
+                <button className="btn btn-primary" onClick={regenerateApiKey}>Regenerate Key</button>
               </div>
             </div>
           </div>

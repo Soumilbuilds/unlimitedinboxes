@@ -68,7 +68,7 @@ export default function Sidebar() {
             Inboxes
           </NavLink>
         )}
-        <NavLink to="/api" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
+        <NavLink to="/api-docs" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
           API
         </NavLink>
       </nav>

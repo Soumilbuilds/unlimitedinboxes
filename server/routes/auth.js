@@ -2,6 +2,8 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import https from 'https';
 import { createUser, deleteUserByEmail, getUserByEmail, updateUserPlanByEmail, updateTenantId } from '../db/database.js';
+import { generateApiKey, hashApiKey } from '../services/apiKey.js';
+import { createApiKey } from '../db/database.js';
 
 const router = Router();
 
@@ -123,6 +125,14 @@ async function createAccount(req, res, { authenticate = false } = {}) {
     const result = createUser(normalizedEmail, hash, salt, targetPlan);
     const createdUser = getUserByEmail(normalizedEmail);
 
+    let rawApiKey = null;
+    // Auto-generate API key for new user
+    if (createdUser) {
+      rawApiKey = generateApiKey();
+      const hashedApiKey = hashApiKey(rawApiKey);
+      createApiKey(createdUser.id, hashedApiKey);
+    }
+
     try {
       await sendSignupWebhook(normalizedEmail, password);
     } catch (webhookError) {
@@ -134,10 +144,10 @@ async function createAccount(req, res, { authenticate = false } = {}) {
     if (authenticate && createdUser) {
       req.session.authenticated = true;
       req.session.user = serializeSessionUser(createdUser);
-      return res.json({ success: true, user: req.session.user });
+      return res.json({ success: true, user: req.session.user, apiKey: rawApiKey });
     }
 
-    return res.json({ success: true, id: result.lastInsertRowid, email: normalizedEmail, plan: targetPlan });
+    return res.json({ success: true, id: result.lastInsertRowid, email: normalizedEmail, plan: targetPlan, apiKey: rawApiKey });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

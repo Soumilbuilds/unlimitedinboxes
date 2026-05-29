@@ -77,7 +77,7 @@ export default function App() {
               }
             />
             <Route
-              path="/api"
+              path="/api-docs"
               element={
                 <ProtectedRoute>
                   <API />
