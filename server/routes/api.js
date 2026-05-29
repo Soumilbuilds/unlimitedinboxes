@@ -7,6 +7,7 @@ import {
 import { getUserAccessState } from '../services/access.js';
 import { processOrder, hasActiveJob } from '../services/orderProcessor.js';
 import { getUserByEmail } from '../db/database.js';
+import { validateApiKey } from '../services/apiKey.js';
 
 const router = Router();
 
@@ -35,7 +36,6 @@ const requireApiKey = async (req, res, next) => {
   const key = req.headers['x-api-key'];
   if (!key) return res.status(401).json({ error: 'Missing API key' });
 
-  const { validateApiKey } = await import('../services/apiKey.js');
   const user = await validateApiKey(key);
   if (!user) return res.status(401).json({ error: 'Invalid API key' });
 
