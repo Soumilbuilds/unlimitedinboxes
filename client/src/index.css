@@ -1918,25 +1918,48 @@ a {
 
 /* Endpoints List */
 .endpoints-list {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 1.5rem;
-  margin-top: 1.5rem;
+  margin-top: 2rem;
+  width: 100%;
 }
 
 .endpoint-card {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 2.5rem;
-  margin-bottom: 2rem;
-  transition: all 0.2s ease;
+  width: 100%;
+  padding: 2.5rem 3rem;
+  background: linear-gradient(180deg, rgba(134, 247, 184, 0.03) 0%, transparent 100%);
+  border: 1px solid rgba(134, 247, 184, 0.15);
+  border-radius: 20px;
+  transition: all 0.25s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.endpoint-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(134, 247, 184, 0.4), transparent);
+}
+
+.endpoint-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: radial-gradient(ellipse at top left, rgba(134, 247, 184, 0.03) 0%, transparent 50%);
+  pointer-events: none;
 }
 
 .endpoint-card:hover {
-  border-color: rgba(134, 247, 184, 0.3);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  border-color: rgba(134, 247, 184, 0.35);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(134, 247, 184, 0.08);
   transform: translateY(-2px);
 }
 
@@ -1948,29 +1971,127 @@ a {
 .endpoint-header {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  margin-bottom: 0.75rem;
+  gap: 1.5rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
 }
 
 .endpoint-path {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 15px;
+  font-size: 18px;
   color: var(--text);
   font-weight: 500;
+  letter-spacing: -0.01em;
 }
 
 .endpoint-desc {
-  margin: 0 0 1.5rem;
-  font-size: 14px;
+  margin: 0 0 2rem;
+  font-size: 15px;
   color: var(--text-muted);
   opacity: 0.8;
-  line-height: 1.5;
+  line-height: 1.7;
 }
 
 .endpoint-details {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 1.5rem;
+}
+
+.endpoint-params,
+.endpoint-response {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.param-label,
+.response-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  opacity: 0.8;
+  min-width: 90px;
+}
+
+.param-desc,
+.response-desc {
+  font-size: 14px;
+  color: var(--text-muted);
+  opacity: 0.85;
+  font-weight: 500;
+}
+
+.endpoint-example {
+  margin-top: 1rem;
+}
+
+.endpoint-example .code-label {
+  font-size: 11px;
+  padding: 10px 16px;
+  background: rgba(134, 247, 184, 0.05);
+}
+
+.endpoint-example pre {
+  margin: 0;
+  padding: 20px 24px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre;
+  overflow-x: auto;
+  background: rgba(0, 0, 0, 0.3);
+  border-top: 1px solid rgba(134, 247, 184, 0.08);
+}
+
+.endpoint-example pre::-webkit-scrollbar {
+  height: 6px;
+}
+
+.endpoint-example pre::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.endpoint-example pre::-webkit-scrollbar-thumb {
+  background: rgba(134, 247, 184, 0.2);
+  border-radius: 3px;
+}
+
+.endpoint-actions {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid rgba(134, 247, 184, 0.08);
+  display: flex;
+  justify-content: flex-start;
+}
+
+.endpoint-test-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  background: rgba(134, 247, 184, 0.08);
+  border: 1px solid rgba(134, 247, 184, 0.25);
+  color: var(--accent);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+
+.endpoint-test-btn:hover {
+  background: rgba(134, 247, 184, 0.15);
+  border-color: rgba(134, 247, 184, 0.4);
+  transform: translateY(-1px);
+}
+
+.endpoint-test-btn:active {
+  transform: translateY(0);
 }
 
 /* Detail Groups */
@@ -2605,8 +2726,10 @@ a {
 .modal-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   margin-bottom: 1rem;
+  position: relative;
+  padding: 0 32px;
 }
 
 .modal-header h3 {
@@ -2618,17 +2741,20 @@ a {
 }
 
 .modal-close {
+  position: absolute;
+  right: 0;
   background: none;
   border: none;
   color: var(--text-muted);
   opacity: 0.5;
   cursor: pointer;
-  padding: 4px;
+  padding: 4px 8px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 6px;
   transition: all 0.15s ease;
+  font-size: 16px;
 }
 
 .modal-close:hover {
@@ -2642,7 +2768,27 @@ a {
   color: var(--text-muted);
   line-height: 1.6;
   opacity: 0.8;
+  text-align: left;
+}
+
+.regenerate-modal-body {
   text-align: center;
+  padding: 0.5rem 0;
+}
+
+.regenerate-modal-body .modal-warning-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.regenerate-modal-body .modal-warning-subtext {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin: 0;
+  opacity: 0.75;
 }
 
 .modal-form {

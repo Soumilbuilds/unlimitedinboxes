@@ -9,8 +9,6 @@ export default function API() {
   const [showRegenerateModal, setShowRegenerateModal] = useState(false);
   const [copied, setCopied] = useState(null);
   const [keyRevealed, setKeyRevealed] = useState(false);
-  const [testModal, setTestModal] = useState(null);
-  const [paramValue, setParamValue] = useState('');
 
   const baseUrl = (() => {
     if (typeof window !== 'undefined') {
@@ -62,10 +60,28 @@ export default function API() {
     }
   };
 
-  const copyToClipboard = (text, id) => {
-    navigator.clipboard.writeText(text);
-    setCopied(id);
-    setTimeout(() => setCopied(null), 2000);
+  const copyToClipboard = async (text, id) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(id);
+      setTimeout(() => setCopied(null), 2000);
+    } catch (err) {
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      textArea.style.position = 'fixed';
+      textArea.style.left = '-9999px';
+      document.body.appendChild(textArea);
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        setCopied(id);
+        setTimeout(() => setCopied(null), 2000);
+      } catch (e) {
+        console.error('Copy failed:', e);
+      }
+      document.body.removeChild(textArea);
+    }
   };
 
   const endpoints = [
@@ -144,6 +160,8 @@ export default function API() {
     let url = `${baseUrl}${ep.path}`;
     if (paramId) {
       url = url.replace(':id', paramId);
+    } else if (ep.params) {
+      url = url.replace(':id', 'YOUR_ID');
     }
     if (ep.method === 'POST') {
       return `curl ${url} -X POST -H "x-api-key: ${key}"`;
@@ -155,19 +173,7 @@ export default function API() {
   };
 
   const handleTestClick = (ep) => {
-    if (ep.params) {
-      setTestModal(ep);
-      setParamValue('');
-    } else {
-      copyToClipboard(generateCurl(ep), ep.id);
-    }
-  };
-
-  const handleModalSubmit = (ep) => {
-    if (paramValue.trim()) {
-      copyToClipboard(generateCurl(ep, paramValue.trim()), ep.id);
-      setTestModal(null);
-    }
+    copyToClipboard(generateCurl(ep), ep.id);
   };
 
   return (
@@ -267,7 +273,7 @@ export default function API() {
 
             <div className="endpoints-list">
               {endpoints.map((ep) => (
-                <div key={ep.id} className="endpoint-card" style={{ marginBottom: '24px', padding: '20px' }}>
+                <div key={ep.id} className="endpoint-card">
                   <div className="endpoint-header">
                     <span className={`method-badge ${ep.method.toLowerCase()}`}>{ep.method}</span>
                     <code className="endpoint-path">{ep.path}</code>
@@ -293,13 +299,15 @@ export default function API() {
 
                   <div className="endpoint-actions">
                     <button
-                      className="btn btn-primary"
+                      className="btn btn-primary endpoint-test-btn"
                       onClick={() => handleTestClick(ep)}
+                      title="Copy curl command to clipboard"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <polygon points="5 3 19 12 5 21 5 3"/>
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
                       </svg>
-                      Test
+                      {copied === ep.id ? 'Copied!' : 'Copy curl'}
                     </button>
                   </div>
                 </div>
@@ -307,67 +315,25 @@ export default function API() {
             </div>
           </section>
         </div>
-
-        {/* Test Parameter Modal */}
-        {testModal && (
-          <div className="modal-overlay" onClick={() => setTestModal(null)}>
-            <div className="modal" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-header">
-                <h3>Enter {Object.keys(testModal.params)[0]}</h3>
-                <button className="modal-close" onClick={() => setTestModal(null)}>X</button>
-              </div>
-              <div className="modal-body">
-                <label className="form-label">
-                  {Object.keys(testModal.params)[0]}
-                  <span className="form-hint">{Object.values(testModal.params)[0]}</span>
-                </label>
-                <input
-                  type="text"
-                  className="form-input"
-                  value={paramValue}
-                  onChange={(e) => setParamValue(e.target.value)}
-                  placeholder={`Enter ${Object.keys(testModal.params)[0]}...`}
-                  autoFocus
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && paramValue.trim()) {
-                      handleModalSubmit(testModal);
-                    }
-                  }}
-                />
-              </div>
-              <div className="modal-footer">
-                <button className="btn btn-ghost" onClick={() => setTestModal(null)}>Cancel</button>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => handleModalSubmit(testModal)}
-                  disabled={!paramValue.trim()}
-                >
-                  Copy curl
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Regenerate Modal */}
-        {showRegenerateModal && (
-          <div className="modal-overlay" onClick={() => setShowRegenerateModal(false)}>
-            <div className="modal" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-header">
-                <h3>Regenerate API Key?</h3>
-                <button className="modal-close" onClick={() => setShowRegenerateModal(false)}>X</button>
-              </div>
-              <p className="modal-body">
-                Your current key will be invalidated immediately. Any scripts using the old key will stop working.
-              </p>
-              <div className="modal-footer">
-                <button className="btn btn-ghost" onClick={() => setShowRegenerateModal(false)}>Cancel</button>
-                <button className="btn btn-primary" onClick={regenerateApiKey}>Regenerate Key</button>
-              </div>
-            </div>
-          </div>
-        )}
       </main>
+      {showRegenerateModal && (
+        <div className="modal-overlay" onClick={() => setShowRegenerateModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Regenerate API Key?</h3>
+              <button className="modal-close" onClick={() => setShowRegenerateModal(false)}>X</button>
+            </div>
+            <div className="modal-body regenerate-modal-body">
+              <p className="modal-warning-text">Your current key will be invalidated immediately.</p>
+              <p className="modal-warning-subtext">Any scripts using the old key will stop working.</p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setShowRegenerateModal(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={regenerateApiKey}>Regenerate Key</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
