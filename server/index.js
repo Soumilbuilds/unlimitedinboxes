@@ -79,7 +79,8 @@ if (process.env.NODE_ENV === 'production') {
     }
   }));
   app.get('*', (req, res) => {
-    if (req.path.startsWith('/api')) {
+    // Only return 404 for /api/* paths that didn't match a route, not /api-docs or other /api-xxx paths
+    if (req.path.startsWith('/api/') || req.path === '/api') {
       return res.status(404).json({ error: 'API route not found' });
     }
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
