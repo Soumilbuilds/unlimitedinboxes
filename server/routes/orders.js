@@ -61,8 +61,9 @@ const requireAuth = async (req, res, next) => {
     if (!user) {
       return res.status(401).json({ error: 'Invalid API key' });
     }
-    req.session = { user, authenticated: true };
+    // Set properties on existing session object, don't replace it
     req.session.user = user;
+    req.session.authenticated = true;
   } else if (!req.session.authenticated || !req.session.user?.id) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
