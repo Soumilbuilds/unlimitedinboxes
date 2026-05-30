@@ -138,6 +138,10 @@ function ensureOrdersUserColumn() {
 function ensureUserBillingColumns() {
   ensureColumn('users', 'lifetime_completed_orders', 'INTEGER DEFAULT 0');
 
+  ensureColumn('users', 'reseller_plan', 'INTEGER DEFAULT 0');
+  ensureColumn('users', 'orders_per_month', 'INTEGER DEFAULT 0');
+  ensureColumn('users', 'orders_used_this_period', 'INTEGER DEFAULT 0');
+
   ensureColumn('users', 'stripe_customer_id', 'TEXT');
   ensureColumn('users', 'stripe_subscription_id', 'TEXT');
   ensureColumn('users', 'stripe_subscription_status', 'TEXT');
@@ -227,6 +231,9 @@ export function getUserByStripeSubscriptionId(subscriptionId) {
 const USER_BILLING_COLUMNS = new Set([
   'plan',
   'lifetime_completed_orders',
+  'reseller_plan',
+  'orders_per_month',
+  'orders_used_this_period',
   'stripe_customer_id',
   'stripe_subscription_id',
   'stripe_subscription_status',
@@ -431,6 +438,12 @@ export function updateOrderStatus(id, status) {
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(existing.user_id);
+
+    // Quota tracking for non-reseller users
+    const user = db.prepare('SELECT reseller_plan, orders_per_month, orders_used_this_period FROM users WHERE id = ?').get(existing.user_id);
+    if (user && !user.reseller_plan && user.orders_per_month) {
+      db.prepare('UPDATE users SET orders_used_this_period = COALESCE(orders_used_this_period, 0) + 1 WHERE id = ?').run(existing.user_id);
+    }
   }
 
   return result;
@@ -587,6 +600,29 @@ export function deleteApiKey(userId) {
 
 export function touchApiKey(userId) {
   db.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE user_id = ?").run(userId);
+}
+
+// --- RESELLER API QUOTA ---
+
+export function isResellerPlan(userId) {
+  const user = db.prepare('SELECT reseller_plan FROM users WHERE id = ?').get(userId);
+  return Boolean(user?.reseller_plan);
+}
+
+export function getAvailableOrders(userId) {
+  const user = db.prepare('SELECT reseller_plan, orders_per_month, orders_used_this_period FROM users WHERE id = ?').get(userId);
+  if (!user) return 0;
+  if (user.reseller_plan) return Number.POSITIVE_INFINITY;
+  const remaining = (user.orders_per_month || 0) - (user.orders_used_this_period || 0);
+  return Math.max(0, remaining);
+}
+
+export function incrementOrdersUsed(userId) {
+  db.prepare('UPDATE users SET orders_used_this_period = COALESCE(orders_used_this_period, 0) + 1 WHERE id = ?').run(userId);
+}
+
+export function resetOrdersUsed(userId) {
+  db.prepare('UPDATE users SET orders_used_this_period = 0 WHERE id = ?').run(userId);
 }
 
 export default db;

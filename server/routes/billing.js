@@ -5,7 +5,8 @@ import {
   getUserByStripeCustomerId,
   getUserByStripeSubscriptionId,
   updateUserBillingById,
-  updateTenantPurchaseByCheckoutSession
+  updateTenantPurchaseByCheckoutSession,
+  resetOrdersUsed
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
 import {
@@ -19,12 +20,15 @@ import {
   verifyStripeWebhookSignature,
   serializeStripeBillingState,
   isStripeConfigured,
+  createResellerCheckoutSession,
+  createPerOrderCheckoutSession,
+  chargeSavedPaymentMethodForQuota,
   STRIPE_PRICES
 } from '../services/stripe.js';
 
 const router = Router();
 
-const VALID_CHECKOUT_INTENTS = new Set(['intro', 'standard', 'advanced']);
+const VALID_CHECKOUT_INTENTS = new Set(['intro', 'standard', 'advanced', 'reseller', 'perOrder']);
 
 const serializeSessionUser = (user) => ({
   id: user.id,
@@ -127,6 +131,10 @@ async function buildSubscriptionUpdate(user, sub, fallbackPlan = 'standard', inv
     stripe_last_invoice_status: latestInvoice?.status || null,
     stripe_last_invoice_url: latestInvoice?.hosted_invoice_url || null,
     stripe_intro_offer_used: planKey === 'intro' || user.stripe_intro_offer_used ? 1 : 0,
+    reseller_plan: sub.metadata?.plan_key === 'reseller' ? 1 : (sub.metadata?.plan_key === 'perOrder' ? 0 : user.reseller_plan),
+    orders_per_month: sub.metadata?.plan_key === 'perOrder'
+      ? parseInt(sub.metadata?.quantity || '0', 10)
+      : user.orders_per_month,
   };
 }
 
@@ -176,6 +184,19 @@ router.post('/checkout', async (req, res) => {
 
     if (intent === 'advanced' && access.subscriptionTier === 'advanced') {
       return res.status(409).json({ error: 'Advanced is already active on this account.' });
+    }
+
+    if (intent === 'reseller') {
+      const checkout = await createResellerCheckoutSession(user, { appBaseUrl: getRequestBaseUrl(req) });
+      updateUserBillingById(user.id, { stripe_checkout_session_id: checkout.sessionId });
+      return res.json({ sessionId: checkout.sessionId, url: checkout.url, checkoutUrl: checkout.url });
+    }
+
+    if (intent === 'perOrder') {
+      const quantity = Math.max(3, parseInt(req.body?.quantity, 10) || 3);
+      const checkout = await createPerOrderCheckoutSession(user, quantity, { appBaseUrl: getRequestBaseUrl(req) });
+      updateUserBillingById(user.id, { stripe_checkout_session_id: checkout.sessionId });
+      return res.json({ sessionId: checkout.sessionId, url: checkout.url, checkoutUrl: checkout.url });
     }
 
     const checkout = await createStripeCheckoutSession(user, intent, {
@@ -321,6 +342,70 @@ router.post('/return', async (req, res) => {
   }
 });
 
+router.post('/checkout-additional-orders', async (req, res) => {
+  if (!req.session.authenticated || !req.session.user?.id) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const user = getCurrentUser(req);
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+  const quantity = Math.max(3, parseInt(req.body?.quantity, 10) || 3);
+  if (!isStripeConfigured()) {
+    return res.status(503).json({ error: 'Stripe is not configured.' });
+  }
+
+  const checkout = await createPerOrderCheckoutSession(user, quantity, { appBaseUrl: getRequestBaseUrl(req) });
+  updateUserBillingById(user.id, { stripe_checkout_session_id: checkout.sessionId });
+
+  return res.json({ sessionId: checkout.sessionId, url: checkout.url, checkoutUrl: checkout.url, quantity });
+});
+
+router.get('/quota', async (req, res) => {
+  if (!req.session.authenticated || !req.session.user?.id) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const user = getCurrentUser(req);
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+  return res.json({
+    isReseller: Boolean(user.reseller_plan),
+    ordersPerMonth: user.orders_per_month || 0,
+    ordersUsedThisPeriod: user.orders_used_this_period || 0,
+    availableOrders: user.reseller_plan
+      ? 'unlimited'
+      : Math.max(0, (user.orders_per_month || 0) - (user.orders_used_this_period || 0)),
+  });
+});
+
+router.post('/auto-charge-quota', async (req, res) => {
+  if (!req.session.authenticated || !req.session.user?.id) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const user = getCurrentUser(req);
+  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+  // Only for non-reseller users with no available orders
+  if (user.reseller_plan) {
+    return res.status(400).json({ error: 'Reseller plan has unlimited orders' });
+  }
+
+  const available = (user.orders_per_month || 0) - (user.orders_used_this_period || 0);
+  if (available > 0) {
+    return res.status(400).json({ error: 'No auto-charge needed, orders available' });
+  }
+
+  const quantity = Math.max(3, parseInt(req.body?.quantity, 10) || 3);
+  const result = await chargeSavedPaymentMethodForQuota(user, quantity);
+
+  if (result.paid) {
+    // Add the purchased quantity to orders_per_month
+    updateUserBillingById(user.id, { orders_per_month: (user.orders_per_month || 0) + quantity });
+    return res.json({ success: true, ordersAdded: quantity });
+  }
+
+  return res.status(402).json({ error: 'Payment failed', reason: result.reason });
+});
+
 router.post('/webhook', async (req, res) => {
   if (!isStripeConfigured()) {
     return res.status(503).json({ error: 'Stripe not configured.' });
@@ -386,6 +471,17 @@ router.post('/webhook', async (req, res) => {
 
         const update = await buildSubscriptionUpdate(user, sub, user.stripe_product || 'standard');
         updateUserBillingById(user.id, update);
+
+        if (sub.metadata?.plan_key === 'reseller') {
+          updateUserBillingById(user.id, { reseller_plan: 1, orders_per_month: 0 });
+        } else if (sub.metadata?.plan_key === 'perOrder') {
+          const quantity = parseInt(sub.metadata?.quantity || '0', 10);
+          updateUserBillingById(user.id, { reseller_plan: 0, orders_per_month: quantity });
+          // Reset usage at start of new billing period
+          if (sub.status === 'active') {
+            resetOrdersUsed(user.id);
+          }
+        }
         break;
       }
 
@@ -397,6 +493,8 @@ router.post('/webhook', async (req, res) => {
           plan: 'free',
           stripe_subscription_status: 'canceled',
           stripe_cancel_at_period_end: 0,
+          reseller_plan: 0,
+          orders_per_month: 0,
         });
         break;
       }

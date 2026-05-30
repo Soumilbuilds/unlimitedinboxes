@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
 import Sidebar from '../components/Sidebar';
+import { useBilling } from '../context/BillingContext';
 import api from '../lib/api';
 
 export default function API() {
+  const { billing } = useBilling();
+  const canAccessApi = billing?.canAccessApi ?? false;
+
   const [apiKey, setApiKey] = useState(null);
   const [apiKeyLoading, setApiKeyLoading] = useState(true);
   const [apiKeyError, setApiKeyError] = useState('');
@@ -10,6 +14,52 @@ export default function API() {
   const [copied, setCopied] = useState(null);
   const [keyRevealed, setKeyRevealed] = useState(false);
   const [activeSection, setActiveSection] = useState('overview');
+
+  if (!canAccessApi) {
+    return (
+      <div className="app-layout api-docs-layout">
+        <Sidebar />
+        <main className="main-content api-docs-content">
+          <div className="api-unavailable">
+            <div className="api-unavailable-icon">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+              </svg>
+            </div>
+            <h2>API Is Not Available On Your Plan</h2>
+            <p>Upgrade to access the API and start creating orders programmatically.</p>
+            <div className="api-upgrade-options">
+              <div className="upgrade-option">
+                <h3>Reseller Plan</h3>
+                <ul>
+                  <li>Unlimited Orders</li>
+                  <li>Multiple Order Processing</li>
+                  <li>Unlimited API Access</li>
+                </ul>
+                <div className="upgrade-price">$299/mo</div>
+                <button className="btn primary" onClick={() => window.location.href = '/api-billing?plan=reseller'}>
+                  Upgrade
+                </button>
+              </div>
+              <div className="upgrade-option">
+                <h3>Pay As You Go</h3>
+                <ul>
+                  <li>Pay Per Order</li>
+                  <li>Multiple Order Processing</li>
+                  <li>Unlimited API Access</li>
+                </ul>
+                <div className="upgrade-price">$14/mo/order</div>
+                <button className="btn secondary" onClick={() => window.location.href = '/api-billing?plan=perOrder'}>
+                  Add Credits
+                </button>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   const baseUrl = (() => {
     if (typeof window !== 'undefined') {

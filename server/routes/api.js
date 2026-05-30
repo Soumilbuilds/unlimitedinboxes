@@ -9,6 +9,7 @@ import {
   getOrderById
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
+import { chargeSavedPaymentMethodForQuota } from '../services/stripe.js';
 import { processOrder, hasActiveJob } from '../services/orderProcessor.js';
 import { getUserByEmail } from '../db/database.js';
 import { validateApiKey } from '../services/apiKey.js';
@@ -52,6 +53,11 @@ const requireApiKey = async (req, res, next) => {
 
 router.get('/orders/stats', requireApiKey, async (req, res) => {
   try {
+    const accessState = req.accessState || getUserAccessState(req.session.user);
+    if (!accessState.canAccessApi) {
+      return res.status(403).json({ error: 'API is not available on your plan.' });
+    }
+
     const orders = getOrders(req.session.user.id);
     const stats = {
       total: orders.length,
@@ -193,6 +199,41 @@ router.post('/orders', requireApiKey, async (req, res) => {
         code: 'BILLING_REQUIRED',
         error: 'No active trial or subscription found.'
       });
+    }
+
+    // Check API access
+    if (!accessState.canAccessApi) {
+      return res.status(403).json({
+        code: 'API_NOT_AVAILABLE',
+        error: 'API is not available on your plan. Upgrade to Reseller or Pay As You Go plan.',
+      });
+    }
+
+    // Check perOrder quota
+    if (accessState.effectivePlan === 'perOrder') {
+      const { getAvailableOrders } = await import('../db/database.js');
+      const available = getAvailableOrders(req.session.user.id);
+      if (available <= 0) {
+        // Attempt auto-charge
+        try {
+          const chargeResult = await chargeSavedPaymentMethodForQuota(req.session.user, 3);
+          if (chargeResult.paid) {
+            // Credit added, allow order to proceed
+          } else {
+            return res.status(402).json({
+              code: 'NO_ORDER_QUOTA',
+              error: 'No order credits remaining. Please top up to continue.',
+              topUpRequired: true,
+            });
+          }
+        } catch (e) {
+          return res.status(402).json({
+            code: 'NO_ORDER_QUOTA',
+            error: 'No order credits remaining. Please top up to continue.',
+            topUpRequired: true,
+          });
+        }
+      }
     }
 
     // Check completed order limit
@@ -363,6 +404,28 @@ router.post('/orders/:id/start', requireApiKey, async (req, res) => {
     const processingOrders = getOrders(req.session.user.id)
       .filter(o => o.id !== orderId && o.status === 'processing');
     const accessState = req.accessState || getUserAccessState(req.session.user);
+
+    // Check API access
+    if (!accessState.canAccessApi) {
+      return res.status(403).json({
+        code: 'API_NOT_AVAILABLE',
+        error: 'API is not available on your plan.',
+      });
+    }
+
+    // Check perOrder quota
+    if (accessState.effectivePlan === 'perOrder') {
+      const { getAvailableOrders } = await import('../db/database.js');
+      const available = getAvailableOrders(req.session.user.id);
+      if (available <= 0) {
+        return res.status(402).json({
+          code: 'NO_ORDER_QUOTA',
+          error: 'No order credits remaining. Please top up to continue.',
+          topUpRequired: true,
+        });
+      }
+    }
+
     if (
       accessState.maxConcurrentOrders !== Number.POSITIVE_INFINITY
       && processingOrders.length >= accessState.maxConcurrentOrders

@@ -6,6 +6,7 @@ import { useBilling } from '../context/BillingContext';
 export default function Sidebar() {
   const { logout, user } = useAuth();
   const { billing, openUpgrade, openBillingPortal, reviewUrl } = useBilling();
+  const canAccessApi = billing?.canAccessApi ?? false;
   const navigate = useNavigate();
   const settingsRef = useRef(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -68,9 +69,15 @@ export default function Sidebar() {
             Inboxes
           </NavLink>
         )}
-        <NavLink to="/api-docs" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
-          API
-        </NavLink>
+        {canAccessApi ? (
+          <NavLink to="/api-docs" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
+            API
+          </NavLink>
+        ) : (
+          <a href="/api-billing" className="sidebar-link">
+            API
+          </a>
+        )}
       </nav>
 
       <div className="sidebar-footer">

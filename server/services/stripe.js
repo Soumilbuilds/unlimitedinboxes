@@ -13,6 +13,8 @@ export const STRIPE_PRICES = {
   advanced: process.env.STRIPE_PRICE_ADVANCED || 'price_1TbHWvAxRfptSO4wlWaP27vd',
   usTenant: process.env.STRIPE_PRICE_US_TENANT || 'price_1TbHYGAxRfptSO4wUPFKNgvU',
   asiaTenant: process.env.STRIPE_PRICE_ASIA_TENANT || 'price_1TbHXwAxRfptSO4wcYK8gYnI',
+  reseller: process.env.STRIPE_PRICE_RESELLER || 'price_1TcgpIAxRfptSO4wvQhAiW1L',
+  perOrder: process.env.STRIPE_PRICE_PER_ORDER || 'price_1TcgzVAxRfptSO4w69Nf8iIz',
 };
 
 export const PLAN_PRICES = {
@@ -21,6 +23,8 @@ export const PLAN_PRICES = {
   advanced: 199.99,
   usTenant: 15,
   asiaTenant: 20,
+  reseller: 299.99,
+  perOrder: 14.00,
 };
 
 export const PLAN_TRIAL_DAYS = {
@@ -52,6 +56,8 @@ function planForProduct(product, status) {
   if (status === 'trialing') return 'intro';
   if (product === 'advanced') return 'advanced';
   if (product === 'standard' || product === 'intro') return 'standard';
+  if (product === 'reseller') return 'reseller';
+  if (product === 'perOrder') return 'perOrder';
   return 'free';
 }
 
@@ -122,6 +128,102 @@ export async function createStripeCheckoutSession(user, planKey, opts = {}) {
     url: session.url,
     customerId: session.customer,
   };
+}
+
+export async function createResellerCheckoutSession(user, opts = {}) {
+  const priceId = STRIPE_PRICES.reseller;
+  if (!priceId) throw new Error('Reseller price not configured');
+
+  const baseUrl = opts.appBaseUrl || process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com';
+  const successUrl = `${baseUrl}/return?session_id={CHECKOUT_SESSION_ID}`;
+  const cancelUrl = opts.cancelUrl || baseUrl;
+
+  const session = await client().checkout.sessions.create({
+    mode: 'subscription',
+    customer: user.stripe_customer_id || undefined,
+    customer_email: user.stripe_customer_id ? undefined : user.email,
+    line_items: [{ price: priceId, quantity: 1 }],
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+    metadata: {
+      type: 'reseller_subscription',
+      user_id: String(user.id),
+      user_email: user.email,
+      plan_key: 'reseller',
+    },
+    subscription_data: {
+      metadata: { plan_key: 'reseller', user_id: String(user.id) },
+    },
+    billing_address_collection: 'auto',
+    payment_method_collection: 'always',
+  });
+
+  return { sessionId: session.id, clientSecret: session.client_secret, url: session.url };
+}
+
+export async function createPerOrderCheckoutSession(user, quantity, opts = {}) {
+  const priceId = STRIPE_PRICES.perOrder;
+  if (!priceId) throw new Error('Per-order price not configured');
+
+  const baseUrl = opts.appBaseUrl || process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com';
+  const successUrl = `${baseUrl}/return?session_id={CHECKOUT_SESSION_ID}`;
+  const cancelUrl = opts.cancelUrl || baseUrl;
+
+  const session = await client().checkout.sessions.create({
+    mode: 'subscription',
+    customer: user.stripe_customer_id || undefined,
+    customer_email: user.stripe_customer_id ? undefined : user.email,
+    line_items: [{ price: priceId, quantity: quantity }],
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+    metadata: {
+      type: 'per_order_subscription',
+      user_id: String(user.id),
+      user_email: user.email,
+      plan_key: 'perOrder',
+      quantity: String(quantity),
+    },
+    subscription_data: {
+      metadata: { plan_key: 'perOrder', user_id: String(user.id), quantity: String(quantity) },
+    },
+    billing_address_collection: 'auto',
+    payment_method_collection: 'always',
+  });
+
+  return { sessionId: session.id, clientSecret: session.client_secret, url: session.url };
+}
+
+export async function chargeSavedPaymentMethodForQuota(user, quantity) {
+  if (!user?.stripe_customer_id) {
+    return { paid: false, reason: 'no_customer' };
+  }
+
+  const paymentMethodId = await getDefaultPaymentMethodId(user);
+  if (!paymentMethodId) {
+    return { paid: false, reason: 'no_default_payment_method' };
+  }
+
+  try {
+    const cents = Math.round(PLAN_PRICES.perOrder * 100 * quantity);
+    const paymentIntent = await client().paymentIntents.create({
+      amount: cents,
+      currency: 'usd',
+      customer: user.stripe_customer_id,
+      payment_method: paymentMethodId,
+      off_session: true,
+      confirm: true,
+      description: `${quantity} additional order${quantity === 1 ? '' : 's'}`,
+      metadata: {
+        type: 'additional_orders',
+        user_id: String(user.id),
+        quantity: String(quantity),
+      },
+    });
+
+    return { paid: paymentIntent.status === 'succeeded', paymentIntent, reason: paymentIntent.status };
+  } catch (error) {
+    return { paid: false, reason: error.code || error.type || 'payment_failed', error: error.message };
+  }
 }
 
 export async function createTenantCheckoutSession(user, tenantType, quantity, opts = {}) {
@@ -316,11 +418,17 @@ export function serializeStripeBillingState(user) {
   const isCancelledAtPeriodEnd = !!user?.stripe_cancel_at_period_end;
   const paidTier = access.subscriptionTier || (isPaid ? planForProduct(product, subStatus) : null);
   const unlimitedConcurrency = access.maxConcurrentOrders === Number.POSITIVE_INFINITY;
+  const effectivePlan = access.effectivePlan;
+  const isReseller = effectivePlan === 'reseller';
+
+  const availableOrders = isReseller
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, (user.orders_per_month || 0) - (user.orders_used_this_period || 0));
 
   return {
     configured: isStripeConfigured(),
     provider: 'stripe',
-    plan: access.effectivePlan,
+    plan: effectivePlan,
     isPaid,
     isTrialing,
     isPastDue,
@@ -353,6 +461,12 @@ export function serializeStripeBillingState(user) {
     hasBillingIssue: access.hasBillingIssue,
     overdueInvoiceId: isPastDue ? user?.stripe_last_invoice_id || null : null,
     overdueInvoiceUrl: isPastDue ? user?.stripe_last_invoice_url || null : null,
+    isReseller: Boolean(user.reseller_plan),
+    isPerOrder: effectivePlan === 'perOrder',
+    ordersPerMonth: user.orders_per_month || 0,
+    ordersUsedThisPeriod: user.orders_used_this_period || 0,
+    availableOrders,
+    canAccessApi: effectivePlan === 'reseller' || effectivePlan === 'perOrder',
   };
 }
 

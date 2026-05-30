@@ -20,6 +20,12 @@ function matchesProduct(productId, ...envKeys) {
 }
 
 export function getSubscriptionTierFromProduct(productId) {
+  if (matchesProduct(productId, 'STRIPE_PRICE_RESELLER')) {
+    return 'reseller';
+  }
+  if (matchesProduct(productId, 'STRIPE_PRICE_PER_ORDER')) {
+    return 'perOrder';
+  }
   if (matchesProduct(productId, 'STRIPE_PRICE_ADVANCED')) {
     return 'advanced';
   }
@@ -59,7 +65,9 @@ function getStripeState(user) {
 
   let paidTier = null;
   if (isActive && !trialActive) {
-    if (product === 'advanced') paidTier = 'advanced';
+    if (product === 'reseller') paidTier = 'reseller';
+    else if (product === 'perOrder') paidTier = 'perOrder';
+    else if (product === 'advanced') paidTier = 'advanced';
     else if (product === 'standard' || product === 'intro') paidTier = 'standard';
   }
 
@@ -107,6 +115,8 @@ export function getUserAccessState(user) {
   let canUseCustomNames = false;
   let canCreateMoreThanOneCompletedOrder = false;
   let canDownloadAll = false;
+  let canAccessApi = false;
+  let hasUnlimitedOrders = false;
 
   if (paidTier === 'advanced') {
     effectivePlan = 'advanced';
@@ -124,6 +134,26 @@ export function getUserAccessState(user) {
     canUseCustomNames = true;
     canCreateMoreThanOneCompletedOrder = true;
     canDownloadAll = true;
+  } else if (paidTier === 'reseller') {
+    effectivePlan = 'reseller';
+    downloadAllowance = Number.POSITIVE_INFINITY;
+    maxConcurrentOrders = Number.POSITIVE_INFINITY;
+    canAccessApp = true;
+    canUseCustomNames = true;
+    canCreateMoreThanOneCompletedOrder = true;
+    canDownloadAll = true;
+    canAccessApi = true;
+    hasUnlimitedOrders = true;
+  } else if (paidTier === 'perOrder') {
+    effectivePlan = 'perOrder';
+    downloadAllowance = Number.POSITIVE_INFINITY;
+    maxConcurrentOrders = Number.POSITIVE_INFINITY;
+    canAccessApp = true;
+    canUseCustomNames = true;
+    canCreateMoreThanOneCompletedOrder = true;
+    canDownloadAll = true;
+    canAccessApi = true;
+    hasUnlimitedOrders = true;
   } else if (manualAllowance > 0) {
     effectivePlan = storedPlan;
     downloadAllowance = manualAllowance;
@@ -171,9 +201,11 @@ export function getUserAccessState(user) {
     needsPaymentMethodUpdate: stripeState.isPastDue,
     blockingReason,
     recommendedCheckoutIntent,
-    isFullyPaid: paidTier === 'standard' || paidTier === 'advanced',
+    isFullyPaid: paidTier === 'standard' || paidTier === 'advanced' || paidTier === 'reseller' || paidTier === 'perOrder',
     hasBillingPortal: stripeState.hasBillingPortal,
     cleanupDueAt: null,
     hasBillingIssue: stripeState.isPastDue,
+    canAccessApi: paidTier === 'reseller' || paidTier === 'perOrder',
+    hasUnlimitedOrders: paidTier === 'reseller' || paidTier === 'perOrder',
   };
 }
