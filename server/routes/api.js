@@ -2,7 +2,11 @@ import { Router } from 'express';
 import {
   getOrderByIdForUser,
   getOrders,
-  updateOrderStatus
+  updateOrderStatus,
+  createTenant,
+  getTenants,
+  createOrder,
+  getOrderById
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
 import { processOrder, hasActiveJob } from '../services/orderProcessor.js';
@@ -77,6 +81,11 @@ router.get('/orders/by-domain/:domain', requireApiKey, async (req, res) => {
     const order = orders.find(o => o.tenant_domain?.toLowerCase() === domain);
     if (!order) return res.status(404).json({ error: 'No order found for this domain' });
 
+    // Get tenant for nameservers
+    const { getTenantByIdForUser } = await import('../db/database.js');
+    const tenant = getTenantByIdForUser(order.tenant_id, req.session.user.id);
+    const nameServers = tenant?.cloudflare_ns ? JSON.parse(tenant.cloudflare_ns) : null;
+
     const mailboxes = JSON.parse(order.created_mailboxes || '[]');
     res.json({
       id: order.id,
@@ -88,6 +97,8 @@ router.get('/orders/by-domain/:domain', requireApiKey, async (req, res) => {
       tenant_name: order.tenant_name,
       order_name: order.order_name,
       error_message: order.error_message,
+      name_servers: nameServers,
+      nameservers_updated: order.status !== 'pending_ns',
       created_at: order.created_at,
       updated_at: order.updated_at
     });
@@ -135,6 +146,157 @@ router.get('/orders/by-domain/:domain/download', requireApiKey, async (req, res)
     res.status(500).json({ error: error.message });
   }
 });
+
+router.post('/orders', requireApiKey, async (req, res) => {
+  try {
+    const {
+      tenant_domain,
+      admin_email,
+      admin_password,
+      mfa_secret,
+      total_mailboxes,
+      mailbox_password,
+      order_name
+    } = req.body;
+
+    // Validate required fields
+    if (!tenant_domain) {
+      return res.status(400).json({ error: 'tenant_domain is required' });
+    }
+    if (!admin_email) {
+      return res.status(400).json({ error: 'admin_email is required' });
+    }
+    if (!admin_password) {
+      return res.status(400).json({ error: 'admin_password is required' });
+    }
+    if (!mailbox_password) {
+      return res.status(400).json({ error: 'mailbox_password is required' });
+    }
+
+    // Validate password strength
+    if (!validateMailboxPassword(mailbox_password)) {
+      return res.status(400).json({
+        error: 'Password must be 8-256 chars and include at least 3 of: uppercase, lowercase, number, symbol.'
+      });
+    }
+
+    // Validate total_mailboxes
+    const mailboxTotal = parseInt(total_mailboxes, 10) || 100;
+    if (mailboxTotal < 1 || mailboxTotal > 500) {
+      return res.status(400).json({ error: 'total_mailboxes must be between 1 and 500' });
+    }
+
+    // Check billing access
+    const accessState = req.accessState || getUserAccessState(req.session.user);
+    if (!accessState.canAccessApp) {
+      return res.status(403).json({
+        code: 'BILLING_REQUIRED',
+        error: 'No active trial or subscription found.'
+      });
+    }
+
+    // Check completed order limit
+    if (!accessState.canCreateMoreThanOneCompletedOrder) {
+      const existingOrders = getOrders(req.session.user.id);
+      const hasCompleted = existingOrders.some(o => o.status === 'completed');
+      if (hasCompleted) {
+        return res.status(403).json({
+          error: 'This account has already used its included completed order. Upgrade to continue.'
+        });
+      }
+    }
+
+    // Check for existing tenant with same domain
+    const existingTenants = getTenants(req.session.user.id);
+    let tenant = existingTenants.find(t => t.domain?.toLowerCase() === tenant_domain.toLowerCase());
+
+    if (tenant) {
+      // Check if this tenant already has an active (non-cancelled) order
+      const existingOrders = getOrders(req.session.user.id).filter(
+        o => o.tenant_id === tenant.id && o.status !== 'cancelled'
+      );
+      if (existingOrders.length > 0) {
+        return res.status(409).json({
+          code: 'TENANT_ALREADY_USED',
+          error: `Domain ${tenant_domain} already has an active order (#${existingOrders[0].id}). Use a different domain or restart the existing order.`
+        });
+      }
+    } else {
+      // Create new tenant
+      const tenantName = tenant_domain.split('.')[0];
+      const newTenant = {
+        user_id: req.session.user.id,
+        name: tenantName,
+        domain: tenant_domain.toLowerCase(),
+        admin_email: admin_email.toLowerCase(),
+        admin_password: admin_password
+      };
+      const tenantId = createTenant(newTenant);
+      tenant = { id: tenantId, ...newTenant };
+    }
+
+    // Generate order name
+    const safeName = typeof order_name === 'string' && order_name.trim()
+      ? order_name.trim()
+      : `${new Date().toLocaleString('default', { month: 'short', year: 'numeric' })}-${tenant_domain}`;
+
+    // Create order
+    const orderId = createOrder(
+      tenant.id,
+      mailboxTotal,
+      mailbox_password,
+      safeName,
+      req.session.user.id
+    );
+
+    const order = getOrderById(orderId);
+
+    // Get nameservers for the tenant
+    const { createZone } = await import('../services/cloudflare.js');
+    let nameServers = null;
+    let zoneId = null;
+    let zoneActive = false;
+
+    try {
+      const zone = await createZone(tenant_domain.toLowerCase());
+      nameServers = zone.name_servers;
+      zoneId = zone.id;
+      zoneActive = true;
+
+      // Update tenant with Cloudflare info
+      const { updateTenantCloudflare } = await import('../db/database.js');
+      updateTenantCloudflare(tenant.id, zone.id, nameServers);
+    } catch (zoneError) {
+      console.log('[API] Cloudflare zone creation skipped:', zoneError.message);
+    }
+
+    res.status(201).json({
+      id: order.id,
+      status: order.status,
+      progress: order.progress,
+      total_mailboxes: order.total_mailboxes,
+      tenant_domain: order.tenant_domain,
+      tenant_name: order.tenant_name,
+      order_name: order.order_name,
+      created_at: order.created_at,
+      name_servers: nameServers,
+      next_step: 'Update your domain\'s nameservers to the values above, then call POST /api/orders/:id/start to begin processing.'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+function validateMailboxPassword(password) {
+  if (typeof password !== 'string') return false;
+  if (password.length < 8 || password.length > 256) return false;
+  let categories = 0;
+  if (/[A-Z]/.test(password)) categories += 1;
+  if (/[a-z]/.test(password)) categories += 1;
+  if (/[0-9]/.test(password)) categories += 1;
+  if (/[^A-Za-z0-9]/.test(password)) categories += 1;
+  return categories >= 3;
+}
 
 router.get('/orders', requireApiKey, async (req, res) => {
   try {

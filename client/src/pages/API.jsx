@@ -86,19 +86,45 @@ export default function API() {
 
   const endpoints = [
     {
+      id: 'create-order',
+      method: 'POST',
+      path: '/api/orders',
+      title: 'Create Order',
+      desc: 'Create a new order and get nameservers to configure your domain.',
+      params: [
+        { name: 'tenant_domain', type: 'string', desc: 'Your domain (e.g., mycompany.com)' },
+        { name: 'admin_email', type: 'string', desc: 'Microsoft 365 admin email' },
+        { name: 'admin_password', type: 'string', desc: 'Microsoft 365 admin password' },
+        { name: 'mailbox_password', type: 'string', desc: 'Password for all mailboxes (8+ chars, 3 of: upper/lower/number/symbol)' },
+        { name: 'total_mailboxes', type: 'integer', desc: 'Number of mailboxes (1-500, default: 100)' },
+        { name: 'order_name', type: 'string', desc: 'Optional custom order name' }
+      ],
+      example: {
+        tenant_domain: 'mycompany.com',
+        admin_email: 'admin@mycompany.com',
+        admin_password: 'AdminPass123!',
+        mailbox_password: 'SecureMail123!',
+        total_mailboxes: 100
+      },
+      response_example: {
+        id: 148,
+        status: 'pending',
+        progress: 0,
+        total_mailboxes: 100,
+        tenant_domain: 'mycompany.com',
+        name_servers: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
+        next_step: 'Update your domain\'s nameservers, then call POST /api/orders/:id/start'
+      }
+    },
+    {
       id: 'list-orders',
       method: 'GET',
       path: '/api/orders',
       title: 'List Orders',
       desc: 'Retrieve all orders for your account.',
-      example: {
-        id: 1,
-        status: 'completed',
-        progress: 100,
-        total_mailboxes: 100,
-        tenant_domain: 'example.com',
-        order_name: 'May-2026-1'
-      }
+      example: [
+        { id: 1, status: 'completed', progress: 100, total_mailboxes: 100, tenant_domain: 'example.com' }
+      ]
     },
     {
       id: 'get-stats',
@@ -198,7 +224,9 @@ export default function API() {
       url = url.replace(':domain', 'example.com');
     }
     if (ep.method === 'POST') {
-      return `curl ${url} -X POST -H "x-api-key: ${key}"`;
+      const exampleBody = ep.example || {};
+      const bodyStr = JSON.stringify(exampleBody, null, 2).replace(/\n/g, ' ');
+      return `curl ${url} -X POST -H "x-api-key: ${key}" -H "Content-Type: application/json" -d '${bodyStr}'`;
     }
     if (ep.isDownload) {
       return `curl ${url} -H "x-api-key: ${key}" -o mailboxes.csv`;
@@ -371,13 +399,24 @@ export default function API() {
 
                   <div className="endpoint-example">
                     <div className="example-header">
-                      <span className="example-label">Response</span>
+                      <span className="example-label">{ep.method === 'POST' ? 'Request Body' : 'Response'}</span>
                       {ep.isDownload && <span className="download-badge">CSV File</span>}
                     </div>
                     <pre className="example-code">
                       <code>{ep.isDownload ? ep.example : JSON.stringify(ep.example, null, 2)}</code>
                     </pre>
                   </div>
+
+                  {ep.response_example && (
+                    <div className="endpoint-example">
+                      <div className="example-header">
+                        <span className="example-label">Response</span>
+                      </div>
+                      <pre className="example-code">
+                        <code>{JSON.stringify(ep.response_example, null, 2)}</code>
+                      </pre>
+                    </div>
+                  )}
 
                   <div className="endpoint-curl">
                     <div className="curl-header">
