@@ -3409,13 +3409,6 @@ a {
   box-shadow: 0 8px 24px rgba(134, 247, 184, 0.15);
 }
 
-.explore-api-btn svg {
-  transition: transform 0.2s ease;
-}
-
-.explore-api-btn:hover svg {
-  transform: translateX(4px);
-}
 
 /* API Preview Section */
 .api-preview-section {

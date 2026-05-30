@@ -125,9 +125,6 @@ export default function APIBilling() {
               }}
             >
               Explore The API
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M5 12h14M12 5l7 7-7 7"/>
-              </svg>
             </button>
           </div>
 
@@ -211,12 +208,7 @@ export default function APIBilling() {
                           Processing...
                         </>
                       ) : (
-                        <>
-                          Start Reseller Plan
-                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M5 12h14M12 5l7 7-7 7"/>
-                          </svg>
-                        </>
+                        'Start Reseller Plan'
                       )}
                     </span>
                   </button>
@@ -293,9 +285,6 @@ export default function APIBilling() {
                   >
                     <span className="cta-text">
                       Add Credits
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M12 5v14M5 12h14"/>
-                      </svg>
                     </span>
                   </button>
 
@@ -380,23 +369,12 @@ export default function APIBilling() {
               {/* API Key Section */}
               <div className="preview-block">
                 <h3>Your API Key</h3>
-                <div className="key-block preview-key-block">
+                <div className="key-block preview-key-block disabled">
                   <div className="key-value">
                     <code className="key-masked">{'•'.repeat(48)}</code>
                   </div>
                 </div>
-                <p className="preview-text">Upgrade to generate and manage your API key.</p>
-              </div>
-
-              {/* Upgrade Message */}
-              <div className="preview-upgrade-overlay">
-                <div className="preview-upgrade-message">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                  </svg>
-                  <span>Upgrade to Access API</span>
-                </div>
+                <p className="preview-text upgrade-note">API key available after upgrade</p>
               </div>
             </div>
           </section>
@@ -466,12 +444,7 @@ export default function APIBilling() {
                         Processing...
                       </>
                     ) : (
-                      <>
-                        Add Credits
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M5 12h14M12 5l7 7-7 7"/>
-                        </svg>
-                      </>
+                      'Add Credits'
                     )}
                   </button>
                 </div>
