@@ -2034,7 +2034,7 @@ a {
   font-size: 11px;
   padding: 10px 16px;
   background: rgba(134, 247, 184, 0.05);
-  text-align: center;
+  text-align: center !important;
 }
 
 .endpoint-example pre {
