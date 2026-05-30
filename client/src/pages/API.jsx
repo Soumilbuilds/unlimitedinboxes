@@ -246,9 +246,26 @@ export default function API() {
       <main className="main-content api-docs-content">
         {/* Header */}
         <header className="api-header">
-          <div className="api-header-badge">REST API</div>
-          <h1>API Reference</h1>
-          <p>Build powerful integrations with the Unlimited Inboxes API. Access orders, statistics, and download mailbox credentials programmatically.</p>
+          <div className="api-header-top">
+            <div>
+              <div className="api-header-badge">REST API</div>
+              <h1>API Reference</h1>
+              <p>Build powerful integrations with the Unlimited Inboxes API. Access orders, statistics, and download mailbox credentials programmatically.</p>
+            </div>
+            <a
+              href={`${baseUrl}/api-docs/llms.txt`}
+              download="llms.txt"
+              className="llms-download-btn"
+              title="Download for AI agents"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              llms.txt
+            </a>
+          </div>
         </header>
 
         {/* Quick Nav */}

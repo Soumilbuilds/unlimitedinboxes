@@ -1620,6 +1620,13 @@ a {
   border-bottom: 1px solid rgba(134, 247, 184, 0.08);
 }
 
+.api-header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+}
+
 .api-header-badge {
   display: inline-block;
   font-size: 11px;
@@ -1632,6 +1639,29 @@ a {
   padding: 4px 12px;
   border-radius: 20px;
   margin-bottom: 16px;
+}
+
+.llms-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  text-decoration: none;
+  transition: all 0.15s ease;
+  opacity: 0.7;
+}
+
+.llms-download-btn:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 .api-header h1 {
