@@ -132,7 +132,7 @@ export async function createTenantCheckoutSession(user, tenantType, quantity, op
   const cancelUrl = opts.cancelUrl || `${baseUrl(opts)}/tenants`;
 
   const session = await client().checkout.sessions.create(compactObject({
-    mode: 'subscription',
+    mode: 'payment',
     ...customerParam(user),
     line_items: [{ price: priceId, quantity }],
     success_url: successUrl,
@@ -145,14 +145,6 @@ export async function createTenantCheckoutSession(user, tenantType, quantity, op
       quantity: String(quantity),
       ...(opts.metadata || {}),
     },
-    subscription_data: compactObject({
-      metadata: {
-        type: 'tenant_purchase',
-        user_id: String(user.id),
-        tenant_type: tenantType,
-        quantity: String(quantity),
-      },
-    }),
     payment_intent_data: {
       setup_future_usage: 'off_session',
     },

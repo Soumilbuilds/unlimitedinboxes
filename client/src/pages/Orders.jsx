@@ -102,8 +102,8 @@ function buildBillingRequiredNotice(billing, responseData = {}) {
   if (blockingReason === 'needs_intro_offer' || recommendedCheckoutIntent === 'intro') {
     return {
       intent: 'intro',
-      title: 'Free Trial Not Found',
-      subtitle: 'Start your three-day trial to create one order and download 10 inboxes.',
+      title: 'No Active Subscription Found',
+      subtitle: 'Try Unlimited Inboxes For Free | Create 100 Free Inboxes For Life',
       action: 'Start Free Trial'
     };
   }

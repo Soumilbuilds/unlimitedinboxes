@@ -80,7 +80,7 @@ export default function Tenants() {
                         />
                         <div className="tenant-license-copy">
                           <strong>{option.label}</strong>
-                          <div className="helper-text">${option.unitPrice} / tenant</div>
+                          <div className="helper-text">${option.unitPrice} + Processing Fee</div>
                         </div>
                       </label>
                     ))}
