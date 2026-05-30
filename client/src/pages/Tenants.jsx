@@ -6,12 +6,12 @@ const LICENSE_OPTIONS = [
   {
     value: 'premium',
     label: 'US IP',
-    unitPrice: 21.99
+    unitPrice: 15
   },
   {
     value: 'normal',
     label: 'Asia IP',
-    unitPrice: 16.99
+    unitPrice: 20
   }
 ];
 

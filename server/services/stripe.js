@@ -19,8 +19,8 @@ export const PLAN_PRICES = {
   intro: 0,
   standard: 99.99,
   advanced: 199.99,
-  usTenant: 21.99,
-  asiaTenant: 16.99,
+  usTenant: 15,
+  asiaTenant: 20,
 };
 
 export const PLAN_TRIAL_DAYS = {
@@ -132,7 +132,7 @@ export async function createTenantCheckoutSession(user, tenantType, quantity, op
   const cancelUrl = opts.cancelUrl || `${baseUrl(opts)}/tenants`;
 
   const session = await client().checkout.sessions.create(compactObject({
-    mode: 'payment',
+    mode: 'subscription',
     ...customerParam(user),
     line_items: [{ price: priceId, quantity }],
     success_url: successUrl,
@@ -145,9 +145,14 @@ export async function createTenantCheckoutSession(user, tenantType, quantity, op
       quantity: String(quantity),
       ...(opts.metadata || {}),
     },
-    payment_intent_data: {
-      setup_future_usage: 'off_session',
-    },
+    subscription_data: compactObject({
+      metadata: {
+        type: 'tenant_purchase',
+        user_id: String(user.id),
+        tenant_type: tenantType,
+        quantity: String(quantity),
+      },
+    }),
     billing_address_collection: 'auto',
     phone_number_collection: { enabled: false },
     allow_promotion_codes: false,
