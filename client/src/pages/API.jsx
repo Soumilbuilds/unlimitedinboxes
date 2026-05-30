@@ -19,41 +19,93 @@ export default function API() {
     return (
       <div className="app-layout api-docs-layout">
         <Sidebar />
-        <main className="main-content api-docs-content">
-          <div className="api-unavailable">
-            <div className="api-unavailable-icon">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <main className="main-content api-docs-content api-locked">
+          <div className="api-locked-bg">
+            <div className="bg-gradient-1" />
+            <div className="bg-gradient-2" />
+            <div className="bg-grid" />
+          </div>
+
+          <div className="api-locked-content">
+            <div className="locked-icon">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
                 <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
               </svg>
             </div>
-            <h2>API Is Not Available On Your Plan</h2>
-            <p>Upgrade to access the API and start creating orders programmatically.</p>
-            <div className="api-upgrade-options">
-              <div className="upgrade-option">
+            <div className="locked-badge">API Access Required</div>
+            <h2>Unlock the Power of Our API</h2>
+            <p>Scale your operations with unlimited API calls, multi-order processing, and enterprise-grade infrastructure.</p>
+
+            <div className="api-upgrade-options premium">
+              <div className="upgrade-option reseller">
+                <div className="option-badge">Most Popular</div>
                 <h3>Reseller Plan</h3>
-                <ul>
-                  <li>Unlimited Orders</li>
-                  <li>Multiple Order Processing</li>
-                  <li>Unlimited API Access</li>
+                <div className="option-price">$299<span>/mo</span></div>
+                <ul className="option-features">
+                  <li>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    Unlimited Orders
+                  </li>
+                  <li>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    Multiple Order Processing
+                  </li>
+                  <li>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    Unlimited API Access
+                  </li>
                 </ul>
-                <div className="upgrade-price">$299/mo</div>
-                <button className="btn primary" onClick={() => window.location.href = '/api-billing?plan=reseller'}>
-                  Upgrade
+                <button className="btn-upgrade primary" onClick={() => window.location.href = '/api-billing?plan=reseller'}>
+                  Start Reseller Plan
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M5 12h14M12 5l7 7-7 7"/>
+                  </svg>
                 </button>
               </div>
-              <div className="upgrade-option">
+              <div className="upgrade-option paygo">
                 <h3>Pay As You Go</h3>
-                <ul>
-                  <li>Pay Per Order</li>
-                  <li>Multiple Order Processing</li>
-                  <li>Unlimited API Access</li>
+                <div className="option-price">$14<span>/order</span></div>
+                <ul className="option-features">
+                  <li>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    Pay Per Order
+                  </li>
+                  <li>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    Multiple Order Processing
+                  </li>
+                  <li>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    Unlimited API Access
+                  </li>
                 </ul>
-                <div className="upgrade-price">$14/mo/order</div>
-                <button className="btn secondary" onClick={() => window.location.href = '/api-billing?plan=perOrder'}>
+                <button className="btn-upgrade" onClick={() => window.location.href = '/api-billing?plan=perOrder'}>
                   Add Credits
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 5v14M5 12h14"/>
+                  </svg>
                 </button>
               </div>
+            </div>
+
+            <div className="locked-guarantee">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              </svg>
+              30-day money-back guarantee
             </div>
           </div>
         </main>
