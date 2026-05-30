@@ -2903,6 +2903,7 @@ a {
 .plan-pricing {
   display: flex;
   align-items: baseline;
+  justify-content: center;
   gap: 4px;
   margin-bottom: 8px;
 }
@@ -3375,6 +3376,203 @@ a {
   .btn-cancel,
   .btn-submit {
     width: 100%;
+  }
+}
+
+/* Explore API Button */
+.explore-api-btn-container {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 48px;
+  animation: fadeInUp 0.6s ease-out 0.15s both;
+}
+
+.explore-api-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 28px;
+  background: transparent;
+  border: 2px solid rgba(134, 247, 184, 0.35);
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.explore-api-btn:hover {
+  background: rgba(134, 247, 184, 0.08);
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(134, 247, 184, 0.15);
+}
+
+.explore-api-btn svg {
+  transition: transform 0.2s ease;
+}
+
+.explore-api-btn:hover svg {
+  transform: translateX(4px);
+}
+
+/* API Preview Section */
+.api-preview-section {
+  position: relative;
+  margin-top: 60px;
+  padding: 48px;
+  background: linear-gradient(180deg, rgba(20, 20, 20, 0.8) 0%, rgba(11, 11, 11, 0.9) 100%);
+  border: 1px solid rgba(134, 247, 184, 0.12);
+  border-radius: 24px;
+  animation: fadeInUp 0.6s ease-out 0.4s both;
+}
+
+.preview-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: rgba(134, 247, 184, 0.1);
+  border: 1px solid rgba(134, 247, 184, 0.2);
+  border-radius: 100px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 20px;
+}
+
+.preview-title {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--text);
+  margin: 0 0 8px;
+  letter-spacing: -0.02em;
+}
+
+.preview-subtitle {
+  font-size: 16px;
+  color: rgba(245, 245, 245, 0.6);
+  margin: 0 0 32px;
+}
+
+.preview-content {
+  position: relative;
+}
+
+.preview-block {
+  margin-bottom: 32px;
+  padding-bottom: 32px;
+  border-bottom: 1px solid rgba(134, 247, 184, 0.06);
+}
+
+.preview-block:last-of-type {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.preview-block h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 12px;
+}
+
+.preview-text {
+  font-size: 14px;
+  color: rgba(245, 245, 245, 0.6);
+  margin: 0 0 16px;
+  line-height: 1.6;
+}
+
+/* Preview Endpoint Block */
+.preview-endpoint {
+  opacity: 0.85;
+}
+
+.preview-endpoint .endpoint-head {
+  padding: 20px;
+}
+
+.preview-endpoint .endpoint-title-row {
+  margin-bottom: 10px;
+}
+
+.preview-endpoint h3 {
+  font-size: 15px;
+  margin: 0 0 6px;
+}
+
+/* Preview Key Block */
+.preview-key-block {
+  opacity: 0.6;
+}
+
+.preview-key-block .key-masked {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  color: var(--text-muted);
+  opacity: 0.4;
+  letter-spacing: 3px;
+}
+
+/* Preview Upgrade Overlay */
+.preview-upgrade-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.3) 0%,
+    rgba(0, 0, 0, 0.5) 30%,
+    rgba(0, 0, 0, 0.7) 100%
+  );
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 48px;
+  border-radius: 24px;
+  backdrop-filter: blur(2px);
+}
+
+.preview-upgrade-message {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 28px;
+  background: rgba(11, 11, 11, 0.95);
+  border: 1px solid rgba(134, 247, 184, 0.3);
+  border-radius: 16px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.preview-upgrade-message svg {
+  flex-shrink: 0;
+}
+
+/* Responsive for Preview Section */
+@media (max-width: 768px) {
+  .api-preview-section {
+    padding: 32px 24px;
+  }
+
+  .preview-title {
+    font-size: 24px;
+  }
+
+  .preview-upgrade-message {
+    font-size: 14px;
+    padding: 14px 20px;
+  }
+
+  .explore-api-btn {
+    padding: 12px 24px;
+    font-size: 14px;
   }
 }
 

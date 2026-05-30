@@ -116,6 +116,20 @@ export default function APIBilling() {
             </h1>
           </header>
 
+          {/* Explore API Button */}
+          <div className="explore-api-btn-container">
+            <button
+              className="explore-api-btn"
+              onClick={() => {
+                document.getElementById('api-preview-section')?.scrollIntoView({ behavior: 'smooth' });
+              }}
+            >
+              Explore The API
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M5 12h14M12 5l7 7-7 7"/>
+              </svg>
+            </button>
+          </div>
 
           {/* Plan Comparison */}
           <section className="plans-section">
@@ -297,6 +311,94 @@ export default function APIBilling() {
               )}
             </div>
 
+          </section>
+
+          {/* API Preview Section */}
+          <section id="api-preview-section" className="api-preview-section">
+            <div className="preview-badge">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+              Preview
+            </div>
+            <h2 className="preview-title">API Documentation</h2>
+            <p className="preview-subtitle">See what you'll get with API access</p>
+
+            <div className="preview-content">
+              {/* Overview */}
+              <div className="preview-block">
+                <h3>Base URL</h3>
+                <div className="base-url-block">
+                  <code>{typeof window !== 'undefined' ? (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:5173' : 'https://app.unlimitedinboxes.com') : 'https://app.unlimitedinboxes.com'}</code>
+                </div>
+              </div>
+
+              {/* Authentication */}
+              <div className="preview-block">
+                <h3>Authentication</h3>
+                <p className="preview-text">All API requests require your API key to be included in the request headers.</p>
+                <div className="auth-block">
+                  <div className="auth-header">
+                    <span className="auth-label">Header</span>
+                  </div>
+                  <code className="auth-code">x-api-key: YOUR_API_KEY</code>
+                </div>
+              </div>
+
+              {/* Endpoints Preview */}
+              <div className="preview-block">
+                <h3>Available Endpoints</h3>
+                <div className="endpoints-list">
+                  {[
+                    { method: 'POST', path: '/api/orders', title: 'Create Order', desc: 'Create a new order and get nameservers to configure your domain.' },
+                    { method: 'GET', path: '/api/orders', title: 'List Orders', desc: 'Retrieve all orders for your account.' },
+                    { method: 'GET', path: '/api/orders/stats', title: 'Get Statistics', desc: 'Get aggregated statistics across all your orders.' },
+                    { method: 'GET', path: '/api/orders/:id', title: 'Get Order by ID', desc: 'Retrieve detailed information about a specific order.' },
+                    { method: 'POST', path: '/api/orders/:id/start', title: 'Start Order', desc: 'Start or resume processing for an order.' },
+                    { method: 'GET', path: '/api/orders/:id/download', title: 'Download Mailboxes', desc: 'Download mailbox credentials as CSV file.' }
+                  ].map((ep, i) => {
+                    const mc = ep.method === 'GET'
+                      ? { bg: 'rgba(52, 211, 153, 0.15)', color: '#34d399' }
+                      : { bg: 'rgba(134, 247, 184, 0.15)', color: '#86f7b8' };
+                    return (
+                      <div key={i} className="endpoint-block preview-endpoint">
+                        <div className="endpoint-head">
+                          <div className="endpoint-title-row">
+                            <span className="method-badge" style={{ background: mc.bg, color: mc.color }}>{ep.method}</span>
+                            <code className="endpoint-path">{ep.path}</code>
+                          </div>
+                          <h3>{ep.title}</h3>
+                          <p className="endpoint-desc">{ep.desc}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* API Key Section */}
+              <div className="preview-block">
+                <h3>Your API Key</h3>
+                <div className="key-block preview-key-block">
+                  <div className="key-value">
+                    <code className="key-masked">{'•'.repeat(48)}</code>
+                  </div>
+                </div>
+                <p className="preview-text">Upgrade to generate and manage your API key.</p>
+              </div>
+
+              {/* Upgrade Message */}
+              <div className="preview-upgrade-overlay">
+                <div className="preview-upgrade-message">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                  </svg>
+                  <span>Upgrade to Access API</span>
+                </div>
+              </div>
+            </div>
           </section>
 
           {error && (
