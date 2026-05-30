@@ -111,85 +111,11 @@ export default function APIBilling() {
         <div className={`api-billing-container ${mounted ? 'mounted' : ''}`}>
           {/* Header Section */}
           <header className="api-billing-header">
-            <div className="header-badge">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-              </svg>
-              API Access
-            </div>
             <h1 className="header-title">
-              Unlock Enterprise-Grade
-              <span className="title-accent"> API Access</span>
+              Use UnlimitedInboxes Via API
             </h1>
-            <p className="header-subtitle">
-              Scale your operations with unlimited API calls, multi-order processing, and dedicated infrastructure.
-            </p>
-
-            {/* Trust indicators */}
-            <div className="trust-badges">
-              <div className="trust-badge">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                  <path d="M9 12l2 2 4-4"/>
-                </svg>
-                SOC 2 Compliant
-              </div>
-              <div className="trust-badge">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M12 6v6l4 2"/>
-                </svg>
-                99.99% Uptime SLA
-              </div>
-              <div className="trust-badge">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                </svg>
-                24/7 Support
-              </div>
-            </div>
           </header>
 
-          {/* Available Orders Section */}
-          {!showPerOrderOnly && !showResellerOnly && (
-            <section className="orders-status-section">
-              <div className="orders-status-card">
-                <div className="status-icon">
-                  {isReseller ? (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-                    </svg>
-                  ) : (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <rect x="3" y="3" width="18" height="18" rx="2"/>
-                      <path d="M3 9h18M9 21V9"/>
-                    </svg>
-                  )}
-                </div>
-                <div className="status-content">
-                  <span className="status-label">Available Orders</span>
-                  <div className="status-value">
-                    {isReseller ? (
-                      <span className="unlimited-text">Unlimited</span>
-                    ) : (
-                      <span className="orders-count">{remainingOrders ?? 0}</span>
-                    )}
-                    {!isReseller && totalOrders > 0 && (
-                      <span className="orders-total">/ {totalOrders}</span>
-                    )}
-                  </div>
-                </div>
-                {!isReseller && remainingOrders === 0 && (
-                  <button className="btn-topup" onClick={handleTopUp}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M12 5v14M5 12h14"/>
-                    </svg>
-                    Top Up
-                  </button>
-                )}
-              </div>
-            </section>
-          )}
 
           {/* Plan Comparison */}
           <section className="plans-section">
@@ -207,13 +133,13 @@ export default function APIBilling() {
                   <div className="plan-glow" />
                   <div className="plan-badge">Most Popular</div>
 
-                  <div className="plan-header">
+                  <div className="plan-header" style={{ textAlign: 'center' }}>
                     <h3>Reseller Plan</h3>
-                    <div className="plan-pricing">
+                    <div className="plan-pricing" style={{ textAlign: 'center' }}>
                       <span className="price-main">$299</span>
                       <span className="price-period">/mo</span>
                     </div>
-                    <p className="plan-tagline">For agencies and high-volume operators</p>
+                    <p className="plan-tagline" style={{ textAlign: 'center' }}>Mostly Used By Agencies & Resellers</p>
                   </div>
 
                   <ul className="plan-features">
@@ -295,13 +221,13 @@ export default function APIBilling() {
               {/* Pay As You Go Plan */}
               {!showResellerOnly && (
                 <div className={`plan-card paygo ${showPerOrderOnly ? 'focused' : ''}`}>
-                  <div className="plan-header">
+                  <div className="plan-header" style={{ textAlign: 'center' }}>
                     <h3>Pay As You Go</h3>
-                    <div className="plan-pricing">
+                    <div className="plan-pricing" style={{ textAlign: 'center' }}>
                       <span className="price-main">$14</span>
                       <span className="price-period">/order</span>
                     </div>
-                    <p className="plan-tagline">Pay only for what you use</p>
+                    <p className="plan-tagline" style={{ textAlign: 'center' }}>Pay only for what you use</p>
                   </div>
 
                   <ul className="plan-features">
@@ -371,13 +297,6 @@ export default function APIBilling() {
               )}
             </div>
 
-            {/* Money-back guarantee */}
-            <div className="guarantee-badge">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-              </svg>
-              <span>30-day money-back guarantee on all plans</span>
-            </div>
           </section>
 
           {error && (
@@ -391,15 +310,6 @@ export default function APIBilling() {
             </div>
           )}
 
-          {/* Back link */}
-          <div className="billing-back">
-            <button className="btn-back" onClick={() => window.history.back()}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M19 12H5M12 19l-7-7 7-7"/>
-              </svg>
-              Back
-            </button>
-          </div>
         </div>
 
         {/* Top Up Modal */}
@@ -414,17 +324,6 @@ export default function APIBilling() {
                     <line x1="6" y1="6" x2="18" y2="18"/>
                   </svg>
                 </button>
-
-                <div className="modal-header">
-                  <div className="modal-icon">
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <rect x="3" y="3" width="18" height="18" rx="2"/>
-                      <path d="M3 9h18M9 21V9"/>
-                    </svg>
-                  </div>
-                  <h3>Add Order Credits</h3>
-                  <p>Purchase additional order credits for your Pay As You Go plan</p>
-                </div>
 
                 <div className="modal-body">
                   <div className="quantity-selector">
@@ -451,24 +350,9 @@ export default function APIBilling() {
                     </div>
                     <p className="helper-text">Minimum {MIN_QUANTITY} orders per purchase</p>
                   </div>
-
-                  <div className="price-summary">
-                    <div className="price-row">
-                      <span>{quantity} orders × $14</span>
-                      <span>${totalPrice}</span>
-                    </div>
-                    <div className="price-divider" />
-                    <div className="price-total">
-                      <span>Total</span>
-                      <span className="total-value">${totalPrice}</span>
-                    </div>
-                  </div>
                 </div>
 
                 <div className="modal-footer">
-                  <button className="btn-cancel" onClick={() => setTopUpModal(false)}>
-                    Cancel
-                  </button>
                   <button
                     className="btn-submit"
                     onClick={handleAddCredits}
@@ -481,7 +365,7 @@ export default function APIBilling() {
                       </>
                     ) : (
                       <>
-                        Add ${totalPrice} Credits
+                        Add Credits
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M5 12h14M12 5l7 7-7 7"/>
                         </svg>

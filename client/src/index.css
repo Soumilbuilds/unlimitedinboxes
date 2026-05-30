@@ -3192,50 +3192,23 @@ a {
   color: var(--text);
 }
 
-.modal-header {
-  text-align: center;
-  margin-bottom: 28px;
-}
-
-.modal-icon {
-  width: 64px;
-  height: 64px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(134, 247, 184, 0.1);
-  border-radius: 16px;
-  margin: 0 auto 20px;
-  color: var(--accent);
-}
-
-.modal-header h3 {
-  font-size: 22px;
-  font-weight: 800;
-  color: var(--text);
-  margin: 0 0 8px;
-}
-
-.modal-header p {
-  font-size: 14px;
-  color: rgba(245, 245, 245, 0.5);
-  margin: 0;
-}
-
 .modal-body {
   margin-bottom: 28px;
 }
 
 .modal-body .quantity-selector {
   text-align: center;
-  margin-bottom: 24px;
+  padding: 20px;
+  background: rgba(134, 247, 184, 0.05);
+  border: 1px solid rgba(134, 247, 184, 0.15);
+  border-radius: 16px;
 }
 
 .modal-body .quantity-selector label {
   display: block;
   font-size: 14px;
   font-weight: 600;
-  color: rgba(245, 245, 245, 0.8);
+  color: rgba(245, 245, 245, 0.9);
   margin-bottom: 16px;
 }
 
@@ -3281,12 +3254,14 @@ a {
 }
 
 .modal-body .helper-text {
-  font-size: 12px;
-  color: rgba(245, 245, 245, 0.4);
-  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--accent);
+  margin: 16px 0 0;
+  font-weight: 500;
 }
 
 .price-summary {
+  display: none;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 16px;
@@ -3326,26 +3301,8 @@ a {
   gap: 12px;
 }
 
-.btn-cancel {
-  flex: 1;
-  padding: 14px 20px;
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  font-size: 14px;
-  font-weight: 600;
-  color: rgba(245, 245, 245, 0.7);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.btn-cancel:hover {
-  background: rgba(255, 255, 255, 0.05);
-  border-color: rgba(255, 255, 255, 0.2);
-}
-
 .btn-submit {
-  flex: 2;
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
