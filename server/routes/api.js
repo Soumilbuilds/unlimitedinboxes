@@ -46,6 +46,96 @@ const requireApiKey = async (req, res, next) => {
   next();
 };
 
+router.get('/orders/stats', requireApiKey, async (req, res) => {
+  try {
+    const orders = getOrders(req.session.user.id);
+    const stats = {
+      total: orders.length,
+      by_status: {
+        pending: orders.filter(o => o.status === 'pending').length,
+        processing: orders.filter(o => o.status === 'processing').length,
+        completed: orders.filter(o => o.status === 'completed').length,
+        failed: orders.filter(o => o.status === 'failed').length,
+        cancelled: orders.filter(o => o.status === 'cancelled').length
+      },
+      total_mailboxes: orders.reduce((sum, o) => sum + (o.total_mailboxes || 0), 0),
+      completed_mailboxes: orders.reduce((sum, o) => {
+        const mailboxes = JSON.parse(o.created_mailboxes || '[]');
+        return sum + mailboxes.length;
+      }, 0)
+    };
+    res.json(stats);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/orders/by-domain/:domain', requireApiKey, async (req, res) => {
+  try {
+    const domain = req.params.domain.toLowerCase();
+    const orders = getOrders(req.session.user.id);
+    const order = orders.find(o => o.tenant_domain?.toLowerCase() === domain);
+    if (!order) return res.status(404).json({ error: 'No order found for this domain' });
+
+    const mailboxes = JSON.parse(order.created_mailboxes || '[]');
+    res.json({
+      id: order.id,
+      status: order.status,
+      progress: order.progress,
+      total_mailboxes: order.total_mailboxes,
+      created_mailboxes_count: mailboxes.length,
+      tenant_domain: order.tenant_domain,
+      tenant_name: order.tenant_name,
+      order_name: order.order_name,
+      error_message: order.error_message,
+      created_at: order.created_at,
+      updated_at: order.updated_at
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/orders/by-domain/:domain/download', requireApiKey, async (req, res) => {
+  try {
+    const domain = req.params.domain.toLowerCase();
+    const orders = getOrders(req.session.user.id);
+    const order = orders.find(o => o.tenant_domain?.toLowerCase() === domain);
+    if (!order) return res.status(404).json({ error: 'No order found for this domain' });
+
+    if (order.status !== 'completed') {
+      return res.status(400).json({ error: 'Order is not completed yet' });
+    }
+
+    const accessState = req.accessState || getUserAccessState(req.session.user);
+    if (!accessState.canDownloadAll || accessState.downloadAllowance <= 0) {
+      return res.status(403).json({
+        code: 'API_DOWNLOAD_NOT_ALLOWED',
+        error: 'Download is available on paid plans only.'
+      });
+    }
+
+    const mailboxes = JSON.parse(order.created_mailboxes || '[]');
+    const limit = Number.isFinite(accessState.downloadAllowance)
+      ? accessState.downloadAllowance
+      : mailboxes.length;
+    const rows = mailboxes.slice(0, limit);
+
+    const csvLines = ['email,password'];
+    rows.forEach(m => {
+      const email = (m.email || '').replace(/"/g, '""');
+      const password = (m.password || '').replace(/"/g, '""');
+      csvLines.push(`"${email}","${password}"`);
+    });
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="${domain}-mailboxes.csv"`);
+    res.send(csvLines.join('\n'));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/orders', requireApiKey, async (req, res) => {
   try {
     const orders = getOrders(req.session.user.id);
