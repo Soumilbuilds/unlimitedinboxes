@@ -19,6 +19,7 @@ import {
   retryEnableDkimSigning
 } from './securityCenterDkim.js';
 import { generateMailboxName, resetUsedNames } from './nameGenerator.js';
+import { generateTotpCode, isValidTotpSecret } from './totp.js';
 import {
   getOrderById,
   getOrders,
@@ -195,6 +196,15 @@ export async function processOrder(orderId) {
 
   logMessage(orderId, `Starting order for ${domain}...`);
 
+  // Set up TOTP resolver if MFA secret is available
+  let getTotpCode = null;
+  if (tenant.mfa_secret && isValidTotpSecret(tenant.mfa_secret)) {
+    getTotpCode = () => generateTotpCode(tenant.mfa_secret);
+    logMessage(orderId, 'Auto-generating 2FA codes from saved secret');
+  } else if (tenant.mfa_secret) {
+    logMessage(orderId, 'MFA secret not configured — if 2FA is required, login will fail');
+  }
+
   let browserContext = null;
   let page = null;
   let graphProvider = null;
@@ -301,7 +311,7 @@ export async function processOrder(orderId) {
     if (checkCancelled(orderId)) return;
 
     logMessage(orderId, 'Logging in to Microsoft 365...');
-    const loginResult = await loginToMicrosoft365(page, tenant.admin_email, tenant.admin_password, browserContext);
+    const loginResult = await loginToMicrosoft365(page, tenant.admin_email, tenant.admin_password, browserContext, getTotpCode);
     if (!loginResult.success) {
       throw new Error(`Login failed: ${loginResult.error}`);
     }
@@ -534,7 +544,7 @@ export async function processOrder(orderId) {
       let securitySession = null;
       try {
         logMessage(orderId, 'Fetching DKIM selectors...');
-        securitySession = await loginToSecurityCenter(tenant.admin_email, tenant.admin_password);
+        securitySession = await loginToSecurityCenter(tenant.admin_email, tenant.admin_password, getTotpCode);
         if (!securitySession.success) {
           throw new Error(securitySession.error || 'Security Center login failed');
         }

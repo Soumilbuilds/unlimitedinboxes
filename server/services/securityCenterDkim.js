@@ -103,11 +103,11 @@ async function securityFetch(page, { path, method = 'GET', body = null, tenantId
   });
 }
 
-export async function loginToSecurityCenter(email, password) {
+export async function loginToSecurityCenter(email, password, getTotpCode = null) {
   const { context, page } = await createIncognitoPage();
   page.setDefaultTimeout(60000);
 
-  const result = await ensureMicrosoftLogin(page, email, password, context, SECURITY_CENTER_URL);
+  const result = await ensureMicrosoftLogin(page, email, password, context, SECURITY_CENTER_URL, getTotpCode);
   if (!result.success) {
     await saveDebugScreenshot(result.page || page, 'security_center_login_error');
     return { success: false, error: result.error, page: result.page || page, context };

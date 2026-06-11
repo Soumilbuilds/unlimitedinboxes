@@ -211,9 +211,9 @@ async function handleStaySignedIn(page) {
   }
 }
 
-async function handleMicrosoftLoginFlow(page, email, password, context) {
+async function handleMicrosoftLoginFlow(page, email, password, context, getTotpCode = null) {
   // Increased attempts for robustness
-  for (let i = 0; i < 10; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     try {
       page = await waitForNewOrActivePage(context, page);
       if (!page || page.isClosed()) {
@@ -279,6 +279,20 @@ async function handleMicrosoftLoginFlow(page, email, password, context) {
         continue;
       }
 
+      // 2FA / TOTP prompt detection and handling
+      if (typeof getTotpCode === 'function') {
+        const otpHandled = await handleTwoFactorPrompt(page, getTotpCode);
+        if (otpHandled) {
+          await Promise.race([
+            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 8000 }).catch(() => null),
+            sleep
+          ]);
+          page = await waitForNewOrActivePage(context, page, 8000);
+          await sleep(500);
+          continue;
+        }
+      }
+
       if (!page.url().includes('login.microsoftonline.com')) {
         // console.log('Login flow seemingly complete, URL is: ' + page.url());
         break;
@@ -297,20 +311,66 @@ async function handleMicrosoftLoginFlow(page, email, password, context) {
   return page;
 }
 
-export async function ensureMicrosoftLogin(page, email, password, context, targetUrl) {
+// Detects an MFA / TOTP prompt and submits a freshly generated code.
+// Returns true when code entry was attempted.
+async function handleTwoFactorPrompt(page, getTotpCode) {
+  try {
+    const otpInput = await page.$(
+      'input[name="otc"], input[id="idTxtBx_SAOTCC_OTC"], input[autocomplete="one-time-code"]'
+    );
+    if (!otpInput) return false;
+
+    // Make sure this is actually an MFA prompt — Microsoft also shows text
+    // inputs for passwords and recovery emails, so check the surrounding copy.
+    const isMfaPrompt = await page.evaluate(() => {
+      const text = (document.body?.innerText || '').toLowerCase();
+      return /enter the code|verification code|authenticator app|verify your identity|enter the verification code/i.test(text);
+    });
+    if (!isMfaPrompt) return false;
+
+    const code = await getTotpCode();
+    if (!code || !/^\d{6}$/.test(String(code))) {
+      throw new Error('TOTP resolver did not return a 6-digit code');
+    }
+
+    const inputHandle = await otpInput.evaluate(el => ({ id: el.id, name: el.name }));
+    let selector;
+    if (inputHandle.id) {
+      selector = `#${inputHandle.id}`;
+    } else if (inputHandle.name) {
+      selector = `[name="${inputHandle.name}"]`;
+    } else {
+      selector = 'input[name="otc"], input[autocomplete="one-time-code"]';
+    }
+    await setInputValue(page, selector, code);
+
+    const submitBtn = await page.$('input[type="submit"], button[type="submit"], #idSubmit_SAOTCC_Continue, #idSIButton9');
+    if (submitBtn) {
+      await submitBtn.click();
+    } else {
+      await page.keyboard.press('Enter');
+    }
+    return true;
+  } catch (error) {
+    if (isNavigationError(error)) return false;
+    throw error;
+  }
+}
+
+export async function ensureMicrosoftLogin(page, email, password, context, targetUrl, getTotpCode = null) {
   try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
         if (page.url().includes('login.microsoftonline.com')) {
-          page = await handleMicrosoftLoginFlow(page, email, password, context);
+          page = await handleMicrosoftLoginFlow(page, email, password, context, getTotpCode);
         }
 
         if (page.url().includes('login.microsoftonline.com')) {
           await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
           if (page.url().includes('login.microsoftonline.com')) {
-            page = await handleMicrosoftLoginFlow(page, email, password, context);
+            page = await handleMicrosoftLoginFlow(page, email, password, context, getTotpCode);
           }
         }
 
@@ -339,9 +399,9 @@ export async function ensureMicrosoftLogin(page, email, password, context, targe
   }
 }
 
-export async function loginToMicrosoft365(page, email, password, context = null) {
+export async function loginToMicrosoft365(page, email, password, context = null, getTotpCode = null) {
   const targetUrl = 'https://admin.exchange.microsoft.com/#/mailboxes';
-  const result = await ensureMicrosoftLogin(page, email, password, context, targetUrl);
+  const result = await ensureMicrosoftLogin(page, email, password, context, targetUrl, getTotpCode);
   if (!result.success) return result;
 
   if (!result.page.url().includes('admin.exchange.microsoft.com')) {

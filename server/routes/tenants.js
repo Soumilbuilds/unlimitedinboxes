@@ -12,6 +12,7 @@ import {
 } from '../db/database.js';
 import { createZone } from '../services/cloudflare.js';
 import { ensureSpfRecord, ensureDmarcRecord, ensureDkimRecords } from '../services/emailAuth.js';
+import { isValidTotpSecret } from '../services/totp.js';
 import {
   chargeSavedPaymentMethodForTenantPurchase,
   createTenantCheckoutSession,
@@ -156,10 +157,17 @@ router.get('/', (req, res) => {
 
 router.post('/', (req, res) => {
   try {
-    const { name, admin_email, admin_password, domain } = req.body;
+    const { name, admin_email, admin_password, domain, mfa_secret } = req.body;
 
     if (!name || !domain || !admin_email || !admin_password) {
       return res.status(400).json({ error: 'Name, Domain, Email, and Password are required' });
+    }
+
+    const normalizedMfa = typeof mfa_secret === 'string' && mfa_secret.trim()
+      ? mfa_secret.trim().replace(/\s+/g, '')
+      : null;
+    if (normalizedMfa !== null && !isValidTotpSecret(normalizedMfa)) {
+      return res.status(400).json({ error: 'Invalid 2FA secret format. It should be a base32 string (e.g. cgynpk62rpgznlxh from Microsoft Entra).' });
     }
 
     const result = createTenant({
@@ -167,7 +175,8 @@ router.post('/', (req, res) => {
       name,
       admin_email,
       admin_password,
-      domain
+      domain,
+      mfa_secret: normalizedMfa
     });
     res.json({ success: true, id: result.lastInsertRowid });
   } catch (error) {
@@ -177,10 +186,22 @@ router.post('/', (req, res) => {
 
 router.patch('/:id', (req, res) => {
   try {
-    const { name, domain, admin_email, admin_password } = req.body;
+    const { name, domain, admin_email, admin_password, mfa_secret } = req.body;
     const tenant = getTenantByIdForUser(req.params.id, req.session.user.id);
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
-    const result = updateTenantDetails(req.params.id, { name, domain, admin_email, admin_password });
+    const sanitizedMfa = typeof mfa_secret === 'string' && mfa_secret.trim()
+      ? mfa_secret.trim().replace(/\s+/g, '')
+      : mfa_secret;
+    if (typeof sanitizedMfa === 'string' && sanitizedMfa.length > 0 && !isValidTotpSecret(sanitizedMfa)) {
+      return res.status(400).json({ error: 'Invalid 2FA secret format. It should be a base32 string (e.g. cgynpk62rpgznlxh from Microsoft Entra).' });
+    }
+    const result = updateTenantDetails(req.params.id, {
+      name,
+      domain,
+      admin_email,
+      admin_password,
+      mfa_secret: sanitizedMfa
+    });
     if (result.changes === 0) return res.status(404).json({ error: 'Tenant not found' });
     res.json({ success: true });
   } catch (error) {

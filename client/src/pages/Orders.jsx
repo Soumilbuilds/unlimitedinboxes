@@ -22,6 +22,11 @@ function deriveTenantName(email, domain) {
   return prefix ? `Tenant ${prefix}` : 'Tenant';
 }
 
+function isValidMfaSecret(secret) {
+  if (typeof secret !== 'string') return false;
+  return /^[a-zA-Z2-7]{16}$/.test(secret.trim());
+}
+
 function formatStatusLabel(status) {
   if (!status) return 'unknown';
   if (status === 'completed') return 'ready';
@@ -135,6 +140,7 @@ export default function Orders() {
 
   const [tenantEmail, setTenantEmail] = useState('');
   const [tenantPassword, setTenantPassword] = useState('');
+  const [tenantMfaSecret, setTenantMfaSecret] = useState('');
   const [tenantId, setTenantId] = useState(null);
   const [domain, setDomain] = useState('');
   const [nameServers, setNameServers] = useState([]);
@@ -169,8 +175,8 @@ export default function Orders() {
   const canCreateMoreThanOneCompletedOrder = Boolean(billing?.canCreateMoreThanOneCompletedOrder);
   const isAdvanced = Boolean(billing?.unlimitedConcurrency);
   const stepTitles = canUseCustomNames
-    ? ['Tenant credentials', 'Microsoft consent', 'Domain setup', 'Domain redirect', 'Order details', 'Set names']
-    : ['Tenant credentials', 'Microsoft consent', 'Domain setup', 'Domain redirect', 'Order details'];
+    ? ['Tenant credentials', 'Domain setup', 'Domain redirect', 'Order details', 'Set names']
+    : ['Tenant credentials', 'Domain setup', 'Domain redirect', 'Order details'];
   const totalSteps = stepTitles.length;
 
   const selectedOrder = useMemo(
@@ -243,6 +249,7 @@ export default function Orders() {
     setWizardBusy(false);
     setTenantEmail('');
     setTenantPassword('');
+    setTenantMfaSecret('');
     setTenantId(null);
     setDomain('');
     setNameServers([]);
@@ -266,51 +273,18 @@ export default function Orders() {
     try {
       const tempDomain = `pending-${Date.now()}.local`;
       const name = deriveTenantName(tenantEmail, '');
+      const cleanedMfa = tenantMfaSecret.trim().replace(/\s+/g, '');
       const res = await api.post('/tenants', {
         name,
         domain: tempDomain,
         admin_email: tenantEmail,
-        admin_password: tenantPassword
+        admin_password: tenantPassword,
+        mfa_secret: cleanedMfa || null
       });
       setTenantId(res.data.id);
       setWizardStep(1);
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to save tenant details');
-    } finally {
-      setWizardBusy(false);
-    }
-  };
-
-  const handleOpenConsent = async () => {
-    if (!tenantId) return;
-    setWizardBusy(true);
-    setWizardError('');
-    try {
-      const res = await api.post(`/tenants/${tenantId}/connect`);
-      if (res.data.consentUrl) {
-        window.open(res.data.consentUrl, 'MicrosoftConsent', 'width=600,height=720');
-      }
-    } catch (e) {
-      setWizardError(e.response?.data?.error || 'Failed to open consent window');
-    } finally {
-      setWizardBusy(false);
-    }
-  };
-
-  const handleCheckConsent = async () => {
-    if (!tenantId) return;
-    setWizardBusy(true);
-    setWizardError('');
-    try {
-      const res = await api.get('/tenants');
-      const tenant = res.data.find(t => t.id === tenantId);
-      if (tenant?.tenant_id) {
-        setWizardStep(2);
-      } else {
-        setWizardError('Consent is not completed yet. Finish the Microsoft prompt, then try again.');
-      }
-    } catch (e) {
-      setWizardError(e.response?.data?.error || 'Could not verify consent yet');
     } finally {
       setWizardBusy(false);
     }
@@ -328,7 +302,7 @@ export default function Orders() {
       const res = await api.post(`/tenants/${tenantId}/nameservers`);
       setNameServers(res.data.name_servers || []);
       if (res.data.zone_active) {
-        setWizardStep(3);
+        setWizardStep(2);
       }
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to get name servers');
@@ -343,7 +317,7 @@ export default function Orders() {
     setWizardError('');
     try {
       await api.patch(`/tenants/${tenantId}/status`, { status: 'ready' });
-      setWizardStep(3);
+      setWizardStep(2);
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to confirm name servers');
     } finally {
@@ -356,7 +330,7 @@ export default function Orders() {
     setWizardError('');
 
     if (redirectChoice === 'skip') {
-      setWizardStep(4);
+      setWizardStep(3);
       return;
     }
 
@@ -371,7 +345,7 @@ export default function Orders() {
         redirect_url: redirectUrl
       });
       setRedirectUrl(res.data?.redirect_url || redirectUrl.trim());
-      setWizardStep(4);
+      setWizardStep(3);
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to save the redirect');
     } finally {
@@ -438,7 +412,7 @@ export default function Orders() {
     }
     setWizardError('');
     if (canUseCustomNames) {
-      setWizardStep(5);
+      setWizardStep(4);
     } else {
       handleStartOrder();
     }
@@ -700,12 +674,32 @@ export default function Orders() {
                       required
                     />
                   </label>
+                  <label>
+                    2FA secret key
+                    <input
+                      type="text"
+                      value={tenantMfaSecret}
+                      onChange={(e) => setTenantMfaSecret(e.target.value)}
+                      placeholder="cgynpk62rpgznlxh"
+                      autoComplete="off"
+                      spellCheck={false}
+                      required
+                    />
+                    <div className="helper-text">
+                      Get this from Microsoft Entra → My Sign-Ins → “Add a sign-in method” → “Authenticator app” → “I want to use a different authenticator app” → “Secret key”. We use it to auto-generate 2FA codes during setup so the Microsoft consent prompt is no longer needed.
+                    </div>
+                    {tenantMfaSecret.trim() && !isValidMfaSecret(tenantMfaSecret) && (
+                      <div className="alert error">
+                        2FA secret should be 16 characters using letters a-z and digits 2-7.
+                      </div>
+                    )}
+                  </label>
                   <div className="modal-actions">
                     <button className="btn ghost" onClick={closeWizard}>Cancel</button>
                     <button
                       className="btn primary"
                       onClick={handleCreateTenant}
-                      disabled={wizardBusy || !tenantEmail || !tenantPassword}
+                      disabled={wizardBusy || !tenantEmail || !tenantPassword || !isValidMfaSecret(tenantMfaSecret)}
                     >
                       {wizardBusy ? 'Saving...' : 'Continue'}
                     </button>
@@ -714,23 +708,6 @@ export default function Orders() {
               )}
 
               {wizardStep === 1 && (
-                <div className="form">
-                  <div className="helper-text">
-                    Open the Microsoft consent window and approve access for your tenant.
-                  </div>
-                  <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(0)}>Back</button>
-                    <button className="btn primary" onClick={handleOpenConsent} disabled={wizardBusy}>
-                      {wizardBusy ? 'Opening...' : 'Open Consent'}
-                    </button>
-                    <button className="btn success" onClick={handleCheckConsent} disabled={wizardBusy}>
-                      I Have Connected
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {wizardStep === 2 && (
                 <div className="form">
                   <label>
                     Domain to connect
@@ -749,7 +726,7 @@ export default function Orders() {
                     </div>
                   )}
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(1)}>Back</button>
+                    <button className="btn ghost" onClick={() => setWizardStep(0)}>Back</button>
                     <button
                       className="btn primary"
                       onClick={handleGetNameServers}
@@ -766,7 +743,7 @@ export default function Orders() {
                 </div>
               )}
 
-              {wizardStep === 3 && (
+              {wizardStep === 2 && (
                 <div className="form">
                   <div className="helper-text" style={{ marginBottom: 12 }}>
                     Do you want to redirect <strong>{domain}</strong> to another URL? You can skip this now and set it later from Redirects.
@@ -815,7 +792,7 @@ export default function Orders() {
                   )}
 
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(2)}>Back</button>
+                    <button className="btn ghost" onClick={() => setWizardStep(1)}>Back</button>
                     <button className="btn primary" onClick={handleRedirectStepNext} disabled={wizardBusy}>
                       {wizardBusy ? 'Saving...' : 'Continue'}
                     </button>
@@ -823,7 +800,7 @@ export default function Orders() {
                 </div>
               )}
 
-              {wizardStep === 4 && (
+              {wizardStep === 3 && (
                 <div className="form">
                   <label>
                     Order name
@@ -854,7 +831,7 @@ export default function Orders() {
                     )}
                   </label>
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(3)}>Back</button>
+                    <button className="btn ghost" onClick={() => setWizardStep(2)}>Back</button>
                     <button className="btn primary" onClick={handleOrderDetailsNext} disabled={wizardBusy || !passwordRules.valid}>
                       {wizardBusy ? 'Starting...' : (canUseCustomNames ? 'Continue' : 'Start Order')}
                     </button>
@@ -862,7 +839,7 @@ export default function Orders() {
                 </div>
               )}
 
-              {wizardStep === 5 && canUseCustomNames && (
+              {wizardStep === 4 && canUseCustomNames && (
                 <div className="form">
                   <div className="helper-text" style={{ marginBottom: 12 }}>
                     Choose how mailbox names should be created for this order.
@@ -914,7 +891,7 @@ export default function Orders() {
                   )}
 
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(4)}>Back</button>
+                    <button className="btn ghost" onClick={() => setWizardStep(3)}>Back</button>
                     <button className="btn primary" onClick={handleStartOrderWithNames} disabled={wizardBusy}>
                       {wizardBusy ? 'Starting...' : 'Start Order'}
                     </button>

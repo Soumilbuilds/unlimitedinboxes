@@ -27,6 +27,7 @@ db.exec(`
     domain TEXT NOT NULL,
     admin_email TEXT NOT NULL,
     admin_password TEXT NOT NULL,
+    mfa_secret TEXT,
     tenant_id TEXT,
     cloudflare_zone_id TEXT,
     cloudflare_ns TEXT,
@@ -34,6 +35,10 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
+
+  -- Backfill column for existing installs (SQLite has no IF NOT EXISTS for columns)
+  -- Guarded so a duplicate-column error is swallowed on re-run.
+  -- (handled by application-level migration below)
 
   CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,6 +132,10 @@ function ensureTenantsRedirectColumn() {
   ensureColumn('tenants', 'redirect_url', 'TEXT');
 }
 
+function ensureTenantsMfaSecretColumn() {
+  ensureColumn('tenants', 'mfa_secret', 'TEXT');
+}
+
 function ensureOrdersUserColumn() {
   const columns = tableColumns('orders');
   const hasUser = columns.some(col => col.name === 'user_id');
@@ -185,6 +194,7 @@ ensureOrdersPasswordColumn();
 ensureOrdersNameColumn();
 ensureTenantsUserColumn();
 ensureTenantsRedirectColumn();
+ensureTenantsMfaSecretColumn();
 ensureOrdersUserColumn();
 ensureUserBillingColumns();
 backfillLifetimeCompletedOrders();
@@ -279,10 +289,11 @@ export function updateUserBillingById(id, updates = {}) {
 
 export function createTenant(tenant) {
   const stmt = db.prepare(`
-    INSERT INTO tenants (user_id, name, domain, admin_email, admin_password)
-    VALUES (@user_id, @name, @domain, @admin_email, @admin_password)
+    INSERT INTO tenants (user_id, name, domain, admin_email, admin_password, mfa_secret)
+    VALUES (@user_id, @name, @domain, @admin_email, @admin_password, @mfa_secret)
   `);
-  return stmt.run(tenant);
+  const payload = { ...tenant, mfa_secret: tenant.mfa_secret ?? null };
+  return stmt.run(payload);
 }
 
 export function getTenants(userId = null) {
@@ -324,16 +335,23 @@ export function updateTenantStatus(id, status) {
 }
 
 export function updateTenantDetails(id, updates = {}) {
-  const { name = null, domain = null, admin_email = null, admin_password = null } = updates;
+  const {
+    name = null,
+    domain = null,
+    admin_email = null,
+    admin_password = null,
+    mfa_secret = undefined
+  } = updates;
   const stmt = db.prepare(`
     UPDATE tenants
     SET name = COALESCE(?, name),
         domain = COALESCE(?, domain),
         admin_email = COALESCE(?, admin_email),
-        admin_password = COALESCE(?, admin_password)
+        admin_password = COALESCE(?, admin_password),
+        mfa_secret = COALESCE(?, mfa_secret)
     WHERE id = ?
   `);
-  return stmt.run(name, domain, admin_email, admin_password, id);
+  return stmt.run(name, domain, admin_email, admin_password, mfa_secret, id);
 }
 
 export function updateTenantRedirect(id, redirectUrl) {

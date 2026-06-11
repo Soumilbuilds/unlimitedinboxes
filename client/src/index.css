@@ -543,6 +543,10 @@ a {
   transform: none;
 }
 
+.form {
+  text-align: left;
+}
+
 .form label {
   display: flex;
   flex-direction: column;
@@ -550,6 +554,11 @@ a {
   font-size: 13px;
   color: var(--text-muted);
   margin-bottom: 14px;
+  text-align: left;
+}
+
+.form .helper-text {
+  text-align: left;
 }
 
 .form input,
