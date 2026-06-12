@@ -211,6 +211,176 @@ async function handleStaySignedIn(page) {
   }
 }
 
+// Detects the Microsoft "Action Required: Security Defaults / MFA registration" wall and
+// walks through the registration wizard, clicking Skip / I want to set up a different method
+// wherever they appear, so the page advances to the original login target.
+//
+// Returns { handled: true } when the wizard was bypassed (page should have advanced),
+//         { handled: false } when the page is not the Security Defaults page, or
+//         { handled: false, error } when the wizard got stuck after MAX_ATTEMPTS.
+async function handleSecurityDefaultsSetup(page) {
+  const MAX_ATTEMPTS = 3;
+  try {
+    if (!page || page.isClosed()) {
+      return { handled: false };
+    }
+
+    const url = page.url();
+    if (!url || !url.includes('login.microsoftonline.com')) {
+      return { handled: false };
+    }
+
+    const bodyText = await page.evaluate(() =>
+      (document.body && document.body.innerText) ? document.body.innerText : ''
+    );
+    const lower = (bodyText || '').toLowerCase();
+
+    const hasActionRequired = lower.includes('action required');
+    const hasSecurityDefaults =
+      lower.includes('security defaults') ||
+      lower.includes('multifactor authentication') ||
+      lower.includes('more information required') ||
+      lower.includes('protect your account') ||
+      (lower.includes('register') && lower.includes('authentication'));
+
+    if (!hasActionRequired || !hasSecurityDefaults) {
+      return { handled: false };
+    }
+
+    async function clickByText(textOptions) {
+      return await page.evaluate((opts) => {
+        const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        const targets = opts.map(norm).filter(Boolean);
+        const isVisible = (el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 };
+          if (rect.width === 0 && rect.height === 0) return false;
+          const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+          if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) {
+            return false;
+          }
+          return true;
+        };
+        const candidates = Array.from(document.querySelectorAll('button, a, input[type="submit"], div[role="button"], span[role="button"]'));
+        for (const el of candidates) {
+          if (!isVisible(el)) continue;
+          const text = norm(el.innerText || el.textContent || el.value || '');
+          if (!text) continue;
+          for (const t of targets) {
+            if (text === t || text.startsWith(t + ' ') || text.startsWith(t + ',') || text.startsWith(t + '.')) {
+              el.click();
+              return true;
+            }
+          }
+        }
+        for (const el of candidates) {
+          if (!isVisible(el)) continue;
+          const text = norm(el.innerText || el.textContent || el.value || '');
+          if (!text) continue;
+          for (const t of targets) {
+            if (text.includes(t)) {
+              el.click();
+              return true;
+            }
+          }
+        }
+        return false;
+      }, textOptions);
+    }
+
+    async function readBody() {
+      return await page.evaluate(() =>
+        ((document.body && document.body.innerText) || '').toLowerCase()
+      );
+    }
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      await sleep;
+
+      const currentUrl = page.url();
+      if (!currentUrl.includes('login.microsoftonline.com')) {
+        return { handled: true };
+      }
+
+      const text = await readBody();
+
+      if (!text.includes('action required') && !text.includes('security defaults') && !text.includes('more information required')) {
+        return { handled: true };
+      }
+
+      // Priority 1: the magic escape hatch — "Skip for now" / "Skip setup" / "Skip"
+      const skipped = await clickByText(['skip for now', 'skip setup', 'skip']);
+      if (skipped) {
+        await sleep;
+        await Promise.race([
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 6000 }).catch(() => null),
+          sleep
+        ]);
+        continue;
+      }
+
+      // Priority 2: bypass the Authenticator push option
+      const diffMethod = await clickByText([
+        'i want to set up a different method',
+        'i want to use a different method',
+        'use a different method',
+        'set up a different method'
+      ]);
+      if (diffMethod) {
+        await sleep;
+        await Promise.race([
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 6000 }).catch(() => null),
+          sleep
+        ]);
+        continue;
+      }
+
+      // Priority 3: choose the TOTP/authenticator-app method
+      const authMethodPicked = await clickByText([
+        'use verification code from app',
+        'verification code from app',
+        'authenticator app',
+        'authenticator',
+        'use an authenticator app',
+        'one-time password',
+        'software token',
+        'use a verification code',
+        'enter a code from your authenticator app',
+        'otp'
+      ]);
+      if (authMethodPicked) {
+        await sleep;
+        await Promise.race([
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 6000 }).catch(() => null),
+          sleep
+        ]);
+        continue;
+      }
+
+      // Priority 4: the initial "Next" / "Set it up now" button
+      const nextClicked = await clickByText(['next', 'set it up now', 'get started', 'continue']);
+      if (nextClicked) {
+        await sleep;
+        await Promise.race([
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 6000 }).catch(() => null),
+          sleep
+        ]);
+        continue;
+      }
+    }
+
+    return {
+      handled: false,
+      error: `Security Defaults wizard did not advance after ${MAX_ATTEMPTS} attempts`
+    };
+  } catch (error) {
+    if (isNavigationError(error)) {
+      return { handled: false, error: 'Navigation interrupted during Security Defaults handling' };
+    }
+    return { handled: false, error: error.message };
+  }
+}
+
 async function handleMicrosoftLoginFlow(page, email, password, context, getTotpCode = null) {
   // Increased attempts for robustness
   for (let i = 0; i < 12; i += 1) {
@@ -291,6 +461,26 @@ async function handleMicrosoftLoginFlow(page, email, password, context, getTotpC
           await sleep(500);
           continue;
         }
+      }
+
+      // Microsoft "Action Required: Security Defaults" / MFA registration wall.
+      // Walk the wizard (Next → set up a different method → Skip) so the page
+      // advances to the original login target.
+      const sdResult = await handleSecurityDefaultsSetup(page);
+      if (sdResult.handled) {
+        await Promise.race([
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 8000 }).catch(() => null),
+          sleep
+        ]);
+        page = await waitForNewOrActivePage(context, page, 8000);
+        await sleep(500);
+        continue;
+      }
+      if (sdResult.error) {
+        // Don't throw — fall through so the loop's break can decide. The
+        // "still on login page" check will trip and the caller will report a
+        // clean error via the existing screenshot/error path.
+        console.warn('Security Defaults setup:', sdResult.error);
       }
 
       if (!page.url().includes('login.microsoftonline.com')) {
