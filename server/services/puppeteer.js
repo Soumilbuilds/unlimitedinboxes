@@ -915,6 +915,31 @@ export async function grantAdminConsent({
     await sleep(2000);
 
     const finalUrl = page.url();
+    let pageText = '';
+    let pageTitle = '';
+    try {
+      pageText = await page.evaluate(() => document.body && document.body.innerText) || '';
+    } catch {
+      // page may be in a bad state; ignore
+    }
+    try {
+      pageTitle = await page.title() || '';
+    } catch {
+      // ignore
+    }
+
+    // Capture a screenshot of the post-consent state regardless of outcome.
+    await saveDebugScreenshot(page, 'consent_result');
+
+    // Success detection: Either the redirect_uri was reached OR the URL carries
+    // admin_consent=True (the canonical "consent was granted" signal from Microsoft).
+    const hasAdminConsent = (() => {
+      try {
+        return new URL(finalUrl).searchParams.get('admin_consent') === 'True';
+      } catch {
+        return false;
+      }
+    })();
     const landedOnRedirect = (() => {
       try {
         return finalUrl.startsWith(redirectUri);
@@ -922,14 +947,71 @@ export async function grantAdminConsent({
         return false;
       }
     })();
-    const leftConsent = !finalUrl.includes('adminconsent');
 
-    if (landedOnRedirect || leftConsent) {
-      return { success: true, page };
+    if (hasAdminConsent || landedOnRedirect) {
+      return { success: true, page, finalUrl };
     }
 
-    await saveDebugScreenshot(page, 'consent_error');
-    return { success: false, page, error: `Consent Accept clicked but did not redirect (still at ${finalUrl})` };
+    // Failure detection: Microsoft error page, AADSTS code, or "needs admin approval" copy.
+    const titleHasError = /error|an error occurred/i.test(pageTitle);
+    const textHasAadsts = /AADSTS\d+/i.test(pageText);
+    const textHasAdminApproval = /This app requires admin approval|Need admin approval|requires admin approval/i.test(pageText);
+    const textHasNoPermission = /You don['’]t have permission|don't have permission to access/i.test(pageText);
+    const textHasAccessDenied = /access_denied|access denied/i.test(pageText);
+    const textHasBlockedByPolicy = /blocked by (your )?(organization|policy|tenant admin)/i.test(pageText);
+
+    if (titleHasError || textHasAadsts || textHasAdminApproval ||
+        textHasNoPermission || textHasAccessDenied || textHasBlockedByPolicy) {
+
+      let errorType = 'Consent failed with Microsoft error';
+      if (textHasAadsts) {
+        // Try to surface the AADSTS code (e.g. AADSTS7000229) for diagnosability.
+        const m = pageText.match(/AADSTS\d+/);
+        errorType = m ? `Consent failed (${m[0]})` : 'Consent failed (AADSTS)';
+      } else if (textHasAdminApproval) {
+        errorType = 'Admin approval required';
+      } else if (textHasNoPermission) {
+        errorType = 'No permission to grant consent';
+      } else if (textHasAccessDenied) {
+        errorType = 'Access denied';
+      } else if (textHasBlockedByPolicy) {
+        errorType = 'Blocked by tenant policy';
+      }
+
+      return {
+        success: false,
+        page,
+        finalUrl,
+        error: `${errorType} — final URL: ${finalUrl}. See screenshots/consent_result.png for details.`
+      };
+    }
+
+    // Failure detection: redirected to a different Microsoft tenant than the customer.
+    // Common failure mode: the consent page redirects to the master app's page in the
+    // originating tenant rather than creating a service principal in the customer tenant.
+    const isStillOnMicrosoftLogin = finalUrl.includes('login.microsoftonline.com');
+    const isOnDifferentTenant = isStillOnMicrosoftLogin && !finalUrl.includes(tenantId);
+
+    if (isOnDifferentTenant) {
+      return {
+        success: false,
+        page,
+        finalUrl,
+        error: `Consent failed — page is on a different Microsoft tenant than the customer tenant (${tenantId}). Final URL: ${finalUrl}. See screenshots/consent_result.png for details.`
+      };
+    }
+
+    // We left the consent page but did not reach a success state. This is the
+    // case the user reported: the page navigates somewhere (often the master app
+    // page) without admin_consent=True. Treat as a hard failure.
+    if (!landedOnRedirect && !hasAdminConsent) {
+      return {
+        success: false,
+        page,
+        finalUrl,
+        error: `Consent did not return admin_consent=True; final URL was ${finalUrl}. See screenshots/consent_result.png for details.`
+      };
+    }
   } catch (error) {
     await saveDebugScreenshot(page, 'consent_error');
     return { success: false, page, error: error.message };
