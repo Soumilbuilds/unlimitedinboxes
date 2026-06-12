@@ -1,5 +1,5 @@
 import express from 'express';
-import dns from 'dns/promises';
+import { Resolver as DnsResolver } from 'dns/promises';
 import {
   createTenant,
   createTenantPurchaseRecord,
@@ -375,8 +375,8 @@ router.get('/:id/nameservers/check', async (req, res) => {
       .filter(Boolean);
 
     const resolvers = [
-      new dns.Resolver().setServers(['1.1.1.1']),
-      new dns.Resolver().setServers(['8.8.8.8'])
+      new DnsResolver().setServers(['1.1.1.1']),
+      new DnsResolver().setServers(['8.8.8.8'])
     ];
 
     const aggregate = new Set();
