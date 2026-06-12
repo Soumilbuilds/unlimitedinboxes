@@ -20,6 +20,7 @@ import {
 } from './securityCenterDkim.js';
 import { generateMailboxName, resetUsedNames } from './nameGenerator.js';
 import { generateTotpCode, isValidTotpSecret } from './totp.js';
+import { discoverMicrosoftTenantId } from './tenantDiscovery.js';
 import {
   getOrderById,
   getOrders,
@@ -28,7 +29,8 @@ import {
   updateOrderProgress,
   setOrderError,
   addOrderLog,
-  updateTenantCloudflare
+  updateTenantCloudflare,
+  updateTenantId
 } from '../db/database.js';
 
 const activeJobs = new Map();
@@ -167,8 +169,25 @@ export async function processOrder(orderId) {
   }
 
   if (!tenant.tenant_id) {
-    setOrderError(orderId, 'Tenant not connected to Microsoft (missing tenant_id)');
-    return;
+    // Try to discover the MS tenant ID on-the-fly (for tenants created before tenant_id was stored)
+    if (tenant.admin_email) {
+      logMessage(orderId, 'Microsoft tenant_id missing — attempting on-the-fly discovery from admin email...');
+      const discoveredGuid = await discoverMicrosoftTenantId(tenant.admin_email);
+      if (discoveredGuid) {
+        try {
+          updateTenantId(tenant.id, discoveredGuid);
+          tenant.tenant_id = discoveredGuid;
+          logMessage(orderId, `Discovered and saved MS tenant_id: ${discoveredGuid}`);
+        } catch (persistError) {
+          logMessage(orderId, `Failed to persist discovered tenant_id: ${persistError.message}`);
+        }
+      }
+    }
+
+    if (!tenant.tenant_id) {
+      setOrderError(orderId, 'Microsoft tenant ID not found — please re-create the order with the new 2FA flow');
+      return;
+    }
   }
 
   const domain = tenant.domain;

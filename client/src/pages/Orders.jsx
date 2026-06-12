@@ -144,6 +144,8 @@ export default function Orders() {
   const [tenantId, setTenantId] = useState(null);
   const [domain, setDomain] = useState('');
   const [nameServers, setNameServers] = useState([]);
+  const [nsVerification, setNsVerification] = useState(null);
+  const [nsSkipWarning, setNsSkipWarning] = useState(false);
   const [redirectChoice, setRedirectChoice] = useState('skip');
   const [redirectUrl, setRedirectUrl] = useState('');
 
@@ -175,8 +177,8 @@ export default function Orders() {
   const canCreateMoreThanOneCompletedOrder = Boolean(billing?.canCreateMoreThanOneCompletedOrder);
   const isAdvanced = Boolean(billing?.unlimitedConcurrency);
   const stepTitles = canUseCustomNames
-    ? ['Tenant credentials', 'Domain setup', 'Domain redirect', 'Order details', 'Set names']
-    : ['Tenant credentials', 'Domain setup', 'Domain redirect', 'Order details'];
+    ? ['Tenant credentials', 'Domain setup', 'Verify nameservers', 'Domain redirect', 'Order details', 'Set names']
+    : ['Tenant credentials', 'Domain setup', 'Verify nameservers', 'Domain redirect', 'Order details'];
   const totalSteps = stepTitles.length;
 
   const selectedOrder = useMemo(
@@ -253,6 +255,8 @@ export default function Orders() {
     setTenantId(null);
     setDomain('');
     setNameServers([]);
+    setNsVerification(null);
+    setNsSkipWarning(false);
     setRedirectChoice('skip');
     setRedirectUrl('');
     setOrderName('');
@@ -301,11 +305,26 @@ export default function Orders() {
       });
       const res = await api.post(`/tenants/${tenantId}/nameservers`);
       setNameServers(res.data.name_servers || []);
+      setNsVerification(null);
       if (res.data.zone_active) {
         setWizardStep(2);
       }
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to get name servers');
+    } finally {
+      setWizardBusy(false);
+    }
+  };
+
+  const handleCheckNameServers = async () => {
+    if (!tenantId) return;
+    setWizardBusy(true);
+    setWizardError('');
+    try {
+      const res = await api.get(`/tenants/${tenantId}/nameservers/check`);
+      setNsVerification(res.data);
+    } catch (e) {
+      setWizardError(e.response?.data?.error || 'Failed to check nameservers');
     } finally {
       setWizardBusy(false);
     }
@@ -317,7 +336,7 @@ export default function Orders() {
     setWizardError('');
     try {
       await api.patch(`/tenants/${tenantId}/status`, { status: 'ready' });
-      setWizardStep(2);
+      setWizardStep(2);  // Verify nameservers step
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to confirm name servers');
     } finally {
@@ -330,7 +349,7 @@ export default function Orders() {
     setWizardError('');
 
     if (redirectChoice === 'skip') {
-      setWizardStep(3);
+      setWizardStep(4);
       return;
     }
 
@@ -345,7 +364,7 @@ export default function Orders() {
         redirect_url: redirectUrl
       });
       setRedirectUrl(res.data?.redirect_url || redirectUrl.trim());
-      setWizardStep(3);
+      setWizardStep(4);
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to save the redirect');
     } finally {
@@ -412,7 +431,7 @@ export default function Orders() {
     }
     setWizardError('');
     if (canUseCustomNames) {
-      setWizardStep(4);
+      setWizardStep(5);
     } else {
       handleStartOrder();
     }
@@ -680,14 +699,10 @@ export default function Orders() {
                       type="text"
                       value={tenantMfaSecret}
                       onChange={(e) => setTenantMfaSecret(e.target.value)}
-                      placeholder="cgynpk62rpgznlxh"
                       autoComplete="off"
                       spellCheck={false}
                       required
                     />
-                    <div className="helper-text">
-                      Get this from Microsoft Entra → My Sign-Ins → “Add a sign-in method” → “Authenticator app” → “I want to use a different authenticator app” → “Secret key”. We use it to auto-generate 2FA codes during setup so the Microsoft consent prompt is no longer needed.
-                    </div>
                     {tenantMfaSecret.trim() && !isValidMfaSecret(tenantMfaSecret) && (
                       <div className="alert error">
                         2FA secret should be 16 characters using letters a-z and digits 2-7.
@@ -746,6 +761,62 @@ export default function Orders() {
               {wizardStep === 2 && (
                 <div className="form">
                   <div className="helper-text" style={{ marginBottom: 12 }}>
+                    Add these name servers to your domain registrar, then verify the connection.
+                  </div>
+
+                  {nameServers.length > 0 && (
+                    <div className="ns-list" style={{ marginBottom: 16 }}>
+                      {nameServers.map((server) => (
+                        <div key={server} className="ns-item">{server}</div>
+                      ))}
+                    </div>
+                  )}
+
+                  {nsVerification && (
+                    <div style={{ marginBottom: 16 }}>
+                      {nsVerification.verified ? (
+                        <div className="alert success">Connection verified. All name servers match.</div>
+                      ) : (
+                        <div className="alert error">
+                          Not verified. Expected: {nsVerification.expected?.join(', ')}<br />
+                          Found: {nsVerification.actual?.join(', ') || 'None'}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="modal-actions">
+                    <button className="btn ghost" onClick={() => setWizardStep(1)}>Back</button>
+                    <button className="btn primary" onClick={handleCheckNameServers} disabled={wizardBusy}>
+                      {wizardBusy ? 'Checking...' : 'Check Connection'}
+                    </button>
+                    {nsVerification?.verified && (
+                      <button className="btn success" onClick={() => setWizardStep(3)}>
+                        Continue
+                      </button>
+                    )}
+                    {nsSkipWarning && (
+                      <button className="btn ghost" onClick={() => setWizardStep(3)}>
+                        Skip for now
+                      </button>
+                    )}
+                  </div>
+                  {!nsVerification && !nsSkipWarning && (
+                    <div style={{ marginTop: 8 }}>
+                      <button className="link-btn" onClick={() => setNsSkipWarning(true)}>
+                        Skip verification for now
+                      </button>
+                      <div className="helper-text" style={{ marginTop: 4 }}>
+                        Warning: Verifying ensures your domain is properly connected.
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {wizardStep === 3 && (
+                <div className="form">
+                  <div className="helper-text" style={{ marginBottom: 12 }}>
                     Do you want to redirect <strong>{domain}</strong> to another URL? You can skip this now and set it later from Redirects.
                   </div>
 
@@ -792,7 +863,7 @@ export default function Orders() {
                   )}
 
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(1)}>Back</button>
+                    <button className="btn ghost" onClick={() => setWizardStep(2)}>Back</button>
                     <button className="btn primary" onClick={handleRedirectStepNext} disabled={wizardBusy}>
                       {wizardBusy ? 'Saving...' : 'Continue'}
                     </button>
@@ -800,7 +871,7 @@ export default function Orders() {
                 </div>
               )}
 
-              {wizardStep === 3 && (
+              {wizardStep === 4 && (
                 <div className="form">
                   <label>
                     Order name
@@ -831,7 +902,7 @@ export default function Orders() {
                     )}
                   </label>
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(2)}>Back</button>
+                    <button className="btn ghost" onClick={() => setWizardStep(3)}>Back</button>
                     <button className="btn primary" onClick={handleOrderDetailsNext} disabled={wizardBusy || !passwordRules.valid}>
                       {wizardBusy ? 'Starting...' : (canUseCustomNames ? 'Continue' : 'Start Order')}
                     </button>
@@ -839,7 +910,7 @@ export default function Orders() {
                 </div>
               )}
 
-              {wizardStep === 4 && canUseCustomNames && (
+              {wizardStep === 5 && canUseCustomNames && (
                 <div className="form">
                   <div className="helper-text" style={{ marginBottom: 12 }}>
                     Choose how mailbox names should be created for this order.
@@ -891,7 +962,7 @@ export default function Orders() {
                   )}
 
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(3)}>Back</button>
+                    <button className="btn ghost" onClick={() => setWizardStep(4)}>Back</button>
                     <button className="btn primary" onClick={handleStartOrderWithNames} disabled={wizardBusy}>
                       {wizardBusy ? 'Starting...' : 'Start Order'}
                     </button>

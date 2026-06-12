@@ -1,4 +1,5 @@
 import express from 'express';
+import dns from 'dns/promises';
 import {
   createTenant,
   createTenantPurchaseRecord,
@@ -8,6 +9,7 @@ import {
   updateTenantCloudflare,
   updateTenantStatus,
   updateTenantDetails,
+  updateTenantId,
   deleteTenant
 } from '../db/database.js';
 import { createZone } from '../services/cloudflare.js';
@@ -24,6 +26,7 @@ import {
   ensureDkimSelectors,
   retryEnableDkimSigning
 } from '../services/securityCenterDkim.js';
+import { discoverMicrosoftTenantId } from '../services/tenantDiscovery.js';
 
 const router = express.Router();
 const { MASTER_CLIENT_ID, MASTER_REDIRECT_URI } = process.env;
@@ -155,7 +158,7 @@ router.get('/', (req, res) => {
   }
 });
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const { name, admin_email, admin_password, domain, mfa_secret } = req.body;
 
@@ -178,7 +181,22 @@ router.post('/', (req, res) => {
       domain,
       mfa_secret: normalizedMfa
     });
-    res.json({ success: true, id: result.lastInsertRowid });
+    const tenantId = result.lastInsertRowid;
+
+    // Try to discover Microsoft tenant ID from admin email domain
+    try {
+      const discoveredTenantGuid = await discoverMicrosoftTenantId(admin_email);
+      if (discoveredTenantGuid) {
+        updateTenantId(tenantId, discoveredTenantGuid);
+        console.log(`[tenants] Discovered and set MS tenant ID ${discoveredTenantGuid} for new tenant ${tenantId}`);
+      } else {
+        console.log(`[tenants] Could not discover MS tenant ID for new tenant ${tenantId} (domain: ${admin_email.split('@')[1]}). It will be re-attempted at order time.`);
+      }
+    } catch (discoveryError) {
+      console.error(`[tenants] Tenant discovery failed for new tenant ${tenantId}:`, discoveryError.message);
+    }
+
+    res.json({ success: true, id: tenantId });
   } catch (error) {
     res.status(500).json({ error: 'Failed to create tenant' });
   }
@@ -338,6 +356,60 @@ router.post('/:id/email-auth', async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
 });
+
+router.get('/:id/nameservers/check', async (req, res) => {
+  try {
+    const tenant = getTenantByIdForUser(req.params.id, req.session.user.id);
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+    let expected = [];
+    if (tenant.cloudflare_ns) {
+      try {
+        expected = JSON.parse(tenant.cloudflare_ns);
+      } catch {
+        expected = [];
+      }
+    }
+    const expectedNormalized = expected
+      .map(s => String(s || '').trim().toLowerCase().replace(/\.$/, ''))
+      .filter(Boolean);
+
+    const resolvers = [
+      new dns.Resolver().setServers(['1.1.1.1']),
+      new dns.Resolver().setServers(['8.8.8.8'])
+    ];
+
+    const aggregate = new Set();
+    const errors = [];
+    for (const resolver of resolvers) {
+      try {
+        const records = await resolver.resolveNs(tenant.domain);
+        records.forEach(r => {
+          aggregate.add(String(r || '').trim().toLowerCase().replace(/\.$/, ''));
+        });
+      } catch (err) {
+        errors.push(err?.message || String(err));
+      }
+    }
+
+    const actual = Array.from(aggregate);
+    const matched = expectedNormalized.filter(s => actual.includes(s));
+    const verified = expectedNormalized.length > 0 && matched.length === expectedNormalized.length;
+
+    return res.json({
+      success: true,
+      verified,
+      expected: expectedNormalized,
+      actual,
+      matched,
+      errors: errors.length ? errors : undefined
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Failed to check nameservers' });
+  }
+});
+
+
 
 router.patch('/:id/status', (req, res) => {
   try {
