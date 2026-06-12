@@ -1,4 +1,4 @@
-import { createIncognitoPage, loginToMicrosoft365, createSharedMailbox, ensureExchangeSmtpAuthEnabled } from './puppeteer.js';
+import { createIncognitoPage, loginToMicrosoft365, createSharedMailbox, ensureExchangeSmtpAuthEnabled, grantAdminConsent, closeBrowser } from './puppeteer.js';
 import { createZone, addDnsRecord } from './cloudflare.js';
 import { ensureSpfRecord, ensureDmarcRecord, ensureDkimRecords } from './emailAuth.js';
 import {
@@ -158,6 +158,40 @@ export function resumeInterruptedOrders() {
   }
 }
 
+async function grantConsentIfNeeded(tenant, getTotpCode, orderId) {
+  let consentContext = null;
+  let consentPage = null;
+  try {
+    const clientId = process.env.MASTER_CLIENT_ID;
+    const redirectUri = process.env.MASTER_REDIRECT_URI;
+    const { context, page } = await createIncognitoPage();
+    consentContext = context;
+    consentPage = page;
+
+    const result = await grantAdminConsent({
+      page,
+      context,
+      email: tenant.admin_email,
+      password: tenant.admin_password,
+      getTotpCode,
+      tenantId: tenant.tenant_id,
+      clientId,
+      redirectUri,
+      state: 'order-' + orderId
+    });
+    return result || { success: false, error: 'grantAdminConsent returned no result' };
+  } catch (err) {
+    return { success: false, error: err?.message || String(err) };
+  } finally {
+    if (consentPage) {
+      try { await consentPage.close(); } catch { /* ignore */ }
+    }
+    if (consentContext) {
+      try { await consentContext.close(); } catch { /* ignore */ }
+    }
+  }
+}
+
 export async function processOrder(orderId) {
   const order = getOrderById(orderId);
   if (!order) return;
@@ -202,7 +236,7 @@ export async function processOrder(orderId) {
     return;
   }
 
-  const { MASTER_CLIENT_ID, MASTER_CLIENT_SECRET } = process.env;
+  const { MASTER_CLIENT_ID, MASTER_CLIENT_SECRET, MASTER_REDIRECT_URI } = process.env;
   if (!MASTER_CLIENT_ID || !MASTER_CLIENT_SECRET) {
     setOrderError(orderId, 'Missing Microsoft app credentials in .env');
     return;
@@ -281,7 +315,24 @@ export async function processOrder(orderId) {
     if (checkCancelled(orderId)) return;
 
     logMessage(orderId, 'Adding domain to Microsoft...');
-    const match = await addDomainToMicrosoft(MASTER_CLIENT_ID, MASTER_CLIENT_SECRET, tenant.tenant_id, domain);
+    let match;
+    try {
+      match = await addDomainToMicrosoft(MASTER_CLIENT_ID, MASTER_CLIENT_SECRET, tenant.tenant_id, domain);
+    } catch (addErr) {
+      const msg = String(addErr?.message || addErr || '');
+      if (msg.includes('401') || msg.includes('consent') || msg.includes('unauthorized')) {
+        logMessage(orderId, 'Microsoft returned 401 — auto-granting admin consent via puppeteer...');
+        const consentResult = await grantConsentIfNeeded(tenant, getTotpCode, orderId);
+        if (!consentResult.success) {
+          logMessage(orderId, `Consent grant failed: ${consentResult.error}`);
+          throw addErr;
+        }
+        logMessage(orderId, 'Consent granted — retrying addDomainToMicrosoft...');
+        match = await addDomainToMicrosoft(MASTER_CLIENT_ID, MASTER_CLIENT_SECRET, tenant.tenant_id, domain);
+      } else {
+        throw addErr;
+      }
+    }
     if (checkCancelled(orderId)) return;
 
     logMessage(orderId, 'Adding verification TXT to Cloudflare...');

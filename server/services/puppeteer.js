@@ -615,3 +615,133 @@ export async function ensureExchangeSmtpAuthEnabled(page, log = console.log) {
     return { success: false, error: error.message };
   }
 }
+
+/**
+ * Grants admin consent for the master Microsoft 365 app on a target tenant.
+ *
+ * Flow:
+ *   1. Build the adminconsent URL using the tenant's GUID (NOT /common/, NOT
+ *      the onmicrosoft domain — adminconsent requires a real tenant id).
+ *   2. Use ensureMicrosoftLogin to drive the email/password + 2FA flow.
+ *   3. Once authenticated, look for the consent "Accept" button and click it.
+ *   4. If consent was already granted, Microsoft redirects straight to the
+ *      redirect_uri with no Accept button — treat that as success.
+ *   5. On any failure, save a debug screenshot and return the error.
+ */
+export async function grantAdminConsent({
+  page,
+  context,
+  email,
+  password,
+  getTotpCode,
+  tenantId,
+  clientId,
+  redirectUri,
+  state
+}) {
+  try {
+    if (!tenantId) {
+      return { success: false, page, error: 'tenantId is required (must be the tenant GUID, not the onmicrosoft domain)' };
+    }
+    if (!clientId) {
+      return { success: false, page, error: 'clientId is required' };
+    }
+    if (!redirectUri) {
+      return { success: false, page, error: 'redirectUri is required' };
+    }
+
+    // /common/ does NOT work for adminconsent — must use the actual tenant GUID.
+    const consentUrl =
+      `https://login.microsoftonline.com/${tenantId}/adminconsent` +
+      `?client_id=${encodeURIComponent(clientId)}` +
+      `&state=${encodeURIComponent(state || '')}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}`;
+
+    // Drive the email/password + 2FA flow.
+    const loginResult = await ensureMicrosoftLogin(page, email, password, context, consentUrl, getTotpCode);
+    if (!loginResult.success) {
+      await saveDebugScreenshot(page, 'consent_error');
+      return { success: false, page: loginResult.page || page, error: loginResult.error || 'Login failed during admin consent' };
+    }
+
+    page = loginResult.page;
+
+    // After login we may be:
+    //   a) Already on the redirect_uri (consent was previously granted)
+    //   b) On the consent screen with an "Accept" button
+    // Wait briefly for either to materialize.
+    const startUrl = page.url();
+    let acceptBtn = null;
+    try {
+      acceptBtn = await page.waitForSelector(
+        'input[type="submit"][value="Accept"], button#idSIButton9, input[type="submit"]',
+        { timeout: 15000, visible: true }
+      );
+    } catch {
+      acceptBtn = null;
+    }
+
+    const leftLogin = !page.url().includes('login.microsoftonline.com');
+    const onRedirect = (() => {
+      try {
+        const u = new URL(page.url());
+        return u.origin + u.pathname === new URL(redirectUri).origin + new URL(redirectUri).pathname
+          || page.url().startsWith(redirectUri);
+      } catch {
+        return false;
+      }
+    })();
+
+    if (!acceptBtn) {
+      if (leftLogin || onRedirect || page.url() !== startUrl) {
+        // Either we already landed on the redirect_uri (consent was already granted),
+        // or we navigated somewhere meaningful after login. Treat as success.
+        return { success: true, page };
+      }
+      await saveDebugScreenshot(page, 'consent_error');
+      return { success: false, page, error: 'Consent Accept button not found and no redirect detected' };
+    }
+
+    // Click Accept and wait for navigation to the redirect_uri (or at least away
+    // from the consent screen). The consent page is slow, so allow ~60s.
+    const navP = page
+      .waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 })
+      .catch(() => null);
+
+    try {
+      await acceptBtn.click();
+    } catch (clickErr) {
+      // Selector may have been detached by an in-flight navigation — ignore and let
+      // waitForNavigation handle the post-click state.
+      if (!isNavigationError(clickErr)) {
+        await saveDebugScreenshot(page, 'consent_error');
+        return { success: false, page, error: `Failed to click Accept: ${clickErr.message}` };
+      }
+    }
+
+    await navP;
+
+    // Give the post-consent page a moment to settle.
+    await sleep(2000);
+
+    const finalUrl = page.url();
+    const landedOnRedirect = (() => {
+      try {
+        return finalUrl.startsWith(redirectUri);
+      } catch {
+        return false;
+      }
+    })();
+    const leftConsent = !finalUrl.includes('adminconsent');
+
+    if (landedOnRedirect || leftConsent) {
+      return { success: true, page };
+    }
+
+    await saveDebugScreenshot(page, 'consent_error');
+    return { success: false, page, error: `Consent Accept clicked but did not redirect (still at ${finalUrl})` };
+  } catch (error) {
+    await saveDebugScreenshot(page, 'consent_error');
+    return { success: false, page, error: error.message };
+  }
+}
