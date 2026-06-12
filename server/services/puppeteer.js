@@ -883,13 +883,38 @@ export async function grantAdminConsent({
     })();
 
     if (!acceptBtn) {
-      if (leftLogin || onRedirect || page.url() !== startUrl) {
-        // Either we already landed on the redirect_uri (consent was already granted),
-        // or we navigated somewhere meaningful after login. Treat as success.
-        return { success: true, page };
+      // Only treat "no Accept button" as success if the page actually indicates
+      // consent was granted (e.g., redirected to the redirect_uri with
+      // admin_consent=True, or the body says "granted"). Otherwise this is a
+      // silent failure — Microsoft's Security Defaults or some other interstitial
+      // has navigated us away and the Accept button never appeared.
+      let postLoginText = '';
+      try {
+        postLoginText = await page.evaluate(() => document.body && document.body.innerText) || '';
+      } catch {
+        // ignore
+      }
+      await saveDebugScreenshot(page, 'consent_result');
+
+      const onRedirectUri = (() => {
+        try {
+          return page.url().startsWith(redirectUri) ||
+            new URL(page.url()).searchParams.get('admin_consent') === 'True';
+        } catch {
+          return false;
+        }
+      })();
+      const bodyHasAlreadyGranted = /granted|already (granted|approved)|admin_consent/i.test(postLoginText);
+
+      if (onRedirectUri || (leftLogin && bodyHasAlreadyGranted)) {
+        return { success: true, page, finalUrl: page.url() };
       }
       await saveDebugScreenshot(page, 'consent_error');
-      return { success: false, page, error: 'Consent Accept button not found and no redirect detected' };
+      return {
+        success: false,
+        page,
+        error: `Consent Accept button not found. URL: ${page.url()}. See screenshots/consent_result.png for what the page actually showed.`
+      };
     }
 
     // Click Accept and wait for navigation to the redirect_uri (or at least away
