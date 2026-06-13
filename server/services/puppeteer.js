@@ -301,6 +301,8 @@ async function handleSecurityDefaultsSetup(page) {
       await sleep;
 
       const currentUrl = page.url();
+      // If we left both the Security Defaults login wall AND the mysignins
+      // registration flow, the wizard is done.
       if (!currentUrl.includes('login.microsoftonline.com') &&
           !currentUrl.includes('mysignins.microsoft.com')) {
         return { handled: true };
@@ -308,7 +310,24 @@ async function handleSecurityDefaultsSetup(page) {
 
       const text = await readBody();
 
-      if (!text.includes('action required') && !text.includes('security defaults') && !text.includes('more information required')) {
+      // Only bail as "handled" if we're clearly off the wizard and the page
+      // is on a Microsoft domain (so we don't accidentally break the main
+      // login loop by reporting handled from a random URL).
+      const isOnMicrosoftDomain = currentUrl.includes('login.microsoftonline.com') ||
+        currentUrl.includes('mysignins.microsoft.com');
+      const wizardIndicators = [
+        'action required',
+        'security defaults',
+        'more information required',
+        'install microsoft authenticator',
+        'set up a different method',
+        'i want to set up a different method'
+      ];
+      const hasWizardText = wizardIndicators.some(ind => text.includes(ind));
+      if (!isOnMicrosoftDomain && !hasWizardText) {
+        return { handled: true };
+      }
+      if (!hasWizardText) {
         return { handled: true };
       }
 
@@ -370,6 +389,25 @@ async function handleSecurityDefaultsSetup(page) {
           sleep
         ]);
         continue;
+      }
+
+      // Priority 5: mysignins.microsoft.com "Install Microsoft Authenticator" page
+      // — has a "Next" button that must be clicked to advance to the consent target
+      // or back to the login flow.
+      if (text.includes('install microsoft authenticator') ||
+          currentUrl.includes('mysignins.microsoft.com')) {
+        const installNextClicked = await clickByText(['next', 'continue']);
+        if (installNextClicked) {
+          await sleep;
+          await Promise.race([
+            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 6000 }).catch(() => null),
+            sleep
+          ]);
+          // After clicking Next on the install page, the wizard may advance
+          // to the consent screen (back on login.microsoftonline.com) or
+          // proceed further. Either way, loop again to re-evaluate.
+          continue;
+        }
       }
     }
 
@@ -487,8 +525,10 @@ async function handleMicrosoftLoginFlow(page, email, password, context, getTotpC
         console.warn('Security Defaults setup:', sdResult.error);
       }
 
-      if (!page.url().includes('login.microsoftonline.com')) {
-        // console.log('Login flow seemingly complete, URL is: ' + page.url());
+      const currentLoopUrl = page.url();
+      if (!currentLoopUrl.includes('login.microsoftonline.com') &&
+          !currentLoopUrl.includes('mysignins.microsoft.com')) {
+        // console.log('Login flow seemingly complete, URL is: ' + currentLoopUrl);
         break;
       }
 
@@ -559,6 +599,14 @@ export async function ensureMicrosoftLogin(page, email, password, context, targe
 
         if (page.url().includes('login.microsoftonline.com')) {
           page = await handleMicrosoftLoginFlow(page, email, password, context, getTotpCode);
+        }
+
+        // If we landed on mysignins.microsoft.com (Security Defaults / MFA
+        // registration page), re-navigate to the target — the session is
+        // authenticated, so the consent URL should now render the Accept
+        // screen directly.
+        if (page.url().includes('mysignins.microsoft.com')) {
+          await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         }
 
         if (page.url().includes('login.microsoftonline.com')) {
