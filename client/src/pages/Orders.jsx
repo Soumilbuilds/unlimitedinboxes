@@ -330,9 +330,6 @@ export default function Orders() {
       });
       const res = await api.post(`/tenants/${tenantId}/nameservers`);
       setNameServers(res.data.name_servers || []);
-      if (res.data.zone_active) {
-        setWizardStep(3);
-      }
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to get name servers');
     } finally {
@@ -340,15 +337,20 @@ export default function Orders() {
     }
   };
 
-  const handleNameServersUpdated = async () => {
+  const handleCheckNameServers = async () => {
     if (!tenantId) return;
     setWizardBusy(true);
     setWizardError('');
     try {
-      await api.patch(`/tenants/${tenantId}/status`, { status: 'ready' });
-      setWizardStep(3);
+      const res = await api.post(`/tenants/${tenantId}/nameservers/check`);
+      if (res.data.active) {
+        await api.patch(`/tenants/${tenantId}/status`, { status: 'ready' });
+        setWizardStep(3);
+      } else {
+        setWizardError('Name servers are not active yet. Please update them at your domain registrar and try again.');
+      }
     } catch (e) {
-      setWizardError(e.response?.data?.error || 'Failed to confirm name servers');
+      setWizardError(e.response?.data?.error || 'Failed to check name servers');
     } finally {
       setWizardBusy(false);
     }
@@ -709,11 +711,8 @@ export default function Orders() {
                       type="text"
                       value={tenantMfaSecret}
                       onChange={(e) => setTenantMfaSecret(e.target.value)}
-                      placeholder="e.g., gzrxzxt7whqlvpfd"
+                      placeholder="MFA secret (from 2fa.live or authenticator app)"
                     />
-                    <span className="helper-text">
-                      Get this from 2fa.live or your authenticator app. Required if MFA is enabled on the account.
-                    </span>
                   </label>
                   <div className="modal-actions">
                     <button className="btn ghost" onClick={closeWizard}>Cancel</button>
@@ -730,9 +729,6 @@ export default function Orders() {
 
               {wizardStep === 1 && (
                 <div className="form">
-                  <div className="helper-text">
-                    Open the Microsoft consent window and approve access for your tenant.
-                  </div>
                   <div className="modal-actions">
                     <button className="btn ghost" onClick={() => setWizardStep(0)}>Back</button>
                     <button className="btn primary" onClick={handleOpenConsent} disabled={wizardBusy}>
@@ -757,9 +753,12 @@ export default function Orders() {
                     />
                   </label>
                   {nameServers.length > 0 && (
-                    <div className="ns-list">
+                    <div className="ns-list" style={{ background: '#1a1a1a', padding: '12px', borderRadius: '6px', marginTop: '12px' }}>
+                      <div className="helper-text" style={{ marginBottom: '8px', color: '#4ade80' }}>
+                        Add these name servers at your domain registrar:
+                      </div>
                       {nameServers.map((server) => (
-                        <div key={server} className="ns-item">{server}</div>
+                        <div key={server} className="ns-item" style={{ fontFamily: 'monospace', padding: '4px 0' }}>{server}</div>
                       ))}
                     </div>
                   )}
@@ -773,8 +772,8 @@ export default function Orders() {
                       {wizardBusy ? 'Fetching...' : 'Get Name Servers'}
                     </button>
                     {nameServers.length > 0 && (
-                      <button className="btn success" onClick={handleNameServersUpdated} disabled={wizardBusy}>
-                        Name Servers Updated
+                      <button className="btn success" onClick={handleCheckNameServers} disabled={wizardBusy}>
+                        Check Status
                       </button>
                     )}
                   </div>

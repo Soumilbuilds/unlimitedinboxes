@@ -221,7 +221,7 @@ router.post('/:id/nameservers', async (req, res) => {
     const zone = await createZone(tenant.domain);
     updateTenantCloudflare(tenant.id, zone.id, zone.name_servers);
 
-    res.json({ success: true, name_servers: zone.name_servers, zone_active: true });
+    res.json({ success: true, name_servers: zone.name_servers, zone_active: false });
   } catch (error) {
     const errorData = error.response?.data;
     if (errorData?.errors?.[0]?.code === 0 &&
@@ -231,6 +231,27 @@ router.post('/:id/nameservers', async (req, res) => {
       });
     }
     res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/:id/nameservers/check', async (req, res) => {
+  try {
+    const tenant = getTenantByIdForUser(req.params.id, req.session.user.id);
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+    if (!tenant.cloudflare_zone_id) {
+      return res.status(400).json({ error: 'No Cloudflare zone found for this tenant' });
+    }
+
+    // Import dynamically to avoid circular dependencies
+    const { getZoneStatus } = await import('../services/cloudflare.js');
+    const status = await getZoneStatus(tenant.cloudflare_zone_id);
+
+    // Zone is considered active when status is 'active'
+    const active = status === 'active';
+    res.json({ success: true, active, status });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Failed to check name servers' });
   }
 });
 

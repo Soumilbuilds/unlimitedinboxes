@@ -393,8 +393,24 @@ export async function processOrder(orderId) {
     page.setDefaultTimeout(60000);
     if (checkCancelled(orderId)) return;
 
+    // Re-read tenant to get latest MFA secret
+    const updatedTenant = getTenantByIdForUser(tenant.id, tenant.user_id);
+    logMessage(orderId, 'Re-reading tenant data for latest MFA secret...');
+
+    // Set up TOTP resolver with fresh data
+    let freshGetTotpCode = null;
+    if (updatedTenant.mfa_secret && isValidTotpSecret(updatedTenant.mfa_secret)) {
+      freshGetTotpCode = () => generateTotpCode(updatedTenant.mfa_secret);
+      logMessage(orderId, 'Auto-generating 2FA codes from latest secret');
+      logMessage(orderId, `MFA secret length: ${updatedTenant.mfa_secret.length} chars, decoded: ${Buffer.from(updatedTenant.mfa_secret, 'base32').length} bytes`);
+    } else if (updatedTenant.mfa_secret) {
+      logMessage(orderId, 'MFA secret exists but not configured properly - login may fail');
+    } else {
+      logMessage(orderId, 'No MFA secret configured - if MFA is required, login may fail');
+    }
+
     logMessage(orderId, 'Logging in to Microsoft 365...');
-    const loginResult = await loginToMicrosoft365(page, tenant.admin_email, tenant.admin_password, browserContext, getTotpCode);
+    const loginResult = await loginToMicrosoft365(page, updatedTenant.admin_email, updatedTenant.admin_password, browserContext, freshGetTotpCode);
     if (!loginResult.success) {
       // Provide detailed error guidance based on the error type
       if (loginResult.error.includes('Login page still shown after attempts')) {

@@ -219,7 +219,7 @@ async function handleStaySignedIn(page) {
 //         { handled: false } when the page is not the Security Defaults page, or
 //         { handled: false, error } when the wizard got stuck after MAX_ATTEMPTS.
 async function handleSecurityDefaultsSetup(page) {
-  const MAX_ATTEMPTS = 3;
+  const MAX_ATTEMPTS = 8;
   try {
     if (!page || page.isClosed()) {
       return { handled: false };
@@ -412,7 +412,7 @@ async function handleSecurityDefaultsSetup(page) {
 
 async function handleMicrosoftLoginFlow(page, email, password, context, getTotpCode = null) {
   // Increased attempts for robustness
-  for (let i = 0; i < 12; i += 1) {
+  for (let i = 0; i < 20; i += 1) {
     try {
       page = await waitForNewOrActivePage(context, page);
       if (!page || page.isClosed()) {
@@ -531,7 +531,7 @@ async function handleMicrosoftLoginFlow(page, email, password, context, getTotpC
 async function handleTwoFactorPrompt(page, getTotpCode) {
   try {
     const otpInput = await page.$(
-      'input[name="otc"], input[id="idTxtBx_SAOTCC_OTC"], input[autocomplete="one-time-code"]'
+      'input[name="otc"], input[id="idTxtBx_SAOTCC_OTC"], input[autocomplete="one-time-code"], input[type="tel"][inputmode="numeric"], input[name="verificationCode"]'
     );
     if (!otpInput) return false;
 
@@ -539,7 +539,7 @@ async function handleTwoFactorPrompt(page, getTotpCode) {
     // inputs for passwords and recovery emails, so check the surrounding copy.
     const isMfaPrompt = await page.evaluate(() => {
       const text = (document.body?.innerText || '').toLowerCase();
-      return /enter the code|verification code|authenticator app|verify your identity|enter the verification code/i.test(text);
+      return /enter the code|verification code|authenticator app|verify your identity|enter the verification code|enter code|code from|approve a request|approve request|verify.*code|sign.*in.*code|enter.*6.*digit|enter.*digit.*code|one.*time.*code|otp/i.test(text);
     });
     if (!isMfaPrompt) return false;
 
