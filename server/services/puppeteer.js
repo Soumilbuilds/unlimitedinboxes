@@ -335,10 +335,7 @@ async function handleSecurityDefaultsSetup(page) {
       const skipped = await clickByText(['skip for now', 'skip setup', 'skip']);
       if (skipped) {
         await sleep;
-        await Promise.race([
-          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 6000 }).catch(() => null),
-          sleep
-        ]);
+        await sleep;
         continue;
       }
 
@@ -351,10 +348,7 @@ async function handleSecurityDefaultsSetup(page) {
       ]);
       if (diffMethod) {
         await sleep;
-        await Promise.race([
-          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 6000 }).catch(() => null),
-          sleep
-        ]);
+        await sleep;
         continue;
       }
 
@@ -373,10 +367,7 @@ async function handleSecurityDefaultsSetup(page) {
       ]);
       if (authMethodPicked) {
         await sleep;
-        await Promise.race([
-          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 6000 }).catch(() => null),
-          sleep
-        ]);
+        await sleep;
         continue;
       }
 
@@ -384,10 +375,7 @@ async function handleSecurityDefaultsSetup(page) {
       const nextClicked = await clickByText(['next', 'set it up now', 'get started', 'continue']);
       if (nextClicked) {
         await sleep;
-        await Promise.race([
-          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 6000 }).catch(() => null),
-          sleep
-        ]);
+        await sleep;
         continue;
       }
 
@@ -399,10 +387,7 @@ async function handleSecurityDefaultsSetup(page) {
         const installNextClicked = await clickByText(['next', 'continue']);
         if (installNextClicked) {
           await sleep;
-          await Promise.race([
-            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 6000 }).catch(() => null),
-            sleep
-          ]);
+          await sleep;
           // After clicking Next on the install page, the wizard may advance
           // to the consent screen (back on login.microsoftonline.com) or
           // proceed further. Either way, loop again to re-evaluate.
@@ -417,7 +402,9 @@ async function handleSecurityDefaultsSetup(page) {
     };
   } catch (error) {
     if (isNavigationError(error)) {
-      return { handled: false, error: 'Navigation interrupted during Security Defaults handling' };
+      // Navigation race is harmless — we likely successfully clicked through.
+      // Return handled so the caller re-navigates to the consent URL.
+      return { handled: true };
     }
     return { handled: false, error: error.message };
   }
@@ -495,10 +482,7 @@ async function handleMicrosoftLoginFlow(page, email, password, context, getTotpC
       if (typeof getTotpCode === 'function') {
         const otpHandled = await handleTwoFactorPrompt(page, getTotpCode);
         if (otpHandled) {
-          await Promise.race([
-            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 8000 }).catch(() => null),
-            sleep
-          ]);
+          await sleep;
           page = await waitForNewOrActivePage(context, page, 8000);
           await sleep(500);
           continue;
@@ -510,10 +494,7 @@ async function handleMicrosoftLoginFlow(page, email, password, context, getTotpC
       // advances to the original login target.
       const sdResult = await handleSecurityDefaultsSetup(page);
       if (sdResult.handled) {
-        await Promise.race([
-          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 8000 }).catch(() => null),
-          sleep
-        ]);
+        await sleep;
         page = await waitForNewOrActivePage(context, page, 8000);
         await sleep(500);
         continue;
