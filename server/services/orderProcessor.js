@@ -1,5 +1,5 @@
 import { createIncognitoPage, loginToMicrosoft365, createSharedMailbox, ensureExchangeSmtpAuthEnabled, grantAdminConsent, closeBrowser } from './puppeteer.js';
-import { createZone, addDnsRecord } from './cloudflare.js';
+import { createZone, addDnsRecord, updateZoneNameServers } from './cloudflare.js';
 import { ensureSpfRecord, ensureDmarcRecord, ensureDkimRecords } from './emailAuth.js';
 import {
   addDomainToMicrosoft,
@@ -258,6 +258,9 @@ export async function processOrder(orderId) {
     logMessage(orderId, 'MFA secret not configured — if 2FA is required, login will fail');
   }
 
+  // Force handle MFA even if no secret is stored - this will allow user to manually enter MFA code
+  logMessage(orderId, 'Microsoft 365 MFA is now mandatory for all accounts - ensure your account has MFA registered');
+
   let browserContext = null;
   let page = null;
   let graphProvider = null;
@@ -271,7 +274,17 @@ export async function processOrder(orderId) {
       try {
         const zone = await createZone(domain);
         zoneId = zone.id;
-        updateTenantCloudflare(tenant.id, zone.id, zone.name_servers);
+
+        // Try to update nameservers to use custom ones if configured
+        const customNs = await updateZoneNameServers(zoneId);
+        const finalNs = customNs || zone.name_servers;
+
+        updateTenantCloudflare(tenant.id, zone.id, finalNs);
+        if (customNs) {
+          logMessage(orderId, `Using custom nameservers: ${customNs.join(', ')}`);
+        } else {
+          logMessage(orderId, `Using Cloudflare nameservers: ${zone.name_servers.join(', ')}`);
+        }
       } catch (zoneError) {
         const errorData = zoneError.response?.data;
         if (errorData?.errors?.[0]?.code === 0 &&
@@ -383,6 +396,17 @@ export async function processOrder(orderId) {
     logMessage(orderId, 'Logging in to Microsoft 365...');
     const loginResult = await loginToMicrosoft365(page, tenant.admin_email, tenant.admin_password, browserContext, getTotpCode);
     if (!loginResult.success) {
+      // Provide detailed error guidance based on the error type
+      if (loginResult.error.includes('Login page still shown after attempts')) {
+        setOrderError(orderId, 'Microsoft 365 login failed - this likely means Multi-Factor Authentication (MFA) is required but not configured. Please:');
+        logMessage(orderId, '1. Ensure your admin account has MFA registered');
+        logMessage(orderId, '2. If using 2fa.live, add the MFA secret to your tenant');
+        logMessage(orderId, '3. Or manually enter the MFA code when prompted during browser automation');
+      } else if (loginResult.error.includes('Invalid username or password')) {
+        setOrderError(orderId, 'Invalid admin email or password - please check your credentials');
+      } else {
+        setOrderError(orderId, `Login failed: ${loginResult.error}`);
+      }
       throw new Error(`Login failed: ${loginResult.error}`);
     }
     if (loginResult.page) {

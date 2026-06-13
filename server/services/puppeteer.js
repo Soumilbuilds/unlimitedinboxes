@@ -479,14 +479,13 @@ async function handleMicrosoftLoginFlow(page, email, password, context, getTotpC
       }
 
       // 2FA / TOTP prompt detection and handling
-      if (typeof getTotpCode === 'function') {
-        const otpHandled = await handleTwoFactorPrompt(page, getTotpCode);
-        if (otpHandled) {
-          await sleep;
-          page = await waitForNewOrActivePage(context, page, 8000);
-          await sleep(500);
-          continue;
-        }
+      // Always check for MFA prompt - if getTotpCode is not a function, prompt will wait for user input
+      const otpHandled = await handleTwoFactorPrompt(page, getTotpCode);
+      if (otpHandled) {
+        await sleep;
+        page = await waitForNewOrActivePage(context, page, 8000);
+        await sleep(500);
+        continue;
       }
 
       // Microsoft "Action Required: Security Defaults" / MFA registration wall.
@@ -527,6 +526,7 @@ async function handleMicrosoftLoginFlow(page, email, password, context, getTotpC
 }
 
 // Detects an MFA / TOTP prompt and submits a freshly generated code.
+// Detects an MFA / TOTP prompt and submits a freshly generated code.
 // Returns true when code entry was attempted.
 async function handleTwoFactorPrompt(page, getTotpCode) {
   try {
@@ -543,9 +543,29 @@ async function handleTwoFactorPrompt(page, getTotpCode) {
     });
     if (!isMfaPrompt) return false;
 
-    const code = await getTotpCode();
-    if (!code || !/^\d{6}$/.test(String(code))) {
-      throw new Error('TOTP resolver did not return a 6-digit code');
+    let code;
+    if (typeof getTotpCode === 'function') {
+      code = await getTotpCode();
+      if (!code || !/^\d{6}$/.test(String(code))) {
+        throw new Error('TOTP resolver did not return a 6-digit code');
+      }
+    } else {
+      // No automatic TOTP - we need to wait for user to enter code manually
+      console.log('MFA prompt detected but no TOTP resolver available - waiting for user input');
+      // Wait up to 60 seconds for user to enter the code
+      const maxWaitTime = 60000;
+      const startTime = Date.now();
+      while (Date.now() - startTime < maxWaitTime) {
+        await sleep;
+        const value = await otpInput.evaluate(el => el.value);
+        if (value && /^\d{6}$/.test(value)) {
+          code = value;
+          break;
+        }
+      }
+      if (!code) {
+        throw new Error('No TOTP resolver provided and user did not enter code within 60 seconds');
+      }
     }
 
     const inputHandle = await otpInput.evaluate(el => ({ id: el.id, name: el.name }));

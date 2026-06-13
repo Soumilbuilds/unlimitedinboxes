@@ -2,6 +2,11 @@ import axios from 'axios';
 
 const { CLOUDFLARE_API_TOKEN } = process.env;
 
+// Custom nameservers from env (e.g., CLOUDFLARE_NS1=ns1.example.com, CLOUDFLARE_NS2=ns2.example.com)
+const CUSTOM_NS = (process.env.CLOUDFLARE_NS1 || process.env.CLOUDFLARE_NS2)
+  ? [process.env.CLOUDFLARE_NS1, process.env.CLOUDFLARE_NS2].filter(Boolean)
+  : null;
+
 // Primary token: DNS records, zone management (read/write existing zones)
 const cf = axios.create({
   baseURL: 'https://api.cloudflare.com/client/v4',
@@ -35,11 +40,19 @@ export async function createZone(domain) {
   });
 
   try {
-    const res = await client.post('/zones', {
+    // Build request body
+    const zonePayload = {
       name: domain,
       account: { id: await getAccountId(client) },
       type: 'full'
-    });
+    };
+
+    // If custom nameservers configured, add them (requires Business/Enterprise plan)
+    if (CUSTOM_NS && CUSTOM_NS.length >= 2) {
+      zonePayload.vanity_name_servers = CUSTOM_NS;
+    }
+
+    const res = await client.post('/zones', zonePayload);
 
     return {
       id: res.data.result.id,
@@ -58,6 +71,36 @@ export async function createZone(domain) {
       }
     }
     throw new Error(`Cloudflare Error: ${JSON.stringify(error.response?.data || error.message)}`);
+  }
+}
+
+// Update zone name servers after creation (fallback for plans that don't support vanity_name_servers)
+export async function updateZoneNameServers(zoneId, nameServers) {
+  if (!CUSTOM_NS || CUSTOM_NS.length < 2) return false;
+
+  const token = process.env.CLOUDFLARE_ZONE_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
+  const client = axios.create({
+    baseURL: 'https://api.cloudflare.com/client/v4',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    timeout: 30000
+  });
+
+  try {
+    const res = await client.patch(`/zones/${zoneId}`, {
+      name_servers: CUSTOM_NS
+    });
+    return res.data.result.name_servers;
+  } catch (error) {
+    // Check if error is related to permissions (plan doesn't support custom nameservers)
+    const code = error.response?.data?.errors?.[0]?.code;
+    if (code === 1004) {
+      console.warn('Custom nameservers not supported on this plan - falling back to Cloudflare defaults');
+      return false;
+    }
+    throw error;
   }
 }
 
