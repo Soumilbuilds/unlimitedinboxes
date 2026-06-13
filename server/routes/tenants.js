@@ -156,7 +156,7 @@ router.get('/', (req, res) => {
 
 router.post('/', (req, res) => {
   try {
-    const { name, admin_email, admin_password, domain } = req.body;
+    const { name, admin_email, admin_password, domain, mfa_secret } = req.body;
 
     if (!name || !domain || !admin_email || !admin_password) {
       return res.status(400).json({ error: 'Name, Domain, Email, and Password are required' });
@@ -167,7 +167,8 @@ router.post('/', (req, res) => {
       name,
       admin_email,
       admin_password,
-      domain
+      domain,
+      mfa_secret: mfa_secret || null
     });
     res.json({ success: true, id: result.lastInsertRowid });
   } catch (error) {
@@ -177,10 +178,10 @@ router.post('/', (req, res) => {
 
 router.patch('/:id', (req, res) => {
   try {
-    const { name, domain, admin_email, admin_password } = req.body;
+    const { name, domain, admin_email, admin_password, mfa_secret } = req.body;
     const tenant = getTenantByIdForUser(req.params.id, req.session.user.id);
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
-    const result = updateTenantDetails(req.params.id, { name, domain, admin_email, admin_password });
+    const result = updateTenantDetails(req.params.id, { name, domain, admin_email, admin_password, mfa_secret });
     if (result.changes === 0) return res.status(404).json({ error: 'Tenant not found' });
     res.json({ success: true });
   } catch (error) {

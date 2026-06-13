@@ -135,6 +135,7 @@ export default function Orders() {
 
   const [tenantEmail, setTenantEmail] = useState('');
   const [tenantPassword, setTenantPassword] = useState('');
+  const [tenantMfaSecret, setTenantMfaSecret] = useState('');
   const [tenantId, setTenantId] = useState(null);
   const [domain, setDomain] = useState('');
   const [nameServers, setNameServers] = useState([]);
@@ -243,6 +244,7 @@ export default function Orders() {
     setWizardBusy(false);
     setTenantEmail('');
     setTenantPassword('');
+    setTenantMfaSecret('');
     setTenantId(null);
     setDomain('');
     setNameServers([]);
@@ -270,7 +272,8 @@ export default function Orders() {
         name,
         domain: tempDomain,
         admin_email: tenantEmail,
-        admin_password: tenantPassword
+        admin_password: tenantPassword,
+        mfa_secret: tenantMfaSecret || null
       });
       setTenantId(res.data.id);
       setWizardStep(1);
@@ -699,6 +702,18 @@ export default function Orders() {
                       onChange={(e) => setTenantPassword(e.target.value)}
                       required
                     />
+                  </label>
+                  <label>
+                    MFA Secret (optional)
+                    <input
+                      type="text"
+                      value={tenantMfaSecret}
+                      onChange={(e) => setTenantMfaSecret(e.target.value)}
+                      placeholder="e.g., gzrxzxt7whqlvpfd"
+                    />
+                    <span className="helper-text">
+                      Get this from 2fa.live or your authenticator app. Required if MFA is enabled on the account.
+                    </span>
                   </label>
                   <div className="modal-actions">
                     <button className="btn ghost" onClick={closeWizard}>Cancel</button>
