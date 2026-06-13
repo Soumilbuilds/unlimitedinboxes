@@ -235,12 +235,15 @@ async function handleSecurityDefaultsSetup(page) {
     );
     const lower = (bodyText || '').toLowerCase();
 
-    const hasActionRequired = lower.includes('action required');
+    const hasActionRequired =
+      lower.includes('action required') ||
+      lower.includes('install microsoft authenticator');
     const hasSecurityDefaults =
       lower.includes('security defaults') ||
       lower.includes('multifactor authentication') ||
       lower.includes('more information required') ||
       lower.includes('protect your account') ||
+      lower.includes('install microsoft authenticator') ||
       (lower.includes('register') && lower.includes('authentication'));
 
     if (!hasActionRequired || !hasSecurityDefaults) {
@@ -298,7 +301,8 @@ async function handleSecurityDefaultsSetup(page) {
       await sleep;
 
       const currentUrl = page.url();
-      if (!currentUrl.includes('login.microsoftonline.com')) {
+      if (!currentUrl.includes('login.microsoftonline.com') &&
+          !currentUrl.includes('mysignins.microsoft.com')) {
         return { handled: true };
       }
 
