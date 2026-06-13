@@ -22,11 +22,6 @@ function deriveTenantName(email, domain) {
   return prefix ? `Tenant ${prefix}` : 'Tenant';
 }
 
-function isValidMfaSecret(secret) {
-  if (typeof secret !== 'string') return false;
-  return /^[a-zA-Z2-7]{16}$/.test(secret.trim());
-}
-
 function formatStatusLabel(status) {
   if (!status) return 'unknown';
   if (status === 'completed') return 'ready';
@@ -140,12 +135,9 @@ export default function Orders() {
 
   const [tenantEmail, setTenantEmail] = useState('');
   const [tenantPassword, setTenantPassword] = useState('');
-  const [tenantMfaSecret, setTenantMfaSecret] = useState('');
   const [tenantId, setTenantId] = useState(null);
   const [domain, setDomain] = useState('');
   const [nameServers, setNameServers] = useState([]);
-  const [nsVerification, setNsVerification] = useState(null);
-  const [nsSkipWarning, setNsSkipWarning] = useState(false);
   const [redirectChoice, setRedirectChoice] = useState('skip');
   const [redirectUrl, setRedirectUrl] = useState('');
 
@@ -177,8 +169,8 @@ export default function Orders() {
   const canCreateMoreThanOneCompletedOrder = Boolean(billing?.canCreateMoreThanOneCompletedOrder);
   const isAdvanced = Boolean(billing?.unlimitedConcurrency);
   const stepTitles = canUseCustomNames
-    ? ['Tenant credentials', 'Domain setup', 'Verify nameservers', 'Domain redirect', 'Order details', 'Set names']
-    : ['Tenant credentials', 'Domain setup', 'Verify nameservers', 'Domain redirect', 'Order details'];
+    ? ['Tenant credentials', 'Microsoft consent', 'Domain setup', 'Domain redirect', 'Order details', 'Set names']
+    : ['Tenant credentials', 'Microsoft consent', 'Domain setup', 'Domain redirect', 'Order details'];
   const totalSteps = stepTitles.length;
 
   const selectedOrder = useMemo(
@@ -251,12 +243,9 @@ export default function Orders() {
     setWizardBusy(false);
     setTenantEmail('');
     setTenantPassword('');
-    setTenantMfaSecret('');
     setTenantId(null);
     setDomain('');
     setNameServers([]);
-    setNsVerification(null);
-    setNsSkipWarning(false);
     setRedirectChoice('skip');
     setRedirectUrl('');
     setOrderName('');
@@ -277,18 +266,51 @@ export default function Orders() {
     try {
       const tempDomain = `pending-${Date.now()}.local`;
       const name = deriveTenantName(tenantEmail, '');
-      const cleanedMfa = tenantMfaSecret.trim().replace(/\s+/g, '');
       const res = await api.post('/tenants', {
         name,
         domain: tempDomain,
         admin_email: tenantEmail,
-        admin_password: tenantPassword,
-        mfa_secret: cleanedMfa || null
+        admin_password: tenantPassword
       });
       setTenantId(res.data.id);
       setWizardStep(1);
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to save tenant details');
+    } finally {
+      setWizardBusy(false);
+    }
+  };
+
+  const handleOpenConsent = async () => {
+    if (!tenantId) return;
+    setWizardBusy(true);
+    setWizardError('');
+    try {
+      const res = await api.post(`/tenants/${tenantId}/connect`);
+      if (res.data.consentUrl) {
+        window.open(res.data.consentUrl, 'MicrosoftConsent', 'width=600,height=720');
+      }
+    } catch (e) {
+      setWizardError(e.response?.data?.error || 'Failed to open consent window');
+    } finally {
+      setWizardBusy(false);
+    }
+  };
+
+  const handleCheckConsent = async () => {
+    if (!tenantId) return;
+    setWizardBusy(true);
+    setWizardError('');
+    try {
+      const res = await api.get('/tenants');
+      const tenant = res.data.find(t => t.id === tenantId);
+      if (tenant?.tenant_id) {
+        setWizardStep(2);
+      } else {
+        setWizardError('Consent is not completed yet. Finish the Microsoft prompt, then try again.');
+      }
+    } catch (e) {
+      setWizardError(e.response?.data?.error || 'Could not verify consent yet');
     } finally {
       setWizardBusy(false);
     }
@@ -305,26 +327,11 @@ export default function Orders() {
       });
       const res = await api.post(`/tenants/${tenantId}/nameservers`);
       setNameServers(res.data.name_servers || []);
-      setNsVerification(null);
       if (res.data.zone_active) {
-        setWizardStep(2);
+        setWizardStep(3);
       }
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to get name servers');
-    } finally {
-      setWizardBusy(false);
-    }
-  };
-
-  const handleCheckNameServers = async () => {
-    if (!tenantId) return;
-    setWizardBusy(true);
-    setWizardError('');
-    try {
-      const res = await api.get(`/tenants/${tenantId}/nameservers/check`);
-      setNsVerification(res.data);
-    } catch (e) {
-      setWizardError(e.response?.data?.error || 'Failed to check nameservers');
     } finally {
       setWizardBusy(false);
     }
@@ -336,7 +343,7 @@ export default function Orders() {
     setWizardError('');
     try {
       await api.patch(`/tenants/${tenantId}/status`, { status: 'ready' });
-      setWizardStep(2);  // Verify nameservers step
+      setWizardStep(3);
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to confirm name servers');
     } finally {
@@ -693,28 +700,12 @@ export default function Orders() {
                       required
                     />
                   </label>
-                  <label>
-                    2FA secret key
-                    <input
-                      type="text"
-                      value={tenantMfaSecret}
-                      onChange={(e) => setTenantMfaSecret(e.target.value)}
-                      autoComplete="off"
-                      spellCheck={false}
-                      required
-                    />
-                    {tenantMfaSecret.trim() && !isValidMfaSecret(tenantMfaSecret) && (
-                      <div className="alert error">
-                        2FA secret should be 16 characters using letters a-z and digits 2-7.
-                      </div>
-                    )}
-                  </label>
                   <div className="modal-actions">
                     <button className="btn ghost" onClick={closeWizard}>Cancel</button>
                     <button
                       className="btn primary"
                       onClick={handleCreateTenant}
-                      disabled={wizardBusy || !tenantEmail || !tenantPassword || !isValidMfaSecret(tenantMfaSecret)}
+                      disabled={wizardBusy || !tenantEmail || !tenantPassword}
                     >
                       {wizardBusy ? 'Saving...' : 'Continue'}
                     </button>
@@ -723,6 +714,23 @@ export default function Orders() {
               )}
 
               {wizardStep === 1 && (
+                <div className="form">
+                  <div className="helper-text">
+                    Open the Microsoft consent window and approve access for your tenant.
+                  </div>
+                  <div className="modal-actions">
+                    <button className="btn ghost" onClick={() => setWizardStep(0)}>Back</button>
+                    <button className="btn primary" onClick={handleOpenConsent} disabled={wizardBusy}>
+                      {wizardBusy ? 'Opening...' : 'Open Consent'}
+                    </button>
+                    <button className="btn success" onClick={handleCheckConsent} disabled={wizardBusy}>
+                      I Have Connected
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {wizardStep === 2 && (
                 <div className="form">
                   <label>
                     Domain to connect
@@ -741,7 +749,7 @@ export default function Orders() {
                     </div>
                   )}
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(0)}>Back</button>
+                    <button className="btn ghost" onClick={() => setWizardStep(1)}>Back</button>
                     <button
                       className="btn primary"
                       onClick={handleGetNameServers}
@@ -755,62 +763,6 @@ export default function Orders() {
                       </button>
                     )}
                   </div>
-                </div>
-              )}
-
-              {wizardStep === 2 && (
-                <div className="form">
-                  <div className="helper-text" style={{ marginBottom: 12 }}>
-                    Add these name servers to your domain registrar, then verify the connection.
-                  </div>
-
-                  {nameServers.length > 0 && (
-                    <div className="ns-list" style={{ marginBottom: 16 }}>
-                      {nameServers.map((server) => (
-                        <div key={server} className="ns-item">{server}</div>
-                      ))}
-                    </div>
-                  )}
-
-                  {nsVerification && (
-                    <div style={{ marginBottom: 16 }}>
-                      {nsVerification.verified ? (
-                        <div className="alert success">Connection verified. All name servers match.</div>
-                      ) : (
-                        <div className="alert error">
-                          Not verified. Expected: {nsVerification.expected?.join(', ')}<br />
-                          Found: {nsVerification.actual?.join(', ') || 'None'}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(1)}>Back</button>
-                    <button className="btn primary" onClick={handleCheckNameServers} disabled={wizardBusy}>
-                      {wizardBusy ? 'Checking...' : 'Check Connection'}
-                    </button>
-                    {nsVerification?.verified && (
-                      <button className="btn success" onClick={() => setWizardStep(3)}>
-                        Continue
-                      </button>
-                    )}
-                    {nsSkipWarning && (
-                      <button className="btn ghost" onClick={() => setWizardStep(3)}>
-                        Skip for now
-                      </button>
-                    )}
-                  </div>
-                  {!nsVerification && !nsSkipWarning && (
-                    <div style={{ marginTop: 8 }}>
-                      <button className="link-btn" onClick={() => setNsSkipWarning(true)}>
-                        Skip verification for now
-                      </button>
-                      <div className="helper-text" style={{ marginTop: 4 }}>
-                        Warning: Verifying ensures your domain is properly connected.
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
 
