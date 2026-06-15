@@ -1,9 +1,10 @@
 import { createIncognitoPage, loginToMicrosoft365, createSharedMailbox, ensureExchangeSmtpAuthEnabled, grantAdminConsent, closeBrowser } from './puppeteer.js';
-import { createZone, addDnsRecord, updateZoneNameServers } from './cloudflare.js';
+import { createZone, addDnsRecord, listDnsRecords, updateZoneNameServers } from './cloudflare.js';
 import { ensureSpfRecord, ensureDmarcRecord, ensureDkimRecords } from './emailAuth.js';
 import {
   addDomainToMicrosoft,
   verifyDomain,
+  disableSecurityDefaultsWithClient,
   listDomains,
   deleteDomain,
   getAppClient,
@@ -25,6 +26,7 @@ import {
   getOrderById,
   getOrders,
   getTenantById,
+  getTenantByIdForUser,
   updateOrderStatus,
   updateOrderProgress,
   setOrderError,
@@ -361,6 +363,7 @@ export async function processOrder(orderId) {
 
     if (verifyResult?.records?.length) {
       logMessage(orderId, 'Adding Exchange DNS records...');
+      const recordFailures = [];
       for (const rec of verifyResult.records) {
         try {
           await addDnsRecord(
@@ -371,11 +374,53 @@ export async function processOrder(orderId) {
             rec.priority
           );
         } catch (e) {
-          // ignore duplicates
+          recordFailures.push({ rec, error: e.message });
+        }
+      }
+      if (recordFailures.length) {
+        logMessage(orderId, `DNS add had ${recordFailures.length} failure(s) — verifying each record is actually present:`);
+        for (const { rec, error } of recordFailures) {
+          const rType = rec.recordType?.toUpperCase();
+          const rName = rec.name;
+          const rContent = rec.text || rec.value || rec.target;
+          const existing = await listDnsRecords(zoneId, { type: rType, name: rName });
+          const present = existing.some(r => r.content === rContent);
+          if (present) {
+            logMessage(orderId, `  ✓ ${rType} ${rName} -> ${rContent} already present (retry-safe)`);
+          } else {
+            logMessage(orderId, `  ✗ ${rType} ${rName} -> ${rContent} FAILED and missing: ${error}`);
+            if (rType === 'MX') {
+              logMessage(orderId, `  ! MX record is critical for email delivery. Attempting direct add...`);
+              try {
+                await addDnsRecord(zoneId, rType, rName, rContent, rec.priority);
+                logMessage(orderId, `  ✓ MX record added on retry`);
+              } catch (retryErr) {
+                logMessage(orderId, `  ✗ MX record add FAILED: ${retryErr.message}`);
+                throw new Error(`Critical: failed to add MX record for ${rName}: ${retryErr.message}`);
+              }
+            } else {
+              throw new Error(`Failed to add required DNS ${rType} ${rName}: ${error}`);
+            }
+          }
         }
       }
     } else {
       logMessage(orderId, 'No service configuration records returned. Domain may already be configured.');
+    }
+
+    // Final MX verification — guarantees the MX record that ReachInbox/warmup
+    // tools check for is actually in the zone before we mark the order done.
+    try {
+      const mxRecords = await listDnsRecords(zoneId, { type: 'MX', name: domain });
+      if (!mxRecords.length) {
+        logMessage(orderId, 'Post-loop check: MX record missing — adding fallback MX -> ' + `${domain.replace(/\./g, '-')}.mail.protection.outlook.com`);
+        await addDnsRecord(zoneId, 'MX', domain, `${domain.replace(/\./g, '-')}.mail.protection.outlook.com`, 0);
+        logMessage(orderId, 'Fallback MX record added');
+      } else {
+        logMessage(orderId, `MX record verified: ${mxRecords[0].content} (priority ${mxRecords[0].priority})`);
+      }
+    } catch (mxVerifyErr) {
+      logMessage(orderId, `MX verification step error (non-fatal): ${mxVerifyErr.message}`);
     }
     if (checkCancelled(orderId)) return;
 
@@ -383,6 +428,16 @@ export async function processOrder(orderId) {
     logMessage(orderId, 'Preparing Microsoft Graph admin client...');
     graphProvider = await createGraphClientProvider(MASTER_CLIENT_ID, MASTER_CLIENT_SECRET, tenant.tenant_id);
     globalAdminRoleId = await graphProvider.run(client => getGlobalAdminRoleIdWithClient(client));
+
+    // Step 2b: Disable Security Defaults so newly created users are not
+    // forced through the Microsoft Authenticator / MFA registration wall on
+    // first login. This makes the mailboxes usable immediately.
+    try {
+      await graphProvider.run(client => disableSecurityDefaultsWithClient(client));
+      logMessage(orderId, 'Security Defaults disabled — no MFA prompt on first login');
+    } catch (sdErr) {
+      logMessage(orderId, `Security Defaults disable skipped: ${sdErr.message}`);
+    }
     if (checkCancelled(orderId)) return;
 
     // Step 3: Exchange mailbox creation
@@ -402,7 +457,7 @@ export async function processOrder(orderId) {
     if (updatedTenant.mfa_secret && isValidTotpSecret(updatedTenant.mfa_secret)) {
       freshGetTotpCode = () => generateTotpCode(updatedTenant.mfa_secret);
       logMessage(orderId, 'Auto-generating 2FA codes from latest secret');
-      logMessage(orderId, `MFA secret length: ${updatedTenant.mfa_secret.length} chars, decoded: ${Buffer.from(updatedTenant.mfa_secret, 'base32').length} bytes`);
+      logMessage(orderId, `MFA secret configured: ${updatedTenant.mfa_secret.length} chars (valid base32: ${isValidTotpSecret(updatedTenant.mfa_secret)})`);
     } else if (updatedTenant.mfa_secret) {
       logMessage(orderId, 'MFA secret exists but not configured properly - login may fail');
     } else {
