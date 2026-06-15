@@ -174,13 +174,32 @@ async function setInputValue(page, selector, value) {
 
 async function handleStaySignedIn(page) {
   try {
+    if (!page || page.isClosed()) return false;
+
+    // Only run if we can see the KMSI prompt.
+    const kmsiVisible = await page.evaluate(() => {
+      try {
+        return !!(
+          document.querySelector('#idSIButton9') ||
+          document.querySelector('input[value="Yes"]') ||
+          /stay signed in/i.test(document.body?.innerText || '')
+        );
+      } catch (e) { return false; }
+    });
+    if (!kmsiVisible) return false;
+
     await page.waitForFunction(
-      () =>
-        document.querySelector('#idSIButton9') ||
-        document.querySelector('#idBtn_Back') ||
-        document.querySelector('input[name="DontShowAgain"]'),
-      { timeout: 6000 }
-    );
+      () => {
+        try {
+          const url = window.location.href;
+          return document.querySelector('#idSIButton9') ||
+                 document.querySelector('input[value="Yes"]') ||
+                 !url.includes('login.microsoftonline.com') ||
+                 url.includes('ProcessAuth') || url.includes('SAS/');
+        } catch (e) { return false; }
+      },
+      { timeout: 8000 }
+    ).catch(() => {});
 
     const checkbox = await page.$('input[name="DontShowAgain"]');
     if (checkbox) {
@@ -195,7 +214,7 @@ async function handleStaySignedIn(page) {
         page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 8000 }).catch(() => null),
         sleep(1500)
       ]);
-      return;
+      return true;
     }
 
     const noBtn = await page.$('#idBtn_Back');
@@ -205,9 +224,11 @@ async function handleStaySignedIn(page) {
         page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 8000 }).catch(() => null),
         sleep(1500)
       ]);
+      return true;
     }
+    return false;
   } catch {
-    // ignore
+    return false;
   }
 }
 
@@ -483,6 +504,16 @@ async function handleMicrosoftLoginFlow(page, email, password, context, getTotpC
       const otpHandled = await handleTwoFactorPrompt(page, getTotpCode);
       if (otpHandled) {
         await sleep;
+        page = await waitForNewOrActivePage(context, page, 8000);
+        await sleep(500);
+        continue;
+      }
+
+      // Microsoft "Stay signed in?" (KMSI) prompt - click Yes to proceed.
+      // This page has no email/password/otp input, so we need to detect it
+      // by the URL or the Yes button selector.
+      const kmsiHandled = await handleStaySignedIn(page);
+      if (kmsiHandled) {
         page = await waitForNewOrActivePage(context, page, 8000);
         await sleep(500);
         continue;

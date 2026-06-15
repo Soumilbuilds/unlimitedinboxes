@@ -91,6 +91,22 @@ export async function updateUserUpnWithClient(client, userId, upn) {
   await client.patch(`/users/${userId}`, { userPrincipalName: upn });
 }
 
+// Disables Security Defaults on the tenant so newly-created users aren't
+// forced through the Microsoft Authenticator / phone-number registration
+// wall on first login. Idempotent — safe to call repeatedly.
+export async function disableSecurityDefaultsWithClient(client) {
+  await client.patch('/policies/identitySecurityDefaultsEnforcementPolicy', {
+    isEnabled: false
+  });
+}
+
+export async function disableSecurityDefaults(clientId, clientSecret, tenantId) {
+  const token = await getAccessToken(clientId, clientSecret, tenantId);
+  const client = graphClient(token);
+  await disableSecurityDefaultsWithClient(client);
+  return { success: true };
+}
+
 export async function getGlobalAdminRoleIdWithClient(client) {
   const rolesRes = await client.get('/directoryRoles');
   let adminRole = rolesRes.data.value.find(r => r.displayName === 'Global Administrator');
@@ -210,6 +226,27 @@ export async function getUserByEmail(clientId, clientSecret, tenantId, email) {
 
   const resMail = await client.get(`/users?$filter=mail eq '${safeEmail}'`);
   return resMail.data.value[0];
+}
+
+export async function deleteUserByEmailWithClient(client, email) {
+  const safeEmail = escapeODataString(email);
+  let userId = null;
+  const resUpn = await client.get(`/users?$filter=userPrincipalName eq '${safeEmail}'`);
+  if (resUpn.data.value[0]) {
+    userId = resUpn.data.value[0].id;
+  } else {
+    const resMail = await client.get(`/users?$filter=mail eq '${safeEmail}'`);
+    if (resMail.data.value[0]) userId = resMail.data.value[0].id;
+  }
+  if (!userId) return { success: false, reason: 'not found' };
+  await client.delete(`/users/${userId}`);
+  return { success: true, userId };
+}
+
+export async function deleteUserByEmail(clientId, clientSecret, tenantId, email) {
+  const token = await getAccessToken(clientId, clientSecret, tenantId);
+  const client = graphClient(token);
+  return deleteUserByEmailWithClient(client, email);
 }
 
 export async function getUserByEmailWithClient(client, email) {
