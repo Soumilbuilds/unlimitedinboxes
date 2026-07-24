@@ -1,4 +1,5 @@
 import express from 'express';
+import { resolveNs } from 'node:dns/promises';
 import {
  createTenant,
  createTenantPurchaseRecord,
@@ -265,8 +266,48 @@ router.post('/:id/nameservers/check', async (req, res) => {
  const { getZoneStatus } = await import('../services/cloudflare.js');
  const status = await getZoneStatus(tenant.cloudflare_zone_id);
 
- const active = status === 'active';
- res.json({ success: true, active, status });
+ const normalizeNameServer = value => String(value || '')
+ .trim()
+ .toLowerCase()
+ .replace(/\.$/, '');
+ const expectedNameServers = (tenant.cloudflare_ns ? JSON.parse(tenant.cloudflare_ns) : [])
+ .map(normalizeNameServer)
+ .sort();
+ let liveNameServers = [];
+ try {
+ liveNameServers = (await resolveNs(tenant.domain))
+ .map(normalizeNameServer)
+ .sort();
+ } catch {
+ try {
+ const dnsResponse = await fetch(
+ `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(tenant.domain)}&type=NS`,
+ { headers: { accept: 'application/dns-json' } }
+ );
+ if (dnsResponse.ok) {
+ const dnsResult = await dnsResponse.json();
+ liveNameServers = (dnsResult.Answer || [])
+ .filter(answer => answer.type === 2)
+ .map(answer => normalizeNameServer(answer.data))
+ .sort();
+ }
+ } catch {
+ // Cloudflare status remains the fallback while public DNS is unavailable.
+ }
+ }
+
+ const delegationActive = expectedNameServers.length >= 2
+ && expectedNameServers.length === liveNameServers.length
+ && expectedNameServers.every((nameServer, index) => nameServer === liveNameServers[index]);
+ const active = status === 'active' || delegationActive;
+ res.json({
+ success: true,
+ active,
+ status: active && status !== 'active' ? 'delegated' : status,
+ cloudflare_status: status,
+ delegation_active: delegationActive,
+ live_name_servers: liveNameServers
+ });
  } catch (error) {
  res.status(500).json({ error: error.message || 'Failed to check name servers' });
  }
