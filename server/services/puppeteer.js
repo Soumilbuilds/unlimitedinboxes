@@ -160,6 +160,21 @@ function isNavigationError(error) {
  return /Execution context was destroyed|Cannot find context with specified id|Target closed|Navigation failed/i.test(message);
 }
 
+async function readMicrosoftAuthError(page) {
+ try {
+ const text = await page.evaluate(() => document.body?.innerText || '');
+ const code = text.match(/AADSTS\d+/i)?.[0]?.toUpperCase();
+ if (!code) return null;
+ const summary = text
+ .split(/\r?\n/)
+ .map(line => line.trim())
+ .find(line => line.toUpperCase().includes(code));
+ return summary ? `${code}: ${summary.replace(/^.*?AADSTS\d+\s*:\s*/i, '')}` : code;
+ } catch {
+ return null;
+ }
+}
+
 // ─── Input Helpers ────────────────────────────────────────────────────────────
 
 async function clickIfExists(page, selector) {
@@ -646,8 +661,9 @@ export async function ensureMicrosoftLogin(page, email, password, context, targe
  }
 
  if (page.url().includes('login.microsoftonline.com')) {
+ const microsoftError = await readMicrosoftAuthError(page);
  await saveDebugScreenshot(page, 'login_error');
- return { success: false, error: 'Login page still shown after attempts', page };
+ return { success: false, error: microsoftError || 'Login page still shown after attempts', page };
  }
  page = await settleOnMicrosoftPage(context, page);
  await closeNonMicrosoftPages(context, page);
@@ -658,8 +674,9 @@ export async function ensureMicrosoftLogin(page, email, password, context, targe
 }
 }
  if (page.url().includes('login.microsoftonline.com')) {
+ const microsoftError = await readMicrosoftAuthError(page);
  await saveDebugScreenshot(page, 'login_error');
- return { success: false, error: 'Login page still shown after attempts', page };
+ return { success: false, error: microsoftError || 'Login page still shown after attempts', page };
  }
  page = await settleOnMicrosoftPage(context, page);
  await closeNonMicrosoftPages(context, page);
@@ -668,6 +685,101 @@ export async function ensureMicrosoftLogin(page, email, password, context, targe
  await saveDebugScreenshot(page, 'login_error');
  return { success: false, error: error.message, page };
  }
+}
+
+export async function completeMicrosoftDeviceCodeFlow({
+ page,
+ context,
+ verificationUri,
+ userCode,
+ email,
+ password,
+ getTotpCode,
+ mfaSecret
+}) {
+ const effectiveTotp = getTotpCode || (mfaSecret ? buildTotpResolver(mfaSecret) : null);
+ await page.goto(verificationUri, { waitUntil: 'networkidle2', timeout: 60000 });
+
+ let codeEntered = false;
+ for (let attempt = 0; attempt < 60; attempt += 1) {
+ try {
+ page = await waitForNewOrActivePage(context, page, 3000);
+ await sleep(500);
+
+ const bodyText = await page.evaluate(() => document.body?.innerText || '').catch(() => '');
+ const lower = bodyText.toLowerCase();
+ const authError = await readMicrosoftAuthError(page);
+ if (authError) {
+ await saveDebugScreenshot(page, 'device_code_error');
+ return { success: false, page, error: authError };
+ }
+
+ if (
+ /you have signed in|you may now close|device is now connected|authentication complete/i.test(bodyText)
+ ) {
+ return { success: true, page };
+ }
+
+ if (!codeEntered && /enter code|enter the code/i.test(bodyText)) {
+ const selector = 'input[name="otc"], input#otc, input[type="text"]';
+ if (await setInputValue(page, selector, userCode)) {
+ codeEntered = true;
+ const submit = await page.$('#idSIButton9, input[type="submit"], button[type="submit"]');
+ if (submit) await submit.click();
+ else await page.keyboard.press('Enter');
+ await sleep(1000);
+ continue;
+ }
+ }
+
+ if (page.url().includes('login.microsoftonline.com')) {
+ const before = page.url();
+ page = await handleMicrosoftLoginFlow(page, email, password, context, effectiveTotp);
+ if (page.url() !== before) {
+ await sleep(500);
+ continue;
+ }
+ }
+
+ const isConsent =
+ lower.includes('permissions requested') ||
+ lower.includes('accept the permissions') ||
+ lower.includes('consent on behalf') ||
+ (lower.includes('microsoft graph command line tools') && lower.includes('accept'));
+ if (isConsent) {
+ const clicked = await page.evaluate(() => {
+ const candidates = Array.from(document.querySelectorAll(
+ 'input[type="submit"], button[type="submit"], button, input[type="button"]'
+ ));
+ const accept = candidates.find(el => {
+ const value = (el.value || el.innerText || el.textContent || '').trim().toLowerCase();
+ return value === 'accept' || value === 'continue' || value === 'yes';
+ });
+ if (!accept) return false;
+ accept.click();
+ return true;
+ });
+ if (clicked) {
+ await sleep(1000);
+ continue;
+ }
+ }
+
+ await sleep(500);
+ } catch (error) {
+ if (!isNavigationError(error)) {
+ await saveDebugScreenshot(page, 'device_code_error');
+ return { success: false, page, error: error.message };
+ }
+ }
+ }
+
+ await saveDebugScreenshot(page, 'device_code_error');
+ return {
+ success: false,
+ page,
+ error: 'Microsoft device authorization did not complete before the timeout'
+ };
 }
 
 export async function loginToMicrosoft365(page, email, password, context = null, getTotpCode = null, mfaSecret = null) {

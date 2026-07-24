@@ -23,6 +23,10 @@ import { generateMailboxName, resetUsedNames } from './nameGenerator.js';
 import { generateTotpCode, isValidTotpSecret } from './totp.js';
 import { discoverMicrosoftTenantId } from './tenantDiscovery.js';
 import {
+ ensureExchangeOnlineServicePrincipal,
+ isMissingExchangeServicePrincipalError
+} from './microsoftBootstrap.js';
+import {
  getOrderById,
  getOrders,
  getTenantById,
@@ -252,7 +256,20 @@ async function runAddDomainToMicrosoft(orderId, tenant, getTotpCode) {
  logStep(orderId, 4, 'Microsoft: grant admin consent and add domain to tenant');
  const { MASTER_CLIENT_ID, MASTER_CLIENT_SECRET } = process.env;
  logMessage(orderId, 'Opening an isolated browser to grant Microsoft admin consent automatically...');
- const consentResult = await grantConsentIfNeeded(tenant, getTotpCode, orderId);
+ let consentResult = await grantConsentIfNeeded(tenant, getTotpCode, orderId);
+ if (!consentResult.success && isMissingExchangeServicePrincipalError(consentResult.error)) {
+ logMessage(orderId, 'Microsoft reported AADSTS650052 for Exchange Online; repairing tenant service configuration...');
+ await ensureExchangeOnlineServicePrincipal({
+ tenantId: tenant.tenant_id,
+ email: tenant.admin_email,
+ password: tenant.admin_password,
+ mfaSecret: tenant.mfa_secret,
+ getTotpCode,
+ log: message => logMessage(orderId, message)
+ });
+ logMessage(orderId, 'Exchange Online bootstrap complete; retrying Microsoft admin consent...');
+ consentResult = await grantConsentIfNeeded(tenant, getTotpCode, orderId);
+ }
  if (!consentResult.success) {
  throw new Error(`Consent grant failed: ${consentResult.error}`);
  }
