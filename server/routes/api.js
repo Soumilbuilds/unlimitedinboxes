@@ -5,6 +5,7 @@ import {
   updateOrderStatus,
   createTenant,
   getTenants,
+  updateTenantDetails,
   createOrder,
   getOrderById
 } from '../db/database.js';
@@ -13,6 +14,7 @@ import { chargeSavedPaymentMethodForQuota } from '../services/stripe.js';
 import { processOrder, hasActiveJob } from '../services/orderProcessor.js';
 import { getUserByEmail } from '../db/database.js';
 import { validateApiKey } from '../services/apiKey.js';
+import { isValidTotpSecret } from '../services/totp.js';
 
 const router = Router();
 
@@ -175,8 +177,16 @@ router.post('/orders', requireApiKey, async (req, res) => {
     if (!admin_password) {
       return res.status(400).json({ error: 'admin_password is required' });
     }
+    if (!mfa_secret) {
+      return res.status(400).json({ error: 'mfa_secret is required' });
+    }
     if (!mailbox_password) {
       return res.status(400).json({ error: 'mailbox_password is required' });
+    }
+
+    const normalizedMfaSecret = String(mfa_secret).replace(/\s+/g, '').toUpperCase();
+    if (!isValidTotpSecret(normalizedMfaSecret)) {
+      return res.status(400).json({ error: 'Enter a valid mfa_secret' });
     }
 
     // Validate password strength
@@ -262,6 +272,17 @@ router.post('/orders', requireApiKey, async (req, res) => {
           error: `Domain ${tenant_domain} already has an active order (#${existingOrders[0].id}). Use a different domain or restart the existing order.`
         });
       }
+      updateTenantDetails(tenant.id, {
+        admin_email: admin_email.toLowerCase(),
+        admin_password,
+        mfa_secret: normalizedMfaSecret
+      });
+      tenant = {
+        ...tenant,
+        admin_email: admin_email.toLowerCase(),
+        admin_password,
+        mfa_secret: normalizedMfaSecret
+      };
     } else {
       // Create new tenant
       const tenantName = tenant_domain.split('.')[0];
@@ -270,7 +291,8 @@ router.post('/orders', requireApiKey, async (req, res) => {
         name: tenantName,
         domain: tenant_domain.toLowerCase(),
         admin_email: admin_email.toLowerCase(),
-        admin_password: admin_password
+        admin_password,
+        mfa_secret: normalizedMfaSecret
       };
       const tenantId = createTenant(newTenant);
       tenant = { id: tenantId, ...newTenant };

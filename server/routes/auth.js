@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import https from 'https';
-import { createUser, deleteUserByEmail, getUserByEmail, updateUserPlanByEmail, updateTenantId } from '../db/database.js';
+import { createUser, getUserByEmail, updateTenantId } from '../db/database.js';
 import { generateApiKey, hashApiKey } from '../services/apiKey.js';
 import { createApiKey } from '../db/database.js';
 
@@ -26,13 +26,6 @@ function verifyPassword(password, hash, salt) {
   return crypto.timingSafeEqual(safeA, safeB);
 }
 
-function normalizePlan(plan) {
-  const normalized = String(plan || 'free').toLowerCase();
-  const allowed = new Set(['free', 'intro', 'paid', 'standard', 'advanced', '25', '50', '100']);
-  if (allowed.has(normalized)) return normalized;
-  return normalized === 'paid' ? 'paid' : 'free';
-}
-
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
 }
@@ -46,8 +39,8 @@ function serializeSessionUser(user) {
   };
 }
 
-async function sendSignupWebhook(email, password) {
-  const payload = JSON.stringify({ email, password });
+async function sendSignupWebhook(email) {
+  const payload = JSON.stringify({ email });
   const target = new URL(SIGNUP_WEBHOOK_URL);
   const requestOptions = {
     protocol: target.protocol,
@@ -107,7 +100,7 @@ async function sendSignupWebhook(email, password) {
 }
 
 async function createAccount(req, res, { authenticate = false } = {}) {
-  const { email, password, plan } = req.body;
+  const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required' });
   }
@@ -119,7 +112,7 @@ async function createAccount(req, res, { authenticate = false } = {}) {
   }
 
   const { hash, salt } = hashPassword(password);
-  const targetPlan = normalizePlan(plan);
+  const targetPlan = 'free';
 
   try {
     const result = createUser(normalizedEmail, hash, salt, targetPlan);
@@ -134,11 +127,9 @@ async function createAccount(req, res, { authenticate = false } = {}) {
     }
 
     try {
-      await sendSignupWebhook(normalizedEmail, password);
+      await sendSignupWebhook(normalizedEmail);
     } catch (webhookError) {
-      deleteUserByEmail(normalizedEmail);
       console.error(`Signup webhook failed for ${normalizedEmail}: ${webhookError.message}`);
-      return res.status(502).json({ error: 'Signup sync failed. Please try again.' });
     }
 
     if (authenticate && createdUser) {
@@ -155,60 +146,6 @@ async function createAccount(req, res, { authenticate = false } = {}) {
 
 router.post('/create', (req, res) => createAccount(req, res));
 router.post('/signup', (req, res) => createAccount(req, res, { authenticate: true }));
-
-router.post('/upgrade', (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
-  }
-
-  const normalizedEmail = normalizeEmail(email);
-  const existing = getUserByEmail(normalizedEmail);
-  if (existing) {
-    if (!verifyPassword(password, existing.password_hash, existing.password_salt)) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-    updateUserPlanByEmail(normalizedEmail, 'paid');
-    return res.json({ success: true, email: normalizedEmail, plan: 'paid', upgraded: true });
-  }
-
-  const { hash, salt } = hashPassword(password);
-  try {
-    const result = createUser(normalizedEmail, hash, salt, 'paid');
-    return res.json({ success: true, id: result.lastInsertRowid, email: normalizedEmail, plan: 'paid', created: true });
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
-  }
-});
-
-router.post('/downgrade', (req, res) => {
-  const { email } = req.body;
-  if (!email) {
-    return res.status(400).json({ error: 'Email is required' });
-  }
-  const normalizedEmail = normalizeEmail(email);
-  const existing = getUserByEmail(normalizedEmail);
-  if (!existing) {
-    return res.status(404).json({ error: 'Account not found' });
-  }
-  updateUserPlanByEmail(normalizedEmail, 'free');
-  return res.json({ success: true, email: normalizedEmail, plan: 'free', downgraded: true });
-});
-
-router.post('/set-plan', (req, res) => {
-  const { email, plan } = req.body;
-  if (!email || !plan) {
-    return res.status(400).json({ error: 'Email and plan are required' });
-  }
-  const normalizedEmail = normalizeEmail(email);
-  const existing = getUserByEmail(normalizedEmail);
-  if (!existing) {
-    return res.status(404).json({ error: 'Account not found' });
-  }
-  const targetPlan = normalizePlan(plan);
-  updateUserPlanByEmail(normalizedEmail, targetPlan);
-  return res.json({ success: true, email: normalizedEmail, plan: targetPlan, updated: true });
-});
 
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;

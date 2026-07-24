@@ -29,7 +29,10 @@ const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://lo
   .filter(Boolean);
 
 app.set('trust proxy', 1);
-const useSecureCookie = !isProd || process.env.FORCE_HTTPS === 'true';
+const useSecureCookie = isProd || process.env.FORCE_HTTPS === 'true';
+if (isProd && !process.env.SESSION_SECRET) {
+  throw new Error('SESSION_SECRET is required in production');
+}
 app.use(cors({
   origin: corsOrigins,
   credentials: true
@@ -40,7 +43,7 @@ app.use(express.json({
   }
 }));
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'unlimited-mailboxes-secret',
+  secret: process.env.SESSION_SECRET || 'development-only-session-secret',
   resave: false,
   saveUninitialized: false,
   proxy: isProd,

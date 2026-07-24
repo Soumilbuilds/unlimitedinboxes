@@ -47,11 +47,11 @@ function formatLogMessage(message) {
   if (/Sign-in enabled/i.test(text)) return text.replace('Preflight: ', '');
   if (/Preflight:/i.test(text)) return 'Initializing mailbox workflow...';
   if (/Creating mailbox/i.test(text)) {
-    const match = text.match(/Creating mailbox\\s+(.+)$/i);
+    const match = text.match(/Creating mailbox\s+(.+)$/i);
     return match ? `Creating mailbox ${match[1]}` : 'Creating mailbox...';
   }
   if (/Creating:/i.test(text)) {
-    const match = text.match(/Creating:\\s*([^\\(]+)/i);
+    const match = text.match(/Creating:\s*([^(]+)/i);
     if (match && match[1]) return `Creating mailbox: ${match[1].trim()}`;
   }
   if (/SMTP AUTH/i.test(text)) return text;
@@ -136,8 +136,9 @@ export default function Orders() {
   const [tenantEmail, setTenantEmail] = useState('');
   const [tenantPassword, setTenantPassword] = useState('');
   const [tenantMfaSecret, setTenantMfaSecret] = useState('');
- const [mfaSecretTouched, setMfaSecretTouched] = useState(false);
- const [mfaSecretValid, setMfaSecretValid] = useState(true);
+  const [tenantId, setTenantId] = useState(null);
+  const [mfaSecretTouched, setMfaSecretTouched] = useState(false);
+  const [mfaSecretValid, setMfaSecretValid] = useState(true);
 
   const [domain, setDomain] = useState('');
   const [nameServers, setNameServers] = useState([]);
@@ -247,6 +248,8 @@ export default function Orders() {
     setTenantEmail('');
     setTenantPassword('');
     setTenantMfaSecret('');
+    setMfaSecretTouched(false);
+    setMfaSecretValid(true);
     setTenantId(null);
     setDomain('');
     setNameServers([]);
@@ -265,6 +268,14 @@ export default function Orders() {
   };
 
   const handleCreateTenant = async () => {
+    const cleanMfaSecret = tenantMfaSecret.replace(/\s+/g, '').toUpperCase();
+    if (!validateMfaSecret(cleanMfaSecret)) {
+      setMfaSecretTouched(true);
+      setMfaSecretValid(false);
+      setWizardError('Enter a valid MFA secret.');
+      return;
+    }
+
     setWizardBusy(true);
     setWizardError('');
     try {
@@ -275,7 +286,7 @@ export default function Orders() {
         domain: tempDomain,
         admin_email: tenantEmail,
         admin_password: tenantPassword,
-        mfa_secret: tenantMfaSecret
+        mfa_secret: cleanMfaSecret
       });
       setTenantId(res.data.id);
       setWizardStep(1);
@@ -286,13 +297,12 @@ export default function Orders() {
     }
   };
 
-const validateMfaSecret = (secret) => {
- if (!secret || secret.trim() === "") return false;
- const cleaned = secret.replace(/s/g, "").toUpperCase();
- if (!/^[A-Z2-7]+=*$/.test(cleaned)) return false;
- if (cleaned.length < 16 || cleaned.length > 128) return false;
- return true;
-};
+  const validateMfaSecret = (secret) => {
+    if (!secret || secret.trim() === '') return false;
+    const cleaned = secret.replace(/\s+/g, '').toUpperCase();
+    if (!/^[A-Z2-7]+=*$/.test(cleaned)) return false;
+    return cleaned.length >= 16 && cleaned.length <= 128;
+  };
 
   const handleGetNameServers = async () => {
     if (!tenantId || !domain) return;
@@ -320,7 +330,7 @@ const validateMfaSecret = (secret) => {
       const res = await api.post(`/tenants/${tenantId}/nameservers/check`);
       if (res.data.active) {
         await api.patch(`/tenants/${tenantId}/status`, { status: 'ready' });
-        setWizardStep(3);
+        setWizardStep(2);
       } else {
         setWizardError('Name servers are not active yet. Please update them at your domain registrar and try again.');
       }
@@ -351,7 +361,7 @@ const validateMfaSecret = (secret) => {
         redirect_url: redirectUrl
       });
       setRedirectUrl(res.data?.redirect_url || redirectUrl.trim());
-      setWizardStep(4);
+      setWizardStep(3);
     } catch (e) {
       setWizardError(e.response?.data?.error || 'Failed to save the redirect');
     } finally {
@@ -681,17 +691,26 @@ const validateMfaSecret = (secret) => {
                     />
                   </label>
                   <label>
-                    MFA Secret (required)
+                    MFA Secret
                     <input
                       type="text"
                       value={tenantMfaSecret}
-                      onChange={(e) => setTenantMfaSecret(e.target.value)}
+                      onChange={(e) => {
+                        setTenantMfaSecret(e.target.value);
+                        setMfaSecretTouched(true);
+                        setMfaSecretValid(validateMfaSecret(e.target.value));
+                      }}
+                      onBlur={() => {
+                        setMfaSecretTouched(true);
+                        setMfaSecretValid(validateMfaSecret(tenantMfaSecret));
+                      }}
                       placeholder="MFA secret"
+                      required
                     />
                   </label>
- {mfaSecretTouched && !mfaSecretValid && (
- <span className="error">Enter a valid Base32 secret (A-Z, 2-7, 16-128 chars)</span>
- )}
+                  {mfaSecretTouched && !mfaSecretValid && (
+                    <span className="error">Enter a valid Base32 secret (A-Z, 2-7, 16-128 chars)</span>
+                  )}
                   <div className="modal-actions">
                     <button className="btn ghost" onClick={closeWizard}>Cancel</button>
                     <button
@@ -728,7 +747,7 @@ const validateMfaSecret = (secret) => {
                     </div>
                   )}
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(1)}>Back</button>
+                    <button className="btn ghost" onClick={() => setWizardStep(0)}>Back</button>
                     <button
                       className="btn primary"
                       onClick={handleGetNameServers}
@@ -794,7 +813,7 @@ const validateMfaSecret = (secret) => {
                   )}
 
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(2)}>Back</button>
+                    <button className="btn ghost" onClick={() => setWizardStep(1)}>Back</button>
                     <button className="btn primary" onClick={handleRedirectStepNext} disabled={wizardBusy}>
                       {wizardBusy ? 'Saving...' : 'Continue'}
                     </button>
@@ -833,7 +852,7 @@ const validateMfaSecret = (secret) => {
                     )}
                   </label>
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(3)}>Back</button>
+                    <button className="btn ghost" onClick={() => setWizardStep(2)}>Back</button>
                     <button className="btn primary" onClick={handleOrderDetailsNext} disabled={wizardBusy || !passwordRules.valid}>
                       {wizardBusy ? 'Starting...' : (canUseCustomNames ? 'Continue' : 'Start Order')}
                     </button>
@@ -893,7 +912,7 @@ const validateMfaSecret = (secret) => {
                   )}
 
                   <div className="modal-actions">
-                    <button className="btn ghost" onClick={() => setWizardStep(4)}>Back</button>
+                    <button className="btn ghost" onClick={() => setWizardStep(3)}>Back</button>
                     <button className="btn primary" onClick={handleStartOrderWithNames} disabled={wizardBusy}>
                       {wizardBusy ? 'Starting...' : 'Start Order'}
                     </button>
@@ -965,30 +984,6 @@ const validateMfaSecret = (secret) => {
                   onClick={() => void openUpgrade(billingRequiredNotice.intent)}
                 >
                   {billingRequiredNotice.action}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {processingLimitNotice && (
-          <div className="modal-overlay" onClick={() => setProcessingLimitNotice(false)}>
-            <div className="modal upgrade-modal" onClick={(e) => e.stopPropagation()}>
-              <div className="wizard-header">
-                <div>
-                  <h2>Regenerate API Key?</h2>
-                </div>
-                <button className="icon-btn" onClick={() => setShowRegenerateModal(false)} title="Close">✕</button>
-              </div>
-              <p className="modal-subtitle">
-                Your current key will be invalidated immediately. Make sure to update any integrations.
-              </p>
-              <div className="modal-actions centered">
-                <button className="btn ghost" onClick={() => setShowRegenerateModal(false)}>
-                  Cancel
-                </button>
-                <button className="btn accent" onClick={regenerateApiKey}>
-                  Regenerate
                 </button>
               </div>
             </div>

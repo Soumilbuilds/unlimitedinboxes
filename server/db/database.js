@@ -49,6 +49,7 @@ db.exec(`
     progress INTEGER DEFAULT 0,
     total_mailboxes INTEGER DEFAULT 100,
     mailbox_password TEXT,
+    mailbox_names TEXT,
     created_mailboxes TEXT DEFAULT '[]',
     error_message TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -118,6 +119,10 @@ function ensureOrdersNameColumn() {
   if (!hasName) {
     db.prepare('ALTER TABLE orders ADD COLUMN order_name TEXT').run();
   }
+}
+
+function ensureOrdersMailboxNamesColumn() {
+  ensureColumn('orders', 'mailbox_names', 'TEXT');
 }
 
 function ensureTenantsUserColumn() {
@@ -192,6 +197,7 @@ function backfillLifetimeCompletedOrders() {
 
 ensureOrdersPasswordColumn();
 ensureOrdersNameColumn();
+ensureOrdersMailboxNamesColumn();
 ensureTenantsUserColumn();
 ensureTenantsRedirectColumn();
 ensureTenantsMfaSecretColumn();
@@ -388,12 +394,15 @@ export function deleteTenant(id) {
 
 // --- ORDERS ---
 
-export function createOrder(tenantId, totalMailboxes = 100, mailboxPassword = null, orderName = null, userId = null) {
+export function createOrder(tenantId, totalMailboxes = 100, mailboxPassword = null, orderName = null, userId = null, mailboxNames = null) {
+  const mailboxNamesJson = Array.isArray(mailboxNames) && mailboxNames.length
+    ? JSON.stringify(mailboxNames)
+    : null;
   const stmt = db.prepare(`
-    INSERT INTO orders (tenant_id, total_mailboxes, mailbox_password, order_name, user_id)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO orders (tenant_id, total_mailboxes, mailbox_password, order_name, user_id, mailbox_names)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
-  const result = stmt.run(tenantId, totalMailboxes, mailboxPassword, orderName, userId);
+  const result = stmt.run(tenantId, totalMailboxes, mailboxPassword, orderName, userId, mailboxNamesJson);
   return result.lastInsertRowid;
 }
 

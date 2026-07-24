@@ -23,6 +23,7 @@ import {
  ensureDkimSelectors,
  retryEnableDkimSigning
 } from '../services/securityCenterDkim.js';
+import { isValidTotpSecret } from '../services/totp.js';
 
 const router = express.Router();
 const { MASTER_CLIENT_ID, MASTER_REDIRECT_URI } = process.env;
@@ -166,12 +167,17 @@ router.post('/', (req, res) => {
  return res.status(400).json({ error: 'MFA secret is required' });
  }
 
+ const normalizedMfaSecret = String(mfa_secret).replace(/\s+/g, '').toUpperCase();
+ if (!isValidTotpSecret(normalizedMfaSecret)) {
+ return res.status(400).json({ error: 'Enter a valid MFA secret' });
+ }
+
  const result = createTenant({
  user_id: req.session.user.id,
  name,
  admin_email,
  admin_password,
- mfa_secret,
+ mfa_secret: normalizedMfaSecret,
  domain: domain || null
  });
  res.json({ success: true, id: result.lastInsertRowid });
@@ -185,7 +191,20 @@ router.patch('/:id', (req, res) => {
  const { name, domain, admin_email, admin_password, mfa_secret } = req.body;
  const tenant = getTenantByIdForUser(req.params.id, req.session.user.id);
  if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
- const result = updateTenantDetails(req.params.id, { name, domain, admin_email, admin_password, mfa_secret });
+ let normalizedMfaSecret;
+ if (mfa_secret !== undefined) {
+ normalizedMfaSecret = String(mfa_secret).replace(/\s+/g, '').toUpperCase();
+ if (!isValidTotpSecret(normalizedMfaSecret)) {
+ return res.status(400).json({ error: 'Enter a valid MFA secret' });
+ }
+ }
+ const result = updateTenantDetails(req.params.id, {
+ name,
+ domain,
+ admin_email,
+ admin_password,
+ mfa_secret: normalizedMfaSecret
+ });
  if (result.changes === 0) return res.status(404).json({ error: 'Tenant not found' });
  res.json({ success: true });
  } catch (error) {

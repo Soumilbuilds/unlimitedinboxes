@@ -53,8 +53,11 @@ function decodeBase32(secret) {
 
 export function isValidTotpSecret(secret) {
   try {
-    const decoded = decodeBase32(secret);
-    return decoded.length >= 5;
+    const cleaned = String(secret || '').replace(/\s+/g, '').toUpperCase();
+    if (cleaned.length < 16 || cleaned.length > 128) return false;
+    if (!/^[A-Z2-7]+=*$/.test(cleaned)) return false;
+    const decoded = decodeBase32(cleaned);
+    return decoded.length >= 10;
   } catch {
     return false;
   }
