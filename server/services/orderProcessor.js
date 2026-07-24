@@ -34,6 +34,7 @@ import {
  updateOrderStatus,
  updateOrderProgress,
  setOrderError,
+ clearOrderError,
  addOrderLog,
  updateTenantCloudflare,
  updateTenantId
@@ -608,6 +609,20 @@ export async function processOrder(orderId) {
  return;
  }
 
+ let persistedMailboxes = [];
+ try {
+ persistedMailboxes = JSON.parse(order.created_mailboxes || '[]');
+ } catch {
+ persistedMailboxes = [];
+ }
+ if (persistedMailboxes.length > 0 && order.status !== 'completed') {
+ setOrderError(
+ orderId,
+ `Automatic retry blocked because ${persistedMailboxes.length} mailbox(es) were already created. Resume must preserve and reconcile them before continuing.`
+ );
+ return;
+ }
+
  const { MASTER_CLIENT_ID, MASTER_CLIENT_SECRET } = process.env;
  if (!MASTER_CLIENT_ID || !MASTER_CLIENT_SECRET) {
  setOrderError(orderId, 'Missing Microsoft app credentials (MASTER_CLIENT_ID / MASTER_CLIENT_SECRET) in .env');
@@ -633,6 +648,7 @@ export async function processOrder(orderId) {
  }
 
  updateOrderStatus(orderId, 'processing');
+ clearOrderError(orderId);
  updateOrderProgress(orderId, 0, []);
  activeJobs.set(orderId, { cancelled: false, logs: [] });
  resetUsedNames();

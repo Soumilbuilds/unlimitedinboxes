@@ -495,6 +495,14 @@ export function setOrderError(id, message) {
   return stmt.run(message, id);
 }
 
+export function clearOrderError(id) {
+  return db.prepare(`
+    UPDATE orders
+    SET error_message = NULL, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(id);
+}
+
 export function deleteOrder(id) {
   db.prepare('DELETE FROM order_logs WHERE order_id = ?').run(id);
   return db.prepare('DELETE FROM orders WHERE id = ?').run(id);
