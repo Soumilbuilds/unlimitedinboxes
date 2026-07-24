@@ -701,7 +701,8 @@ export async function completeMicrosoftDeviceCodeFlow({
  await page.goto(verificationUri, { waitUntil: 'networkidle2', timeout: 60000 });
 
  let codeEntered = false;
- for (let attempt = 0; attempt < 60; attempt += 1) {
+ let loginHandled = false;
+ for (let attempt = 0; attempt < 40; attempt += 1) {
  try {
  page = await waitForNewOrActivePage(context, page, 3000);
  await sleep(500);
@@ -732,20 +733,15 @@ export async function completeMicrosoftDeviceCodeFlow({
  }
  }
 
- if (page.url().includes('login.microsoftonline.com')) {
- const before = page.url();
- page = await handleMicrosoftLoginFlow(page, email, password, context, effectiveTotp);
- if (page.url() !== before) {
- await sleep(500);
- continue;
- }
- }
-
  const isConsent =
  lower.includes('permissions requested') ||
  lower.includes('accept the permissions') ||
  lower.includes('consent on behalf') ||
- (lower.includes('microsoft graph command line tools') && lower.includes('accept'));
+ (lower.includes('microsoft graph command line tools') && (
+ lower.includes('accept') ||
+ lower.includes('are you trying to sign in') ||
+ lower.includes('continue')
+ ));
  if (isConsent) {
  const clicked = await page.evaluate(() => {
  const candidates = Array.from(document.querySelectorAll(
@@ -763,6 +759,13 @@ export async function completeMicrosoftDeviceCodeFlow({
  await sleep(1000);
  continue;
  }
+ }
+
+ if (page.url().includes('login.microsoftonline.com') && !loginHandled) {
+ loginHandled = true;
+ page = await handleMicrosoftLoginFlow(page, email, password, context, effectiveTotp);
+ await sleep(500);
+ continue;
  }
 
  await sleep(500);

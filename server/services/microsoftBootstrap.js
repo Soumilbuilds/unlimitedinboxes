@@ -8,6 +8,7 @@ import {
 const EXCHANGE_ONLINE_APP_ID = '00000002-0000-0ff1-ce00-000000000000';
 const GRAPH_COMMAND_LINE_APP_ID = '14d82eec-204b-4c2f-b7e8-296a70dab67e';
 const GRAPH_SCOPE = 'https://graph.microsoft.com/Application.ReadWrite.All';
+const ORGANIZATION_SCOPE = 'https://graph.microsoft.com/Organization.Read.All';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -22,7 +23,7 @@ function graphClient(accessToken) {
 async function requestDeviceCode(tenantId) {
  const params = new URLSearchParams({
  client_id: GRAPH_COMMAND_LINE_APP_ID,
- scope: `${GRAPH_SCOPE} offline_access openid profile`
+ scope: `${GRAPH_SCOPE} ${ORGANIZATION_SCOPE} offline_access openid profile`
  });
  const response = await axios.post(
  `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/devicecode`,
@@ -95,6 +96,26 @@ export async function ensureExchangeOnlineServicePrincipal({
 
  const accessToken = await pollDeviceToken(tenantId, deviceCode);
  const client = graphClient(accessToken);
+ const skusResponse = await client.get('/subscribedSkus');
+ const skus = Array.isArray(skusResponse.data?.value) ? skusResponse.data.value : [];
+ const enabledExchangePlans = skus.flatMap(sku =>
+ (sku.servicePlans || [])
+ .filter(plan =>
+ /EXCHANGE/i.test(String(plan.servicePlanName || '')) &&
+ String(plan.provisioningStatus || '').toLowerCase() === 'success'
+ )
+ .map(plan => ({
+ skuPartNumber: sku.skuPartNumber,
+ servicePlanName: plan.servicePlanName
+ }))
+ );
+ if (!enabledExchangePlans.length) {
+ throw new Error(
+ 'This Microsoft tenant has no enabled Exchange Online service plan. Activate an Exchange Online or Microsoft 365 license/trial for the tenant, then retry the order.'
+ );
+ }
+ log(`Exchange subscription preflight passed (${enabledExchangePlans[0].skuPartNumber}).`);
+
  const filter = encodeURIComponent(`appId eq '${EXCHANGE_ONLINE_APP_ID}'`);
  const existing = await client.get(
  `/servicePrincipals?$filter=${filter}&$select=id,appId,displayName`
