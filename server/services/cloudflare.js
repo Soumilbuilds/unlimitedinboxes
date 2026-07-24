@@ -153,7 +153,7 @@ export async function upsertDnsRecord(zoneId, type, name, content, priority = un
 
 export async function getZoneStatus(zoneId) {
   const res = await cf.get(`/zones/${zoneId}`);
-  return res.data?.result || null;
+  return res.data?.result?.status || null;
 }
 
 async function upsertProxiedRedirectRecord(zoneId, name) {
