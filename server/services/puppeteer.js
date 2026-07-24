@@ -1015,7 +1015,8 @@ export async function grantAdminConsent({
  tenantId,
  clientId,
  redirectUri,
- state
+ state,
+ scope
 }) {
  try {
  if (!tenantId) {
@@ -1036,7 +1037,8 @@ export async function grantAdminConsent({
  `https://login.microsoftonline.com/${tenantId}/adminconsent` +
  `?client_id=${encodeURIComponent(clientId)}` +
  `&state=${encodeURIComponent(state || '')}` +
- `&redirect_uri=${encodeURIComponent(redirectUri)}`;
+ `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+ (scope ? `&scope=${encodeURIComponent(scope)}` : '');
 
  const loginResult = await ensureMicrosoftLogin(page, email, password, context, consentUrl, effectiveTotp, mfaSecret);
  if (!loginResult.success) {

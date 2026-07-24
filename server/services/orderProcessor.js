@@ -139,7 +139,7 @@ async function retryAdminAction(orderId, label, actionFn, attempts = 6, delayMs 
  return last;
 }
 
-async function grantConsentIfNeeded(tenant, getTotpCode, orderId) {
+async function grantConsentIfNeeded(tenant, getTotpCode, orderId, scope = null) {
  let consentContext = null;
  let consentPage = null;
  try {
@@ -159,7 +159,8 @@ async function grantConsentIfNeeded(tenant, getTotpCode, orderId) {
  tenantId: tenant.tenant_id,
  clientId,
  redirectUri,
- state: 'order-' + orderId
+ state: 'order-' + orderId,
+ scope
  });
  return result || { success: false, error: 'grantAdminConsent returned no result' };
  } catch (err) {
@@ -258,7 +259,18 @@ async function runAddDomainToMicrosoft(orderId, tenant, getTotpCode) {
  logMessage(orderId, 'Opening an isolated browser to grant Microsoft admin consent automatically...');
  let consentResult = await grantConsentIfNeeded(tenant, getTotpCode, orderId);
  if (!consentResult.success && isMissingExchangeServicePrincipalError(consentResult.error)) {
- logMessage(orderId, 'Microsoft reported AADSTS650052 for Exchange Online; repairing tenant service configuration...');
+ logMessage(orderId, 'Microsoft reported AADSTS650052; retrying with the documented Exchange Online consent scope...');
+ const exchangeConsent = await grantConsentIfNeeded(
+ tenant,
+ getTotpCode,
+ orderId,
+ 'https://outlook.office365.com/.default'
+ );
+ if (exchangeConsent.success) {
+ logMessage(orderId, 'Exchange Online scoped consent succeeded; completing application consent...');
+ consentResult = await grantConsentIfNeeded(tenant, getTotpCode, orderId);
+ } else if (isMissingExchangeServicePrincipalError(exchangeConsent.error)) {
+ logMessage(orderId, 'Scoped consent still reports a missing Exchange service; trying directory bootstrap...');
  await ensureExchangeOnlineServicePrincipal({
  tenantId: tenant.tenant_id,
  email: tenant.admin_email,
@@ -267,8 +279,16 @@ async function runAddDomainToMicrosoft(orderId, tenant, getTotpCode) {
  getTotpCode,
  log: message => logMessage(orderId, message)
  });
- logMessage(orderId, 'Exchange Online bootstrap complete; retrying Microsoft admin consent...');
- consentResult = await grantConsentIfNeeded(tenant, getTotpCode, orderId);
+ logMessage(orderId, 'Directory bootstrap complete; retrying Exchange Online scoped consent...');
+ consentResult = await grantConsentIfNeeded(
+ tenant,
+ getTotpCode,
+ orderId,
+ 'https://outlook.office365.com/.default'
+ );
+ } else {
+ consentResult = exchangeConsent;
+ }
  }
  if (!consentResult.success) {
  throw new Error(`Consent grant failed: ${consentResult.error}`);
