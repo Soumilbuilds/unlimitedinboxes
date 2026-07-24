@@ -977,8 +977,17 @@ export function cancelOrder(orderId) {
 }
 
 export function resumeInterruptedOrders() {
+ const staleCutoffMs = Date.now() - (15 * 60 * 1000);
  const interrupted = getOrders()
- .filter(order => order.status === 'processing' && !activeJobs.has(order.id));
+ .filter(order => {
+ if (order.status !== 'processing' || activeJobs.has(order.id)) return false;
+ if (!order.updated_at) return true;
+ const normalized = String(order.updated_at).includes('T')
+ ? String(order.updated_at)
+ : `${order.updated_at}Z`;
+ const updatedAtMs = Date.parse(normalized);
+ return !Number.isFinite(updatedAtMs) || updatedAtMs < staleCutoffMs;
+ });
 
  for (const order of interrupted) {
  const message = 'Processing was interrupted by a server restart. Automatic replay was stopped to prevent duplicate mailboxes; review this order before retrying.';
