@@ -613,7 +613,18 @@ export async function processOrder(orderId) {
  try {
  persistedMailboxes = JSON.parse(order.created_mailboxes || '[]');
  } catch {
- persistedMailboxes = [];
+ setOrderError(
+ orderId,
+ 'Automatic retry blocked because the persisted mailbox state is malformed. Repair or reconcile the order before retrying.'
+ );
+ return;
+ }
+ if (!Array.isArray(persistedMailboxes)) {
+ setOrderError(
+ orderId,
+ 'Automatic retry blocked because the persisted mailbox state is not a mailbox list. Repair or reconcile the order before retrying.'
+ );
+ return;
  }
  if (persistedMailboxes.length > 0 && order.status !== 'completed') {
  setOrderError(

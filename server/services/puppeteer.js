@@ -175,10 +175,128 @@ async function readMicrosoftAuthError(page) {
  }
 }
 
+async function readMicrosoftVisibleCredentialError(page) {
+ try {
+ return await page.evaluate(() => {
+ const visible = el => {
+ const style = window.getComputedStyle(el);
+ const rect = el.getBoundingClientRect();
+ return style.display !== 'none' && style.visibility !== 'hidden' &&
+ style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+ };
+ const nodes = Array.from(document.querySelectorAll(
+ '[role="alert"], .alert-error, .error, #passwordError, #usernameError, ' +
+ '#idSpan_SAOTCC_Error, [data-testid*="error"]'
+ )).filter(visible);
+ const text = nodes.map(el => (el.innerText || el.textContent || '').trim())
+ .filter(Boolean)
+ .join(' ');
+ if (!text) return null;
+ const actionable = /incorrect|invalid|couldn.t find|doesn.t exist|locked|blocked|too many|try again|expired/i;
+ return actionable.test(text) ? text.replace(/\s+/g, ' ').slice(0, 500) : null;
+ });
+ } catch {
+ return null;
+ }
+}
+
+async function isPushMfaPrompt(page) {
+ try {
+ return await page.evaluate(() => {
+ const text = (document.body?.innerText || '').replace(/\s+/g, ' ').toLowerCase();
+ const pushCopy = /approve (the )?(sign-in|request)|check your (microsoft )?authenticator app|enter the number shown/i.test(text);
+ const visibleOtp = Array.from(document.querySelectorAll(
+ 'input[name="otc"], input[autocomplete="one-time-code"], input[inputmode="numeric"]'
+ )).some(el => {
+ const style = window.getComputedStyle(el);
+ const rect = el.getBoundingClientRect();
+ return style.display !== 'none' && style.visibility !== 'hidden' &&
+ style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+ });
+ return pushCopy && !visibleOtp;
+ });
+ } catch {
+ return false;
+ }
+}
+
+async function isAdminConsentPrompt(page) {
+ try {
+ return await page.evaluate(() => {
+ const normalize = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+ const bodyText = normalize(document.body?.innerText);
+ if (!bodyText.includes('permissions requested')) return false;
+
+ const candidates = Array.from(document.querySelectorAll(
+ '#idSIButton9, #idBtn_Accept, [data-testid="acceptButton"], ' +
+ 'button[name="accept"], input[value="Accept"], button, [role="button"], ' +
+ 'input[type="submit"], input[type="button"]'
+ ));
+ return candidates.some(el => {
+ const label = normalize(el.value || el.innerText || el.textContent || el.getAttribute('aria-label'));
+ if (label !== 'accept') return false;
+ if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+ const style = window.getComputedStyle(el);
+ const rect = el.getBoundingClientRect();
+ return style.display !== 'none' && style.visibility !== 'hidden' &&
+ style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+ });
+ });
+ } catch {
+ return false;
+ }
+}
+
+async function clickAdminConsentAccept(page) {
+ return page.evaluate(() => {
+ const normalize = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+ const candidates = Array.from(document.querySelectorAll(
+ '#idSIButton9, #idBtn_Accept, [data-testid="acceptButton"], ' +
+ 'button[name="accept"], input[value="Accept"], button, [role="button"], ' +
+ 'input[type="submit"], input[type="button"]'
+ ));
+ const accept = candidates.find(el => {
+ const label = normalize(el.value || el.innerText || el.textContent || el.getAttribute('aria-label'));
+ if (label !== 'accept') return false;
+ if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+ const style = window.getComputedStyle(el);
+ const rect = el.getBoundingClientRect();
+ return style.display !== 'none' && style.visibility !== 'hidden' &&
+ style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+ });
+ if (!accept) return false;
+ accept.click();
+ return true;
+ });
+}
+
 // ─── Input Helpers ────────────────────────────────────────────────────────────
 
+async function findVisibleElement(page, selector) {
+ const elements = await page.$$(selector);
+ for (const element of elements) {
+ try {
+ const visible = await element.evaluate(el => {
+ const style = window.getComputedStyle(el);
+ const rect = el.getBoundingClientRect();
+ return !el.disabled &&
+ el.getAttribute('aria-disabled') !== 'true' &&
+ style.display !== 'none' &&
+ style.visibility !== 'hidden' &&
+ style.opacity !== '0' &&
+ rect.width > 0 &&
+ rect.height > 0;
+ });
+ if (visible) return element;
+ } catch {
+ // The page may have replaced this element while Microsoft was navigating.
+ }
+ }
+ return null;
+}
+
 async function clickIfExists(page, selector) {
- const el = await page.$(selector);
+ const el = await findVisibleElement(page, selector);
  if (el) {
  await el.click();
  return true;
@@ -187,7 +305,7 @@ async function clickIfExists(page, selector) {
 }
 
 async function setInputValue(page, selector, value) {
- const el = await page.$(selector);
+ const el = await findVisibleElement(page, selector);
  if (!el) return false;
 
  await el.click({ clickCount: 3 });
@@ -203,6 +321,39 @@ async function setInputValue(page, selector, value) {
  }, el, value);
 
  return true;
+}
+
+async function chooseRequestedMicrosoftAccount(page, email) {
+ try {
+ return await page.evaluate(requestedEmail => {
+ const normalize = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+ const wanted = normalize(requestedEmail);
+ const visible = el => {
+ const style = window.getComputedStyle(el);
+ const rect = el.getBoundingClientRect();
+ return style.display !== 'none' && style.visibility !== 'hidden' &&
+ style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+ };
+ const candidates = Array.from(document.querySelectorAll(
+ 'button, [role="button"], .tile, .table[role="listitem"]'
+ )).filter(visible);
+ const exactAccount = candidates.find(el => normalize(el.innerText || el.textContent).includes(wanted));
+ if (exactAccount) {
+ exactAccount.click();
+ return 'requested-account';
+ }
+ const useAnother = candidates.find(el =>
+ normalize(el.innerText || el.textContent) === 'use another account'
+ );
+ if (useAnother) {
+ useAnother.click();
+ return 'use-another-account';
+ }
+ return null;
+ }, email);
+ } catch {
+ return null;
+ }
 }
 
 // ─── Stay Signed In (KMSI) Prompt ─────────────────────────────────────────────
@@ -532,20 +683,26 @@ async function handleMicrosoftLoginFlow(page, email, password, context, getTotpC
 
  await sleep(500);
 
- if (await clickIfExists(page, '#otherTile')) {
- await sleep(500);
- }
- const pickAccount = await page.$('.tiles-container div.row.tile, .table div[role="listitem"]');
- if (pickAccount) {
- await pickAccount.click();
- await sleep(500);
+ if (await isAdminConsentPrompt(page)) {
+ break;
  }
 
- const emailInput = await page.$('input[type="email"]');
+ const visibleCredentialError = await readMicrosoftVisibleCredentialError(page);
+ if (visibleCredentialError) {
+ throw new Error(`Microsoft sign-in failed: ${visibleCredentialError}`);
+ }
+
+ const accountChoice = await chooseRequestedMicrosoftAccount(page, email);
+ if (accountChoice) {
+ await sleep(500);
+ continue;
+ }
+
+ const emailInput = await findVisibleElement(page, 'input[type="email"], input[name="loginfmt"]');
  if (emailInput) {
- await setInputValue(page, 'input[type="email"]', email);
+ await setInputValue(page, 'input[type="email"], input[name="loginfmt"]', email);
 
- const nextBtn = await page.$('input[type="submit"], button[type="submit"], #idSIButton9');
+ const nextBtn = await findVisibleElement(page, 'input[type="submit"], button[type="submit"], #idSIButton9');
  if (nextBtn) {
  await nextBtn.click();
  } else {
@@ -561,13 +718,13 @@ async function handleMicrosoftLoginFlow(page, email, password, context, getTotpC
  continue;
  }
 
- const passwordInput = await page.$('input[type="password"]');
+ const passwordInput = await findVisibleElement(page, 'input[type="password"]');
  if (passwordInput) {
  await setInputValue(page, 'input[type="password"]', password);
 
  await sleep(500);
 
- const signInBtn = await page.$('input[type="submit"], button[type="submit"], #idSIButton9');
+ const signInBtn = await findVisibleElement(page, 'input[type="submit"], button[type="submit"], #idSIButton9');
  if (signInBtn) {
  await signInBtn.click();
  } else {
@@ -591,6 +748,12 @@ async function handleMicrosoftLoginFlow(page, email, password, context, getTotpC
  page = await waitForNewOrActivePage(context, page, 8000);
  await sleep(500);
  continue;
+ }
+
+ if (await isPushMfaPrompt(page)) {
+ throw new Error(
+ 'Microsoft requires Authenticator push/number approval. Configure verification-code (TOTP) MFA for unattended processing.'
+ );
  }
 
  // Stay signed in prompt
@@ -649,18 +812,21 @@ export async function ensureMicrosoftLogin(page, email, password, context, targe
  page = await handleMicrosoftLoginFlow(page, email, password, context, effectiveGetTotpCode);
  }
 
- if (page.url().includes('mysignins.microsoft.com')) {
+ let consentPromptReady = await isAdminConsentPrompt(page);
+
+ if (page.url().includes('mysignins.microsoft.com') && !consentPromptReady) {
  await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
  }
 
- if (page.url().includes('login.microsoftonline.com')) {
+ if (page.url().includes('login.microsoftonline.com') && !consentPromptReady) {
  await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
  if (page.url().includes('login.microsoftonline.com')) {
  page = await handleMicrosoftLoginFlow(page, email, password, context, effectiveGetTotpCode);
  }
  }
 
- if (page.url().includes('login.microsoftonline.com')) {
+ consentPromptReady = await isAdminConsentPrompt(page);
+ if (page.url().includes('login.microsoftonline.com') && !consentPromptReady) {
  const microsoftError = await readMicrosoftAuthError(page);
  await saveDebugScreenshot(page, 'login_error');
  return { success: false, error: microsoftError || 'Login page still shown after attempts', page };
@@ -1051,49 +1217,55 @@ export async function grantAdminConsent({
 
  page = loginResult.page;
 
- const startUrl = page.url();
- let acceptBtn = null;
- try {
- acceptBtn = await page.waitForSelector(
- 'input[type="submit"][value="Accept"], button#idSIButton9, input[type="submit"]',
- { timeout: 15000, visible: true }
- );
- } catch {
- acceptBtn = null;
- }
-
- const leftLogin = !page.url().includes('login.microsoftonline.com');
- const onRedirect = (() => {
+ const readConsentRedirect = () => {
  try {
  const u = new URL(page.url());
- return u.origin + u.pathname === new URL(redirectUri).origin + new URL(redirectUri).pathname
- || page.url().startsWith(redirectUri);
- } catch {
- return false;
+ const expected = new URL(redirectUri);
+ if (u.origin !== expected.origin || u.pathname !== expected.pathname) return null;
+ const returnedState = u.searchParams.get('state');
+ if (state && returnedState !== state) {
+ return { success: false, error: 'Consent callback state did not match the order' };
  }
- })();
+ const callbackError = u.searchParams.get('error');
+ if (callbackError) {
+ const description = u.searchParams.get('error_description');
+ return {
+ success: false,
+ error: `Consent callback failed: ${callbackError}${description ? ` — ${description}` : ''}`
+ };
+ }
+ if (String(u.searchParams.get('admin_consent') || '').toLowerCase() === 'true') {
+ return { success: true };
+ }
+ return { success: false, error: 'Consent callback did not include admin_consent=True' };
+ } catch {
+ return null;
+ }
+ };
 
- if (!acceptBtn) {
- let postLoginText = '';
- try {
- postLoginText = await page.evaluate(() => document.body && document.body.innerText) || '';
- } catch {
- // ignore
+ let consentRedirect = readConsentRedirect();
+ if (consentRedirect) {
+ return { ...consentRedirect, page, finalUrl: page.url() };
  }
+
+ let consentPromptReady = await isAdminConsentPrompt(page);
+ const promptDeadline = Date.now() + 15000;
+ while (!consentPromptReady && !readConsentRedirect() && Date.now() < promptDeadline) {
+ await sleep(250);
+ consentPromptReady = await isAdminConsentPrompt(page);
+ }
+
+ consentRedirect = readConsentRedirect();
+ if (consentRedirect) {
+ return { ...consentRedirect, page, finalUrl: page.url() };
+ }
+
+ if (!consentPromptReady) {
  await saveDebugScreenshot(page, 'consent_result');
 
- const onRedirectUri = (() => {
- try {
- return page.url().startsWith(redirectUri) ||
- new URL(page.url()).searchParams.get('admin_consent') === 'True';
- } catch {
- return false;
- }
- })();
- const bodyHasAlreadyGranted = /granted|already (granted|approved)|admin_consent/i.test(postLoginText);
-
- if (onRedirectUri || (leftLogin && bodyHasAlreadyGranted)) {
- return { success: true, page, finalUrl: page.url() };
+ const microsoftError = await readMicrosoftAuthError(page);
+ if (microsoftError) {
+ return { success: false, page, error: microsoftError };
  }
  await saveDebugScreenshot(page, 'consent_error');
  return {
@@ -1108,7 +1280,10 @@ export async function grantAdminConsent({
  .catch(() => null);
 
  try {
- await acceptBtn.click();
+ const clicked = await clickAdminConsentAccept(page);
+ if (!clicked) {
+ throw new Error('Accept button disappeared before it could be clicked');
+ }
  } catch (clickErr) {
  if (!isNavigationError(clickErr)) {
  await saveDebugScreenshot(page, 'consent_error');
@@ -1136,23 +1311,19 @@ export async function grantAdminConsent({
 
  await saveDebugScreenshot(page, 'consent_result');
 
- const hasAdminConsent = (() => {
- try {
- return new URL(finalUrl).searchParams.get('admin_consent') === 'True';
- } catch {
- return false;
- }
- })();
+ consentRedirect = readConsentRedirect();
  const landedOnRedirect = (() => {
  try {
- return finalUrl.startsWith(redirectUri);
+ const current = new URL(finalUrl);
+ const expected = new URL(redirectUri);
+ return current.origin === expected.origin && current.pathname === expected.pathname;
  } catch {
  return false;
  }
  })();
 
- if (hasAdminConsent || landedOnRedirect) {
- return { success: true, page, finalUrl };
+ if (consentRedirect) {
+ return { ...consentRedirect, page, finalUrl };
  }
 
  const titleHasError = /error|an error occurred/i.test(pageTitle);
@@ -1199,7 +1370,7 @@ export async function grantAdminConsent({
  };
  }
 
- if (!landedOnRedirect && !hasAdminConsent) {
+ if (!landedOnRedirect) {
  return {
  success: false,
  page,
