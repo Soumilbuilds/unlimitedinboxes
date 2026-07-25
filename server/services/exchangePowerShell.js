@@ -8,6 +8,14 @@ const EXO_CERT_PFX_PATH = process.env.EXO_CERT_PFX_PATH;
 const EXO_CERT_PASSWORD = process.env.EXO_CERT_PASSWORD;
 const EXO_CERT_PFX_BASE64 = process.env.EXO_CERT_PFX_BASE64;
 
+export function isExchangePowerShellConfigured() {
+  return Boolean(
+    EXO_APP_ID &&
+    EXO_CERT_PASSWORD &&
+    (EXO_CERT_PFX_PATH || EXO_CERT_PFX_BASE64)
+  );
+}
+
 async function ensurePfxPath() {
   if (EXO_CERT_PFX_PATH) return EXO_CERT_PFX_PATH;
   if (!EXO_CERT_PFX_BASE64) return null;
@@ -50,10 +58,16 @@ async function runPowerShell(script, envOverrides = {}) {
 
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, 300000);
     child.stdout.on('data', (d) => { stdout += d.toString(); });
     child.stderr.on('data', (d) => { stderr += d.toString(); });
 
     child.on('error', async (err) => {
+      clearTimeout(timeout);
       try {
         await fs.rm(tmpDir, { recursive: true, force: true });
       } catch {
@@ -63,10 +77,14 @@ async function runPowerShell(script, envOverrides = {}) {
     });
 
     child.on('close', async (code) => {
+      clearTimeout(timeout);
       try {
         await fs.rm(tmpDir, { recursive: true, force: true });
       } catch {
         // ignore
+      }
+      if (timedOut) {
+        return reject(new Error('Exchange Online PowerShell command timed out after 5 minutes'));
       }
       if (code !== 0) {
         return reject(new Error(stderr || `PowerShell exited with code ${code}`));
@@ -91,6 +109,153 @@ async function baseEnv(orgDomain) {
     EXO_CERT_PFX_PATH: pfxPath,
     EXO_CERT_PASSWORD,
     EXO_ORG: orgDomain
+  };
+}
+
+const connectExchangeScript = `
+Import-Module ExchangeOnlineManagement -ErrorAction Stop
+$secure = ConvertTo-SecureString $env:EXO_CERT_PASSWORD -AsPlainText -Force
+$connected = $false
+$lastConnectionError = $null
+for ($attempt = 1; $attempt -le 8; $attempt++) {
+  try {
+    Connect-ExchangeOnline -CertificateFilePath $env:EXO_CERT_PFX_PATH -CertificatePassword $secure -AppId $env:EXO_APP_ID -Organization $env:EXO_ORG -ShowBanner:$false -ErrorAction Stop
+    $connected = $true
+    break
+  } catch {
+    $lastConnectionError = $_
+    if ($attempt -lt 8) { Start-Sleep -Seconds 10 }
+  }
+}
+if (-not $connected) {
+  throw "Exchange Online app-only connection failed after role propagation retries: $lastConnectionError"
+}
+`;
+
+export async function testExchangeOnlineConnection(orgDomain) {
+  const env = await baseEnv(orgDomain);
+  const script = `
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+${connectExchangeScript}
+try {
+  $accepted = @(Get-AcceptedDomain -ErrorAction Stop)
+  [pscustomobject]@{
+    Connected = $true
+    AcceptedDomainCount = $accepted.Count
+  } | ConvertTo-Json -Compress
+} finally {
+  Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+}
+`;
+  const { stdout } = await runPowerShell(script, env);
+  const json = extractJson(stdout);
+  if (!json?.Connected) {
+    throw new Error('Exchange Online connection check did not return a success result');
+  }
+  return json;
+}
+
+export async function ensureOrganizationSmtpAuthEnabled(orgDomain) {
+  const env = await baseEnv(orgDomain);
+  const script = `
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+${connectExchangeScript}
+try {
+  $before = Get-TransportConfig -ErrorAction Stop
+  $changed = [bool]$before.SmtpClientAuthenticationDisabled
+  if ($changed) {
+    Set-TransportConfig -SmtpClientAuthenticationDisabled $false -ErrorAction Stop
+  }
+  $after = Get-TransportConfig -ErrorAction Stop
+  [pscustomobject]@{
+    Changed = $changed
+    SmtpClientAuthenticationDisabled = [bool]$after.SmtpClientAuthenticationDisabled
+  } | ConvertTo-Json -Compress
+} finally {
+  Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+}
+`;
+  const { stdout } = await runPowerShell(script, env);
+  const json = extractJson(stdout);
+  if (!json || json.SmtpClientAuthenticationDisabled) {
+    throw new Error('Exchange Online still reports organization SMTP AUTH as disabled');
+  }
+  return json;
+}
+
+export async function ensureSharedMailbox({
+  orgDomain,
+  displayName,
+  alias,
+  domain
+}) {
+  if (!displayName || !alias || !domain) {
+    throw new Error('Shared mailbox display name, alias, and domain are required');
+  }
+  const env = {
+    ...(await baseEnv(orgDomain)),
+    EXO_MAILBOX_DISPLAY_NAME: String(displayName),
+    EXO_MAILBOX_ALIAS: String(alias),
+    EXO_MAILBOX_DOMAIN: String(domain)
+  };
+  const script = `
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+${connectExchangeScript}
+try {
+  $displayName = $env:EXO_MAILBOX_DISPLAY_NAME
+  $alias = $env:EXO_MAILBOX_ALIAS
+  $domain = $env:EXO_MAILBOX_DOMAIN
+  $smtp = "$alias@$domain"
+  $recipient = Get-Recipient -Identity $smtp -ErrorAction SilentlyContinue
+  if ($recipient -and [string]$recipient.RecipientTypeDetails -ne "SharedMailbox") {
+    throw "The address $smtp is already used by a non-shared recipient ($($recipient.RecipientTypeDetails))"
+  }
+  $mailbox = Get-EXOMailbox -Identity $smtp -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction SilentlyContinue
+  $created = $false
+  if (-not $mailbox) {
+    New-Mailbox -Shared -Name $displayName -DisplayName $displayName -Alias $alias -UserPrincipalName $smtp -PrimarySmtpAddress $smtp -ErrorAction Stop | Out-Null
+    $created = $true
+    for ($attempt = 1; $attempt -le 12 -and -not $mailbox; $attempt++) {
+      Start-Sleep -Seconds 5
+      $mailbox = Get-EXOMailbox -Identity $smtp -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction SilentlyContinue
+    }
+  }
+  if (-not $mailbox) {
+    throw "Shared mailbox $smtp was not visible after creation"
+  }
+  $cas = Get-CASMailbox -Identity $smtp -ErrorAction Stop
+  if ($cas.SmtpClientAuthenticationDisabled -ne $false) {
+    Set-CASMailbox -Identity $smtp -SmtpClientAuthenticationDisabled $false -ErrorAction Stop
+  }
+  $casAfter = Get-CASMailbox -Identity $smtp -ErrorAction Stop
+  if ($casAfter.SmtpClientAuthenticationDisabled -ne $false) {
+    throw "SMTP AUTH remains disabled for shared mailbox $smtp"
+  }
+  [pscustomobject]@{
+    Success = $true
+    Created = $created
+    Email = [string]$mailbox.PrimarySmtpAddress
+    DisplayName = [string]$mailbox.DisplayName
+    ExternalDirectoryObjectId = [string]$mailbox.ExternalDirectoryObjectId
+  } | ConvertTo-Json -Compress
+} finally {
+  Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+}
+`;
+  const { stdout } = await runPowerShell(script, env);
+  const json = extractJson(stdout);
+  if (!json?.Success || !json.Email) {
+    throw new Error('Exchange Online did not return the shared mailbox after creation');
+  }
+  return {
+    success: true,
+    created: Boolean(json.Created),
+    email: json.Email,
+    displayName: json.DisplayName,
+    externalDirectoryObjectId: json.ExternalDirectoryObjectId || null
   };
 }
 

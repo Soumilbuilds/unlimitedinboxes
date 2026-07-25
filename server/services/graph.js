@@ -117,6 +117,65 @@ function escapeODataString(value) {
   return String(value).replace(/'/g, "''");
 }
 
+const EXCHANGE_ADMINISTRATOR_ROLE_TEMPLATE_ID = '29232cdf-9323-42fd-ade2-1d097af3e4de';
+
+export async function ensureExchangeAdministratorAssignmentWithClient(client, appId) {
+  if (!appId) throw new Error('Missing application ID for Exchange Administrator assignment');
+
+  const escapedAppId = escapeODataString(appId);
+  const principalsRes = await client.get('/servicePrincipals', {
+    params: {
+      '$filter': `appId eq '${escapedAppId}'`,
+      '$select': 'id,appId,displayName'
+    }
+  });
+  const principal = principalsRes.data?.value?.[0];
+  if (!principal?.id) {
+    throw new Error(`Enterprise application service principal not found for app ${appId}`);
+  }
+
+  const roleDefinitionsRes = await client.get('/roleManagement/directory/roleDefinitions', {
+    params: {
+      '$filter': `templateId eq '${EXCHANGE_ADMINISTRATOR_ROLE_TEMPLATE_ID}'`,
+      '$select': 'id,displayName,templateId'
+    }
+  });
+  const roleDefinition = roleDefinitionsRes.data?.value?.[0];
+  if (!roleDefinition?.id) {
+    throw new Error('Exchange Administrator role definition not found');
+  }
+
+  const assignmentsRes = await client.get('/roleManagement/directory/roleAssignments', {
+    params: {
+      '$filter': `principalId eq '${principal.id}' and roleDefinitionId eq '${roleDefinition.id}'`,
+      '$select': 'id,principalId,roleDefinitionId,directoryScopeId'
+    }
+  });
+  const existing = (assignmentsRes.data?.value || []).find(
+    assignment => !assignment.directoryScopeId || assignment.directoryScopeId === '/'
+  );
+  if (existing) {
+    return { action: 'unchanged', assignment: existing, principal, roleDefinition };
+  }
+
+  try {
+    const created = await client.post('/roleManagement/directory/roleAssignments', {
+      '@odata.type': '#microsoft.graph.unifiedRoleAssignment',
+      principalId: principal.id,
+      roleDefinitionId: roleDefinition.id,
+      directoryScopeId: '/'
+    });
+    return { action: 'created', assignment: created.data, principal, roleDefinition };
+  } catch (error) {
+    const status = error.response?.status;
+    const message = error.response?.data?.error?.message || error.message || '';
+    if ((status === 400 || status === 409) && /already exists|conflict|added object references/i.test(message)) {
+      return { action: 'unchanged', principal, roleDefinition };
+    }
+    throw error;
+  }
+}
+
 export async function getDelegatedClient(clientId, clientSecret, tenantId, username, password) {
   const token = await getDelegatedAccessToken(clientId, clientSecret, tenantId, username, password);
   return graphClient(token);

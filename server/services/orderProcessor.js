@@ -8,7 +8,9 @@ import {
  listDomains,
  deleteDomain,
  getAppClient,
+ getInitialDomainWithClient,
  getGlobalAdminRoleIdWithClient,
+ ensureExchangeAdministratorAssignmentWithClient,
  updateUserUpnWithClient,
  enableSignInAndSetPasswordWithClient,
  assignGlobalAdminWithClient,
@@ -26,6 +28,12 @@ import {
  ensureExchangeOnlineServicePrincipal,
  isMissingExchangeServicePrincipalError
 } from './microsoftBootstrap.js';
+import {
+ isExchangePowerShellConfigured,
+ testExchangeOnlineConnection,
+ ensureOrganizationSmtpAuthEnabled,
+ ensureSharedMailbox
+} from './exchangePowerShell.js';
 import {
  getOrderById,
  getOrders,
@@ -430,8 +438,27 @@ async function runPrepareGraphAdminClient(orderId, tenant) {
  throw new Error(`Failed to resolve Global Administrator role: ${roleErr.message}`);
  }
 
+ let exchangeOrgDomain;
+ try {
+ exchangeOrgDomain = await graphProvider.run(client => getInitialDomainWithClient(client));
+ if (!exchangeOrgDomain) {
+ throw new Error('Initial onmicrosoft.com domain was not found');
+ }
+ const assignment = await graphProvider.run(client =>
+ ensureExchangeAdministratorAssignmentWithClient(client, MASTER_CLIENT_ID)
+ );
+ logMessage(
+ orderId,
+ assignment.action === 'created'
+ ? 'Exchange Administrator assigned to the provisioning application.'
+ : 'Exchange Administrator assignment already present.'
+ );
+ } catch (exchangeRoleError) {
+ throw new Error(`Failed to prepare Exchange app-only access: ${exchangeRoleError.message}`);
+ }
+
  logMessage(orderId, `Graph client ready -- Global Admin role ID: ${globalAdminRoleId}`);
- return { graphProvider, globalAdminRoleId };
+ return { graphProvider, globalAdminRoleId, exchangeOrgDomain };
 }
 
 async function runDisableSecurityDefaults(orderId, graphProvider) {
@@ -475,7 +502,34 @@ function parseRequestedMailboxNames(order, total) {
  });
 }
 
-async function runCreateMailboxes(orderId, totalMailboxes, domain, mailboxPassword, page, identities = null) {
+async function createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain) {
+ if (exchangeOrgDomain) {
+ const result = await ensureSharedMailbox({
+ orgDomain: exchangeOrgDomain,
+ displayName: fullName,
+ alias,
+ domain
+ });
+ logMessage(
+ orderId,
+ result.created
+ ? ` Exchange Online created ${result.email}`
+ : ` Exchange Online confirmed existing mailbox ${result.email}`
+ );
+ return result;
+ }
+ return createSharedMailbox(page, fullName, alias, domain, (msg) => logMessage(orderId, msg));
+}
+
+async function runCreateMailboxes(
+ orderId,
+ totalMailboxes,
+ domain,
+ mailboxPassword,
+ page,
+ identities = null,
+ exchangeOrgDomain = null
+) {
  logStep(orderId, 9, `Create ${totalMailboxes} shared mailboxes`);
  const createdMailboxes = [];
 
@@ -487,7 +541,7 @@ async function runCreateMailboxes(orderId, totalMailboxes, domain, mailboxPasswo
  const { fullName, alias } = identities?.[i] || generateMailboxName();
  logMessage(orderId, `[${i + 1}/${totalMailboxes}] Creating mailbox: ${fullName} (${alias}@${domain})`);
 
- const result = await createSharedMailbox(page, fullName, alias, domain, (msg) => logMessage(orderId, msg));
+ const result = await createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain);
  if (result.success) {
  const email = result.email;
  createdMailboxes.push({
@@ -556,8 +610,18 @@ async function runEnableSignIn(orderId, createdMailboxes, mailboxPassword, graph
  }
 }
 
-async function runConfigureSmtpAuth(orderId, page) {
+async function runConfigureSmtpAuth(orderId, page, exchangeOrgDomain = null) {
  logStep(orderId, 11, 'Exchange: enable SMTP AUTH before mailbox creation');
+ if (exchangeOrgDomain) {
+ const result = await ensureOrganizationSmtpAuthEnabled(exchangeOrgDomain);
+ logMessage(
+ orderId,
+ result.Changed
+ ? 'Organization SMTP AUTH enabled through Exchange Online PowerShell.'
+ : 'Organization SMTP AUTH was already enabled.'
+ );
+ return;
+ }
  await ensureSmtpAuthSetting(orderId, page);
 }
 
@@ -707,6 +771,7 @@ export async function processOrder(orderId) {
  let zoneId = tenant.cloudflare_zone_id;
  let graphProvider = null;
  let globalAdminRoleId = null;
+ let exchangeOrgDomain = null;
  let browserContext = null;
  let page = null;
  let createdMailboxes = [];
@@ -785,6 +850,7 @@ export async function processOrder(orderId) {
  const graphSetup = await runPrepareGraphAdminClient(orderId, tenant);
  graphProvider = graphSetup.graphProvider;
  globalAdminRoleId = graphSetup.globalAdminRoleId;
+ exchangeOrgDomain = isExchangePowerShellConfigured() ? graphSetup.exchangeOrgDomain : null;
  if (checkCancelled(orderId)) return;
  } catch (err) {
  logMessage(orderId, `STEP 7 FAILED: ${err.message}`);
@@ -801,9 +867,16 @@ export async function processOrder(orderId) {
  logMessage(orderId, 'Continuing despite Security Defaults disable failure -- some tenants require them');
  }
 
- // STEP 9: Launch browser and login
+ // STEP 9: Connect to Exchange Online
  try {
- logStep(orderId, 9, 'Browser: launch incognito and login to Microsoft 365');
+ logStep(orderId, 9, exchangeOrgDomain
+ ? 'Exchange: validate app-only PowerShell connection'
+ : 'Browser: launch incognito and login to Microsoft 365');
+ if (exchangeOrgDomain) {
+ const connection = await testExchangeOnlineConnection(exchangeOrgDomain);
+ logMessage(orderId, `Exchange Online app-only connection ready (${connection.AcceptedDomainCount} accepted domain(s)).`);
+ } else {
+ logMessage(orderId, 'Exchange certificate configuration is absent; using browser fallback.');
  const { context: exchangeContext, page: newPage } = await createIncognitoPage();
  browserContext = exchangeContext;
  page = newPage;
@@ -826,24 +899,21 @@ export async function processOrder(orderId) {
  } else if (loginResult.error.includes('Invalid username or password')) {
  errorMsg = 'Invalid admin email or password -- please check your credentials in the tenant settings.';
  }
- logMessage(orderId, `STEP 9 FAILED: Login failed -- ${errorMsg}`);
  throw new Error(errorMsg);
  }
- if (loginResult.page) {
- page = loginResult.page;
+ if (loginResult.page) page = loginResult.page;
+ logMessage(orderId, 'Logged in to Microsoft 365 successfully');
  }
  if (checkCancelled(orderId)) return;
-
- logMessage(orderId, 'Logged in to Microsoft 365 successfully');
  } catch (err) {
  logMessage(orderId, `STEP 9 FAILED: ${err.message}`);
- throw new Error(`Browser login failed: ${err.message}`);
+ throw new Error(`Exchange connection failed: ${err.message}`);
  }
 
  // STEP 10: Enable SMTP AUTH before mailbox creation
  try {
  logStep(orderId, 10, 'Exchange: enable SMTP AUTH before mailbox creation');
- await runConfigureSmtpAuth(orderId, page);
+ await runConfigureSmtpAuth(orderId, page, exchangeOrgDomain);
  if (checkCancelled(orderId)) return;
  } catch (err) {
  logMessage(orderId, `STEP 10 FAILED: ${err.message}`);
@@ -859,7 +929,8 @@ export async function processOrder(orderId) {
  domain,
  mailboxPassword,
  page,
- requestedMailboxIdentities ? [requestedMailboxIdentities[0]] : null
+ requestedMailboxIdentities ? [requestedMailboxIdentities[0]] : null,
+ exchangeOrgDomain
  );
  if (preflight.length === 0) {
  throw new Error('Preflight mailbox creation returned no mailboxes');
@@ -930,7 +1001,7 @@ export async function processOrder(orderId) {
  const { fullName, alias } = requestedMailboxIdentities?.[i] || generateMailboxName();
  logMessage(orderId, `[${i + 1}/${total}] Creating mailbox: ${fullName} (${alias}@${domain})`);
 
- const result = await createSharedMailbox(page, fullName, alias, domain, (msg) => logMessage(orderId, msg));
+ const result = await createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain);
  if (result.success) {
  const email = result.email;
  createdMailboxes.push({
