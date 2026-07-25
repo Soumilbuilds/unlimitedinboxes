@@ -1,5 +1,18 @@
 import axios from 'axios';
 
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function isServicePrincipalPropagationError(error) {
+  const status = error?.response?.status;
+  const description = String(
+    error?.response?.data?.error_description ||
+    error?.response?.data?.error ||
+    error?.message ||
+    ''
+  );
+  return status === 401 && /AADSTS7000229/i.test(description);
+}
+
 async function getAccessToken(clientId, clientSecret, tenantId) {
   const params = new URLSearchParams();
   params.append('client_id', clientId);
@@ -7,12 +20,29 @@ async function getAccessToken(clientId, clientSecret, tenantId) {
   params.append('scope', 'https://graph.microsoft.com/.default');
   params.append('grant_type', 'client_credentials');
 
-  const res = await axios.post(
-    `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
-    params,
-    { timeout: 30000 }
-  );
-  return res.data.access_token;
+  // Immediately after successful admin consent, Entra can return
+  // AADSTS7000229 until the new enterprise application's service principal has
+  // propagated through the tenant. Retry only that transient condition; an
+  // invalid/expired secret and all other authentication errors still fail fast.
+  const maxAttempts = 12;
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const res = await axios.post(
+        `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
+        params,
+        { timeout: 30000 }
+      );
+      return res.data.access_token;
+    } catch (error) {
+      lastError = error;
+      if (!isServicePrincipalPropagationError(error) || attempt === maxAttempts) {
+        throw error;
+      }
+      await sleep(5000);
+    }
+  }
+  throw lastError;
 }
 
 async function getDelegatedAccessToken(clientId, clientSecret, tenantId, username, password) {
@@ -47,6 +77,40 @@ function graphClient(token) {
     headers: { Authorization: `Bearer ${token}` },
     timeout: 30000
   });
+}
+
+const GRAPH_AUTH_PROPAGATION_DELAYS_MS = [0, 2000, 4000, 8000, 12000, 15000];
+
+export function isRetryableGraphAuthorizationError(error) {
+  const status = error?.response?.status;
+  return status === 401 || status === 403;
+}
+
+async function runWithFreshGraphToken(clientId, clientSecret, tenantId, action) {
+  let lastError = null;
+
+  for (const delayMs of GRAPH_AUTH_PROPAGATION_DELAYS_MS) {
+    if (delayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+
+    try {
+      const token = await getAccessToken(clientId, clientSecret, tenantId);
+      const client = graphClient(token);
+      return await action(client);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableGraphAuthorizationError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  const status = lastError?.response?.status;
+  const message = lastError?.response?.data?.error?.message || lastError?.message || 'Unknown authorization error';
+  throw new Error(
+    `Microsoft Graph authorization did not propagate after admin consent${status ? ` (HTTP ${status})` : ''}: ${message}`
+  );
 }
 
 function escapeODataString(value) {
@@ -141,29 +205,56 @@ export async function assignGlobalAdminWithClient(client, userId, roleId) {
 }
 
 export async function addDomainToMicrosoft(clientId, clientSecret, tenantId, domain) {
-  const token = await getAccessToken(clientId, clientSecret, tenantId);
-  const client = graphClient(token);
+  const encodedDomain = encodeURIComponent(domain);
 
   try {
-    await client.post('/domains', { id: domain });
-  } catch (e) {
-    if (e.response?.status !== 400 && e.response?.status !== 409) throw e;
+    await runWithFreshGraphToken(
+      clientId,
+      clientSecret,
+      tenantId,
+      client => client.post('/domains', { id: domain })
+    );
+  } catch (createError) {
+    const status = createError?.response?.status;
+    if (status !== 400 && status !== 409) throw createError;
+
+    // A retry may race with a successful earlier request. Only treat the
+    // create conflict as success when Graph confirms this domain now exists.
+    try {
+      await runWithFreshGraphToken(
+        clientId,
+        clientSecret,
+        tenantId,
+        client => client.get(`/domains/${encodedDomain}?$select=id`)
+      );
+    } catch (lookupError) {
+      if (lookupError?.response?.status === 404) {
+        throw createError;
+      }
+      throw lookupError;
+    }
   }
 
   let verificationRes = null;
-  let attempts = 0;
-  while (attempts < 5) {
+  const verificationDelaysMs = [0, 2000, 3000, 5000, 8000, 12000];
+  for (const delayMs of verificationDelaysMs) {
+    if (delayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
     try {
-      verificationRes = await client.get(`/domains/${domain}/verificationDnsRecords`);
+      verificationRes = await runWithFreshGraphToken(
+        clientId,
+        clientSecret,
+        tenantId,
+        client => client.get(`/domains/${encodedDomain}/verificationDnsRecords`)
+      );
       break;
-    } catch (e) {
-      if (e.response?.status === 404) {
-        // Domain can take a moment to appear after creation
-        await new Promise(r => setTimeout(r, 2000));
-        attempts += 1;
+    } catch (error) {
+      if (error?.response?.status === 404) {
+        // Domain creation and its verification records are eventually consistent.
         continue;
       }
-      throw e;
+      throw error;
     }
   }
 
