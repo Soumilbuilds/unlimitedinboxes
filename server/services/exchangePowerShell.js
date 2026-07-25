@@ -216,7 +216,10 @@ try {
   $mailbox = Get-EXOMailbox -Identity $smtp -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction SilentlyContinue
   $created = $false
   if (-not $mailbox) {
-    New-Mailbox -Shared -Name $displayName -DisplayName $displayName -Alias $alias -UserPrincipalName $smtp -PrimarySmtpAddress $smtp -ErrorAction Stop | Out-Null
+    # Exchange Online's Shared parameter set doesn't expose UserPrincipalName.
+    # The order workflow updates the backing Entra user's UPN through Graph
+    # immediately after Exchange returns ExternalDirectoryObjectId.
+    New-Mailbox -Shared -Name $displayName -DisplayName $displayName -Alias $alias -PrimarySmtpAddress $smtp -ErrorAction Stop | Out-Null
     $created = $true
     for ($attempt = 1; $attempt -le 12 -and -not $mailbox; $attempt++) {
       Start-Sleep -Seconds 5
