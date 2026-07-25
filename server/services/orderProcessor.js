@@ -322,31 +322,65 @@ async function runVerifyDomain(orderId, zoneId, tenant, match) {
  return verifyResult;
 }
 
+export function normalizeMicrosoftEmailDnsRecord(record) {
+ const recordType = String(record?.recordType || '').toUpperCase();
+ const name = String(record?.label || record?.name || '').trim();
+ let content = '';
+ let priority;
+
+ if (recordType === 'MX') {
+ content = String(record?.mailExchange || record?.value || record?.target || '').trim();
+ priority = record?.preference ?? record?.priority;
+ } else if (recordType === 'TXT') {
+ content = String(record?.text || record?.value || '').trim();
+ } else if (recordType === 'CNAME') {
+ content = String(record?.canonicalName || record?.value || record?.target || '').trim();
+ } else {
+ return null;
+ }
+
+ if (!name || !content) {
+ return null;
+ }
+
+ return { type: recordType, name, content, priority };
+}
+
 async function runAddExchangeDnsRecords(orderId, zoneId, domain, verifyResult) {
  logStep(orderId, 6, 'DNS: add MX, SPF, DKIM, and DMARC records');
 
  if (verifyResult?.records?.length) {
  const recordFailures = [];
  for (const rec of verifyResult.records) {
+ const normalized = normalizeMicrosoftEmailDnsRecord(rec);
+ if (!normalized) {
+ if (rec?.isOptional === false) {
+ throw new Error(
+ `Microsoft returned an unsupported or incomplete required Email DNS record (${rec?.recordType || 'unknown type'})`
+ );
+ }
+ logMessage(orderId, ` Skipped unsupported optional Email DNS record (${rec?.recordType || 'unknown type'})`);
+ continue;
+ }
  try {
  await addDnsRecord(
  zoneId,
- rec.recordType.toUpperCase(),
- rec.name,
- rec.text || rec.value || rec.target,
- rec.priority
+ normalized.type,
+ normalized.name,
+ normalized.content,
+ normalized.priority
  );
- logMessage(orderId, ` Added ${rec.recordType?.toUpperCase()} ${rec.name}`);
+ logMessage(orderId, ` Added ${normalized.type} ${normalized.name}`);
  } catch (e) {
- recordFailures.push({ rec, error: e.message });
+ recordFailures.push({ normalized, error: e.message });
  }
  }
  if (recordFailures.length) {
  logMessage(orderId, `DNS add had ${recordFailures.length} failure(s) -- verifying records:`);
- for (const { rec, error } of recordFailures) {
- const rType = rec.recordType?.toUpperCase();
- const rName = rec.name;
- const rContent = rec.text || rec.value || rec.target;
+ for (const { normalized, error } of recordFailures) {
+ const rType = normalized.type;
+ const rName = normalized.name;
+ const rContent = normalized.content;
  const existing = await listDnsRecords(zoneId, { type: rType, name: rName });
  const present = existing.some(r => r.content === rContent);
  if (present) {
@@ -355,7 +389,7 @@ async function runAddExchangeDnsRecords(orderId, zoneId, domain, verifyResult) {
  logMessage(orderId, ` ${rType} ${rName} missing: ${error}`);
  if (rType === 'MX') {
  try {
- await addDnsRecord(zoneId, rType, rName, rContent, rec.priority);
+ await addDnsRecord(zoneId, rType, rName, rContent, normalized.priority);
  logMessage(orderId, ` MX record added on retry`);
  } catch (retryErr) {
  throw new Error(`Critical: failed to add MX record for ${rName}: ${retryErr.message}`);

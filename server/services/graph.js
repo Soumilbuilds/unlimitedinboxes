@@ -290,8 +290,12 @@ export async function verifyDomain(clientId, clientSecret, tenantId, domain) {
   await new Promise(r => setTimeout(r, 5000));
   const configRes = await client.get(`/domains/${domain}/serviceConfigurationRecords`);
   const records = Array.isArray(configRes.data?.value) ? configRes.data.value : [];
-  const exchangeRecords = records.filter(r => (r.service || '').toLowerCase() === 'exchange');
-  return { success: true, records: exchangeRecords.length ? exchangeRecords : records };
+  const exchangeRecords = records.filter(r => {
+    const supportedService = String(r.supportedService || '').toLowerCase();
+    const legacyService = String(r.service || '').toLowerCase();
+    return supportedService === 'email' || legacyService === 'exchange';
+  });
+  return { success: true, records: exchangeRecords };
 }
 
 export async function listDomains(clientId, clientSecret, tenantId) {
