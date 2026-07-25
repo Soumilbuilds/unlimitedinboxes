@@ -294,6 +294,21 @@ export async function addDomainToMicrosoft(clientId, clientSecret, tenantId, dom
     }
   }
 
+  const domainState = await runWithFreshGraphToken(
+    clientId,
+    clientSecret,
+    tenantId,
+    client => client.get(`/domains/${encodedDomain}?$select=id,isVerified`)
+  );
+  if (domainState.data?.isVerified) {
+    return {
+      already_verified: true,
+      txt_text: null,
+      txt_name: '@',
+      ttl: 3600
+    };
+  }
+
   let verificationRes = null;
   const verificationDelaysMs = [0, 2000, 3000, 5000, 8000, 12000];
   for (const delayMs of verificationDelaysMs) {

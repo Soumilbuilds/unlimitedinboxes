@@ -265,7 +265,31 @@ async function runUpdateNameservers(orderId, zoneId, tenant) {
 async function runAddDomainToMicrosoft(orderId, tenant, getTotpCode) {
  logStep(orderId, 4, 'Microsoft: grant admin consent and add domain to tenant');
  const { MASTER_CLIENT_ID, MASTER_CLIENT_SECRET } = process.env;
- logMessage(orderId, 'Opening an isolated browser to grant Microsoft admin consent automatically...');
+ try {
+ const existingAuthorizationMatch = await addDomainToMicrosoft(
+ MASTER_CLIENT_ID,
+ MASTER_CLIENT_SECRET,
+ tenant.tenant_id,
+ tenant.domain
+ );
+ logMessage(orderId, 'Microsoft Graph authorization is already active; interactive consent was not needed.');
+ return existingAuthorizationMatch;
+ } catch (authorizationProbeError) {
+ const status = authorizationProbeError?.response?.status;
+ const details = String(
+ authorizationProbeError?.response?.data?.error_description ||
+ authorizationProbeError?.response?.data?.error?.message ||
+ authorizationProbeError?.message ||
+ ''
+ );
+ const requiresConsent = status === 401 || status === 403 ||
+ /AADSTS65001|AADSTS650052|AADSTS7000229|consent|service principal/i.test(details);
+ if (!requiresConsent) {
+ throw authorizationProbeError;
+ }
+ logMessage(orderId, 'Microsoft Graph authorization is missing; opening isolated admin consent.');
+ }
+
  let consentResult = await grantConsentIfNeeded(tenant, getTotpCode, orderId);
  if (!consentResult.success && isMissingExchangeServicePrincipalError(consentResult.error)) {
  logMessage(orderId, 'Microsoft reported AADSTS650052; retrying with the documented Exchange Online consent scope...');
@@ -316,12 +340,17 @@ async function runAddDomainToMicrosoft(orderId, tenant, getTotpCode) {
 
 async function runVerifyDomain(orderId, zoneId, tenant, match) {
  logStep(orderId, 5, 'Microsoft: verify domain ownership via TXT record');
+ const hasVerificationToken = /^MS=.+/i.test(String(match?.txt_text || ''));
+ if (!match?.already_verified && hasVerificationToken) {
  logMessage(orderId, 'Adding verification TXT to Cloudflare...');
  await addDnsRecord(zoneId, 'TXT', match.txt_name, match.txt_text);
 
  logMessage(orderId, 'Waiting for DNS propagation (15s)...');
  await sleep(15000);
  if (checkCancelled(orderId)) return;
+ } else {
+ logMessage(orderId, 'Domain is already verified; skipping verification TXT and DNS wait.');
+ }
 
  logMessage(orderId, 'Verifying domain with Microsoft...');
  const { MASTER_CLIENT_ID, MASTER_CLIENT_SECRET } = process.env;
