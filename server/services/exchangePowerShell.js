@@ -33,7 +33,10 @@ function extractJson(text) {
   const lines = trimmed.split('\n').map(l => l.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i];
-    if (line.startsWith('{') && line.endsWith('}')) {
+    if (
+      (line.startsWith('{') && line.endsWith('}')) ||
+      (line.startsWith('[') && line.endsWith(']'))
+    ) {
       try {
         return JSON.parse(line);
       } catch {
@@ -44,7 +47,7 @@ function extractJson(text) {
   return null;
 }
 
-async function runPowerShell(script, envOverrides = {}) {
+async function runPowerShell(script, envOverrides = {}, timeoutMs = 300000) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'exo-ps-'));
   const scriptPath = path.join(tmpDir, 'script.ps1');
   await fs.writeFile(scriptPath, script, 'utf8');
@@ -62,7 +65,7 @@ async function runPowerShell(script, envOverrides = {}) {
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill('SIGKILL');
-    }, 300000);
+    }, timeoutMs);
     child.stdout.on('data', (d) => { stdout += d.toString(); });
     child.stderr.on('data', (d) => { stderr += d.toString(); });
 
@@ -84,7 +87,7 @@ async function runPowerShell(script, envOverrides = {}) {
         // ignore
       }
       if (timedOut) {
-        return reject(new Error('Exchange Online PowerShell command timed out after 5 minutes'));
+        return reject(new Error(`Exchange Online PowerShell command timed out after ${Math.round(timeoutMs / 60000)} minutes`));
       }
       if (code !== 0) {
         return reject(new Error(stderr || `PowerShell exited with code ${code}`));
@@ -260,6 +263,109 @@ try {
     displayName: json.DisplayName,
     externalDirectoryObjectId: json.ExternalDirectoryObjectId || null
   };
+}
+
+export async function ensureSharedMailboxes({
+  orgDomain,
+  domain,
+  mailboxes
+}) {
+  if (!domain || !Array.isArray(mailboxes) || mailboxes.length < 1 || mailboxes.length > 10) {
+    throw new Error('Exchange mailbox batch must contain between 1 and 10 recipients');
+  }
+  const requests = mailboxes.map((mailbox, index) => {
+    const displayName = String(mailbox?.displayName || '').trim();
+    const alias = String(mailbox?.alias || '').trim();
+    if (!displayName || !alias) {
+      throw new Error(`Exchange mailbox batch item ${index + 1} is missing a display name or alias`);
+    }
+    return { index, displayName, alias };
+  });
+  const env = {
+    ...(await baseEnv(orgDomain)),
+    EXO_MAILBOX_DOMAIN: String(domain),
+    EXO_MAILBOX_BATCH_BASE64: Buffer.from(JSON.stringify(requests), 'utf8').toString('base64')
+  };
+  const script = `
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+${connectExchangeScript}
+try {
+  $domain = $env:EXO_MAILBOX_DOMAIN
+  $batchJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:EXO_MAILBOX_BATCH_BASE64))
+  $requests = @($batchJson | ConvertFrom-Json)
+  $results = @()
+  foreach ($request in $requests) {
+    $displayName = [string]$request.displayName
+    $alias = [string]$request.alias
+    $smtp = "$alias@$domain"
+    try {
+      $recipient = Get-Recipient -Identity $smtp -ErrorAction SilentlyContinue
+      if ($recipient -and [string]$recipient.RecipientTypeDetails -ne "SharedMailbox") {
+        throw "The address $smtp is already used by a non-shared recipient ($($recipient.RecipientTypeDetails))"
+      }
+      $mailbox = Get-EXOMailbox -Identity $smtp -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction SilentlyContinue
+      $created = $false
+      if (-not $mailbox) {
+        New-Mailbox -Shared -Name $displayName -DisplayName $displayName -Alias $alias -PrimarySmtpAddress $smtp -ErrorAction Stop | Out-Null
+        $created = $true
+        for ($attempt = 1; $attempt -le 12 -and -not $mailbox; $attempt++) {
+          Start-Sleep -Seconds 5
+          $mailbox = Get-EXOMailbox -Identity $smtp -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction SilentlyContinue
+        }
+      }
+      if (-not $mailbox) {
+        throw "Shared mailbox $smtp was not visible after creation"
+      }
+      $cas = Get-CASMailbox -Identity $smtp -ErrorAction Stop
+      if ($cas.SmtpClientAuthenticationDisabled -ne $false) {
+        Set-CASMailbox -Identity $smtp -SmtpClientAuthenticationDisabled $false -ErrorAction Stop
+      }
+      $casAfter = Get-CASMailbox -Identity $smtp -ErrorAction Stop
+      if ($casAfter.SmtpClientAuthenticationDisabled -ne $false) {
+        throw "SMTP AUTH remains disabled for shared mailbox $smtp"
+      }
+      $results += [pscustomobject]@{
+        Index = [int]$request.index
+        Success = $true
+        Created = $created
+        Email = [string]$mailbox.PrimarySmtpAddress
+        DisplayName = [string]$mailbox.DisplayName
+        ExternalDirectoryObjectId = [string]$mailbox.ExternalDirectoryObjectId
+        Error = $null
+      }
+    } catch {
+      $results += [pscustomobject]@{
+        Index = [int]$request.index
+        Success = $false
+        Created = $false
+        Email = $smtp
+        DisplayName = $displayName
+        ExternalDirectoryObjectId = $null
+        Error = [string]$_.Exception.Message
+      }
+    }
+  }
+  ConvertTo-Json -InputObject @($results) -Compress -Depth 4
+} finally {
+  Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+}
+`;
+  const { stdout } = await runPowerShell(script, env, 15 * 60 * 1000);
+  const parsed = extractJson(stdout);
+  const results = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+  if (results.length !== requests.length) {
+    throw new Error(`Exchange Online returned ${results.length}/${requests.length} mailbox batch results`);
+  }
+  return results.map(result => ({
+    index: Number(result.Index),
+    success: Boolean(result.Success),
+    created: Boolean(result.Created),
+    email: result.Email || null,
+    displayName: result.DisplayName || null,
+    externalDirectoryObjectId: result.ExternalDirectoryObjectId || null,
+    error: result.Error || null
+  }));
 }
 
 export async function getDkimSelectors(domain, orgDomain) {

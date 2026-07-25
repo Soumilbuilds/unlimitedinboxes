@@ -32,7 +32,8 @@ import {
  isExchangePowerShellConfigured,
  testExchangeOnlineConnection,
  ensureOrganizationSmtpAuthEnabled,
- ensureSharedMailbox
+ ensureSharedMailbox,
+ ensureSharedMailboxes
 } from './exchangePowerShell.js';
 import {
  getOrderById,
@@ -1022,6 +1023,66 @@ export async function processOrder(orderId) {
  try {
  logStep(orderId, 12, `Create remaining ${total - 1} shared mailboxes`);
  const remainingCount = total - 1;
+ if (exchangeOrgDomain) {
+ const batchSize = 10;
+ for (let batchStart = 1; batchStart < total; batchStart += batchSize) {
+ if (checkCancelled(orderId, 'Order cancelled during mailbox creation.')) {
+ throw new Error('Order cancelled by user');
+ }
+
+ const batch = [];
+ const batchEnd = Math.min(total, batchStart + batchSize);
+ for (let i = batchStart; i < batchEnd; i++) {
+ const { fullName, alias } = requestedMailboxIdentities?.[i] || generateMailboxName();
+ batch.push({ fullName, alias });
+ logMessage(orderId, `[${i + 1}/${total}] Queued mailbox: ${fullName} (${alias}@${domain})`);
+ }
+
+ const results = await ensureSharedMailboxes({
+ orgDomain: exchangeOrgDomain,
+ domain,
+ mailboxes: batch.map(item => ({
+ displayName: item.fullName,
+ alias: item.alias
+ }))
+ });
+ const failures = [];
+ for (const result of results) {
+ const request = batch[result.index];
+ if (!request) {
+ failures.push(`Exchange returned an invalid batch index: ${result.index}`);
+ continue;
+ }
+ if (!result.success) {
+ failures.push(`${result.email || `${request.alias}@${domain}`}: ${result.error || 'Unknown error'}`);
+ logMessage(orderId, ` FAILED: ${failures[failures.length - 1]}`);
+ continue;
+ }
+ createdMailboxes.push({
+ name: request.fullName,
+ email: result.email,
+ password: mailboxPassword,
+ objectId: result.externalDirectoryObjectId,
+ createdAt: new Date().toISOString()
+ });
+ logMessage(
+ orderId,
+ result.created
+ ? ` Created: ${result.email}`
+ : ` Confirmed existing: ${result.email}`
+ );
+ }
+
+ const processedRemaining = batchEnd - 1;
+ const progress = preflightWeight + cloudflareWeight + dnsSetupWeight
+ + Math.round((processedRemaining / remainingCount) * mailboxCreationWeight);
+ updateOrderProgress(orderId, progress, createdMailboxes);
+ logMessage(orderId, `Persisted mailbox batch through ${batchEnd}/${total} (${createdMailboxes.length}/${total} ready).`);
+ if (failures.length) {
+ throw new Error(`Mailbox batch had ${failures.length} failure(s): ${failures.join('; ')}`);
+ }
+ }
+ } else {
  for (let i = 1; i < total; i++) {
  if (checkCancelled(orderId, 'Order cancelled during mailbox creation.')) {
  throw new Error('Order cancelled by user');
@@ -1049,6 +1110,7 @@ export async function processOrder(orderId) {
  const progress = preflightWeight + cloudflareWeight + dnsSetupWeight + Math.round((createdCount / remainingCount) * mailboxCreationWeight);
  updateOrderProgress(orderId, progress, createdMailboxes);
  await sleep(1500);
+ }
  }
  logMessage(orderId, `Mailbox creation complete: ${createdMailboxes.length}/${total} created`);
  } catch (err) {
