@@ -232,6 +232,13 @@ try {
   if (-not $mailbox) {
     throw "Shared mailbox $smtp was not visible after creation"
   }
+  if (([string]$mailbox.PrimarySmtpAddress).ToLowerInvariant() -ne $smtp.ToLowerInvariant()) {
+    Set-Mailbox -Identity $mailbox.ExternalDirectoryObjectId -WindowsEmailAddress $smtp -ErrorAction Stop
+    $mailbox = Get-EXOMailbox -Identity $mailbox.ExternalDirectoryObjectId -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction Stop
+  }
+  if (([string]$mailbox.PrimarySmtpAddress).ToLowerInvariant() -ne $smtp.ToLowerInvariant()) {
+    throw "Primary SMTP address for $smtp did not reconcile"
+  }
   $cas = Get-CASMailbox -Identity $smtp -ErrorAction Stop
   if ($cas.SmtpClientAuthenticationDisabled -ne $false) {
     Set-CASMailbox -Identity $smtp -SmtpClientAuthenticationDisabled $false -ErrorAction Stop
@@ -316,6 +323,13 @@ try {
       }
       if (-not $mailbox) {
         throw "Shared mailbox $smtp was not visible after creation"
+      }
+      if (([string]$mailbox.PrimarySmtpAddress).ToLowerInvariant() -ne $smtp.ToLowerInvariant()) {
+        Set-Mailbox -Identity $mailbox.ExternalDirectoryObjectId -WindowsEmailAddress $smtp -ErrorAction Stop
+        $mailbox = Get-EXOMailbox -Identity $mailbox.ExternalDirectoryObjectId -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction Stop
+      }
+      if (([string]$mailbox.PrimarySmtpAddress).ToLowerInvariant() -ne $smtp.ToLowerInvariant()) {
+        throw "Primary SMTP address for $smtp did not reconcile"
       }
       $cas = Get-CASMailbox -Identity $smtp -ErrorAction Stop
       if ($cas.SmtpClientAuthenticationDisabled -ne $false) {

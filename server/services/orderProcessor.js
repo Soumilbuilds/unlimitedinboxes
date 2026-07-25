@@ -640,6 +640,41 @@ async function runEnableSignIn(orderId, createdMailboxes, mailboxPassword, graph
  }
 }
 
+async function runReconcileExchangeMailboxes(orderId, createdMailboxes, domain, exchangeOrgDomain) {
+ if (!exchangeOrgDomain) return;
+
+ const batchSize = 10;
+ for (let start = 0; start < createdMailboxes.length; start += batchSize) {
+ const batch = createdMailboxes.slice(start, start + batchSize);
+ const results = await ensureSharedMailboxes({
+ orgDomain: exchangeOrgDomain,
+ domain,
+ mailboxes: batch.map(mailbox => ({
+ displayName: mailbox.name,
+ alias: String(mailbox.email || '').split('@')[0]
+ }))
+ });
+ const failures = results.filter(result => !result.success);
+ if (failures.length) {
+ throw new Error(
+ `Exchange reconciliation failed for ${failures.map(result => (
+ result.email || `batch item ${result.index + 1}`
+ )).join(', ')}`
+ );
+ }
+ for (const result of results) {
+ const mailbox = batch[result.index];
+ if (mailbox && result.externalDirectoryObjectId) {
+ mailbox.objectId = result.externalDirectoryObjectId;
+ }
+ }
+ logMessage(
+ orderId,
+ `Exchange primary SMTP and mailbox SMTP AUTH reconciled for ${Math.min(start + batch.length, createdMailboxes.length)}/${createdMailboxes.length}.`
+ );
+ }
+}
+
 async function runConfigureSmtpAuth(orderId, page, exchangeOrgDomain = null) {
  logStep(orderId, 11, 'Exchange: enable SMTP AUTH before mailbox creation');
  if (exchangeOrgDomain) {
@@ -1127,6 +1162,18 @@ export async function processOrder(orderId) {
  } catch (err) {
  logMessage(orderId, `STEP 13 FAILED: ${err.message}`);
  throw new Error(`Sign-in enablement failed: ${err.message}`);
+ }
+
+ // Reconcile Exchange after Graph UPN updates. Microsoft can briefly restore
+ // the onmicrosoft.com address as primary while the backing user converges.
+ try {
+ logStep(orderId, 14, 'Reconcile Exchange primary SMTP and mailbox SMTP AUTH');
+ await runReconcileExchangeMailboxes(orderId, createdMailboxes, domain, exchangeOrgDomain);
+ updateOrderProgress(orderId, 70, createdMailboxes);
+ if (checkCancelled(orderId)) return;
+ } catch (err) {
+ logMessage(orderId, `STEP 14 FAILED: ${err.message}`);
+ throw new Error(`Exchange mailbox reconciliation failed: ${err.message}`);
  }
 
  // STEP 14: Assign Global Admin roles
