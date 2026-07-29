@@ -11,7 +11,8 @@ import {
  addOrderLog,
  deleteOrder,
  getOrderLogs as getStoredLogs,
- updateUserBillingById
+ updateUserBillingById,
+ getUserById
 } from '../db/database.js';
 import { xpay, PLANS } from '../services/xpay.js';
 import { getUserAccessState } from '../services/access.js';
@@ -295,8 +296,8 @@ router.post('/', async (req, res) => {
  });
  }
 
- let accessState = req.accessState || getUserAccessState(req.session.user);
- const user = req.session.user;
+ const user = getUserById(req.session.user.id);
+ let accessState = req.accessState || getUserAccessState(user);
 
  if ((!accessState.canAccessApp || !accessState.canCreateInbox) && user.xpay_pm_id && user.xpay_customer_id) {
  const currentPlan = user.xpay_subscription_plan || 'free';

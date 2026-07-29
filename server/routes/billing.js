@@ -479,6 +479,21 @@ router.post('/webhook', async (req, res) => {
  break;
  }
 
+ case eventType === 'payment_method_token.created' || eventType === 'setup_method.success': {
+ const pmData = event?.data || event;
+ const newPmId = pmData?.pmId;
+ const customerId = pmData?.customerId;
+ if (!newPmId || !customerId) break;
+ const user = getUserByXpayCustomerId(String(customerId));
+ if (!user) break;
+
+ updateUserBillingById(user.id, {
+ xpay_pm_id: String(newPmId),
+ xpay_payment_method_status: 'active',
+ });
+ break;
+ }
+
  case eventType === 'payment.failed' || eventType === 'subscription.payment_failed': {
  const subData = event?.data?.subscription || event?.data || event;
  const subId = subData?.id;
