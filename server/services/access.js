@@ -1,211 +1,114 @@
-const INTRO_DOWNLOAD_LIMIT = 10;
-const MANUAL_PLAN_LIMITS = new Map([
-  ['25', 25],
-  ['50', 50],
-  ['100', 100]
-]);
+import { isSubscriptionActive, isSubscriptionPastDue, TRIAL_DAYS } from '../services/xpay.js';
 
-function normalize(value) {
-  return String(value || '').trim();
+const PLAN_LIMITS = {
+ free: { inboxesLimit: 0, concurrentOrders: 0 },
+ trial: { inboxesLimit: 100, concurrentOrders: 1 },
+ starter: { inboxesLimit: 500, concurrentOrders: 1 },
+ growth: { inboxesLimit: 1500, concurrentOrders: 1 },
+ unlimited: { inboxesLimit: Infinity, concurrentOrders: 1 },
+};
+
+function getPlanKey(user) {
+ const subPlan = user?.xpay_subscription_plan;
+ if (subPlan && PLAN_LIMITS[subPlan]) return subPlan;
+
+ const stored = user?.plan;
+ if (stored && PLAN_LIMITS[stored]) return stored;
+
+ const status = (user?.xpay_subscription_status || '').toUpperCase();
+ if (['TRIALING', 'TRIAL'].includes(status)) return 'trial';
+
+ return 'free';
 }
 
-function normalizeLower(value) {
-  return normalize(value).toLowerCase();
+function getPlanLimits(user) {
+ const planKey = getPlanKey(user);
+ return PLAN_LIMITS[planKey] || PLAN_LIMITS.free || { inboxesLimit: 0, concurrentOrders: 0 };
 }
 
-function matchesProduct(productId, ...envKeys) {
-  const normalized = normalize(productId);
-  if (!normalized) return false;
-  return envKeys.some((key) => normalize(process.env[key]) === normalized);
+export function isOnTrial(user) {
+ const status = (user?.xpay_subscription_status || '').toUpperCase();
+ if (!['TRIALING', 'TRIAL'].includes(status)) return false;
+
+ const trialEnd = user?.xpay_trial_ends_at ? new Date(user.xpay_trial_ends_at) : null;
+ return trialEnd ? trialEnd > new Date() : false;
 }
 
-export function getSubscriptionTierFromProduct(productId) {
-  if (matchesProduct(productId, 'STRIPE_PRICE_RESELLER')) {
-    return 'reseller';
-  }
-  if (matchesProduct(productId, 'STRIPE_PRICE_PER_ORDER')) {
-    return 'perOrder';
-  }
-  if (matchesProduct(productId, 'STRIPE_PRICE_ADVANCED')) {
-    return 'advanced';
-  }
-  if (matchesProduct(productId, 'STRIPE_PRICE_STANDARD')) {
-    return 'standard';
-  }
-  return null;
-}
-
-export function isManualAllowancePlan(plan) {
-  return MANUAL_PLAN_LIMITS.has(normalize(plan));
-}
-
-export function getManualAllowance(plan) {
-  return MANUAL_PLAN_LIMITS.get(normalize(plan)) || 0;
-}
-
-export function isPaidSubscriptionStatus(status) {
-  return normalizeLower(status) === 'active';
-}
-
-export function isPaymentMethodUpdateStatus(status) {
-  return normalizeLower(status) === 'on_hold';
-}
-
-function isBillingIssueStatus(status) {
-  return ['past_due', 'unpaid', 'incomplete'].includes(normalizeLower(status));
-}
-
-function getStripeState(user) {
-  const subStatus = normalizeLower(user?.stripe_subscription_status);
-  const product = normalize(user?.stripe_product);
-
-  const isActive = subStatus === 'active' || subStatus === 'trialing';
-  const trialActive = subStatus === 'trialing';
-  const hasBillingIssue = isBillingIssueStatus(subStatus);
-
-  let paidTier = null;
-  if (isActive && !trialActive) {
-    if (product === 'reseller') paidTier = 'reseller';
-    else if (product === 'perOrder') paidTier = 'perOrder';
-    else if (product === 'advanced') paidTier = 'advanced';
-    else if (product === 'standard' || product === 'intro') paidTier = 'standard';
-  }
-
-  const introOfferUsed = Boolean(
-    user?.stripe_intro_offer_used
-    || user?.stripe_subscription_id
-    || user?.whop_membership_id
-    || user?.whop_plan_id
-  );
-
-  return {
-    trialActive,
-    paidTier,
-    hasBillingIssue,
-    membershipStatus: subStatus,
-    introOfferUsed,
-    hasBillingPortal: !!user?.stripe_customer_id,
-    isPastDue: hasBillingIssue,
-  };
+export function getSubscriptionTier(user) {
+ const planKey = getPlanKey(user);
+ if (planKey === 'unlimited') return 'unlimited';
+ if (planKey === 'growth') return 'growth';
+ if (planKey === 'starter') return 'starter';
+ if (isOnTrial(user)) return 'trial';
+ return 'free';
 }
 
 export function hasUsedIntroOffer(user) {
-  return Boolean(
-    user?.stripe_intro_offer_used
-    || user?.stripe_subscription_id
-    || user?.whop_membership_id
-    || user?.whop_plan_id
-  );
+ return Boolean(
+ user?.xpay_subscription_id
+ || user?.xpay_customer_id
+ );
 }
 
 export function getUserAccessState(user) {
-  const storedPlan = normalizeLower(user?.plan || 'free');
-  const manualAllowance = getManualAllowance(storedPlan);
-  const lifetimeCompletedOrders = Math.max(Number(user?.lifetime_completed_orders || 0), 0);
+ const planKey = getPlanKey(user);
+ const limits = getPlanLimits(user);
+ const inboxesUsed = user?.inboxes_used || 0;
+ const inboxesLimit = limits.inboxesLimit;
+ const hasConcurrentOrders = Boolean(user?.has_concurrent_orders);
 
-  const stripeState = getStripeState(user);
+ const subscriptionStatus = (user?.xpay_subscription_status || '').toUpperCase();
+ const isActive = isSubscriptionActive(subscriptionStatus);
+ const isPastDue = isSubscriptionPastDue(subscriptionStatus);
+ const trialing = isOnTrial(user);
 
-  const paidTier = stripeState.paidTier;
-  const activeTrial = stripeState.trialActive;
+ const inboxesAvailable = inboxesLimit === Infinity
+ ? Infinity
+ : Math.max(0, inboxesLimit - inboxesUsed);
+ const canCreateInbox = inboxesLimit === Infinity || inboxesUsed < inboxesLimit;
+ const canAccessApp = isActive || trialing;
 
-  let effectivePlan = 'free';
-  let downloadAllowance = 0;
-  let maxConcurrentOrders = 0;
-  let canAccessApp = false;
-  let canUseCustomNames = false;
-  let canCreateMoreThanOneCompletedOrder = false;
-  let canDownloadAll = false;
-  let canAccessApi = false;
-  let hasUnlimitedOrders = false;
+ const usedIntroOffer = hasUsedIntroOffer(user);
+ const needsIntroOffer = !canAccessApp && !usedIntroOffer;
+ const needsPaidSubscription = !canAccessApp && usedIntroOffer && !isPastDue;
 
-  if (paidTier === 'advanced') {
-    effectivePlan = 'advanced';
-    downloadAllowance = Number.POSITIVE_INFINITY;
-    maxConcurrentOrders = Number.POSITIVE_INFINITY;
-    canAccessApp = true;
-    canUseCustomNames = true;
-    canCreateMoreThanOneCompletedOrder = true;
-    canDownloadAll = true;
-  } else if (paidTier === 'standard') {
-    effectivePlan = 'standard';
-    downloadAllowance = Number.POSITIVE_INFINITY;
-    maxConcurrentOrders = 1;
-    canAccessApp = true;
-    canUseCustomNames = true;
-    canCreateMoreThanOneCompletedOrder = true;
-    canDownloadAll = true;
-  } else if (paidTier === 'reseller') {
-    effectivePlan = 'reseller';
-    downloadAllowance = Number.POSITIVE_INFINITY;
-    maxConcurrentOrders = Number.POSITIVE_INFINITY;
-    canAccessApp = true;
-    canUseCustomNames = true;
-    canCreateMoreThanOneCompletedOrder = true;
-    canDownloadAll = true;
-    canAccessApi = true;
-    hasUnlimitedOrders = true;
-  } else if (paidTier === 'perOrder') {
-    effectivePlan = 'perOrder';
-    downloadAllowance = Number.POSITIVE_INFINITY;
-    maxConcurrentOrders = Number.POSITIVE_INFINITY;
-    canAccessApp = true;
-    canUseCustomNames = true;
-    canCreateMoreThanOneCompletedOrder = true;
-    canDownloadAll = true;
-    canAccessApi = true;
-    hasUnlimitedOrders = true;
-  } else if (manualAllowance > 0) {
-    effectivePlan = storedPlan;
-    downloadAllowance = manualAllowance;
-    maxConcurrentOrders = 1;
-    canAccessApp = true;
-    canDownloadAll = manualAllowance >= 100;
-  } else if (activeTrial) {
-    effectivePlan = 'intro';
-    downloadAllowance = INTRO_DOWNLOAD_LIMIT;
-    maxConcurrentOrders = 1;
-    canAccessApp = true;
-  }
+ const blockingReason = isPastDue
+ ? 'payment_overdue'
+ : (needsIntroOffer ? 'needs_intro_offer' : (!canAccessApp ? 'needs_paid_subscription' : null));
 
-  const usedIntroOffer = hasUsedIntroOffer(user);
-  const needsIntroOffer = !canAccessApp && !usedIntroOffer;
-  const needsPaidSubscription = !canAccessApp && usedIntroOffer && !stripeState.isPastDue;
-  const blockingReason = stripeState.isPastDue
-    ? 'payment_overdue'
-    : (needsIntroOffer ? 'needs_intro_offer' : (!canAccessApp ? 'needs_paid_subscription' : null));
-  const recommendedCheckoutIntent = stripeState.isPastDue
-    ? 'retry'
-    : (needsIntroOffer ? 'intro' : (!canAccessApp ? 'standard' : null));
-  const completedOrderQuotaReached =
-    !canCreateMoreThanOneCompletedOrder
-    && lifetimeCompletedOrders >= 1;
+ const recommendedCheckoutIntent = isPastDue
+ ? 'retry'
+ : (needsIntroOffer ? 'intro' : (!canAccessApp ? 'standard' : null));
 
-  return {
-    effectivePlan,
-    storedPlan,
-    downloadAllowance,
-    canAccessApp,
-    canUseCustomNames,
-    canCreateMoreThanOneCompletedOrder,
-    completedOrderQuotaReached,
-    canDownloadAll,
-    canOpenInboxesPage: downloadAllowance > 0,
-    maxConcurrentOrders,
-    lifetimeCompletedOrders,
-    trialActive: activeTrial,
-    introOfferUsed: usedIntroOffer,
-    subscriptionStatus: stripeState.membershipStatus || null,
-    subscriptionTier: paidTier,
-    needsIntroOffer,
-    needsPaidSubscription,
-    needsPaymentMethodUpdate: stripeState.isPastDue,
-    blockingReason,
-    recommendedCheckoutIntent,
-    isFullyPaid: paidTier === 'standard' || paidTier === 'advanced' || paidTier === 'reseller' || paidTier === 'perOrder',
-    hasBillingPortal: stripeState.hasBillingPortal,
-    cleanupDueAt: null,
-    hasBillingIssue: stripeState.isPastDue,
-    canAccessApi: paidTier === 'reseller' || paidTier === 'perOrder',
-    hasUnlimitedOrders: paidTier === 'reseller' || paidTier === 'perOrder',
-  };
+ return {
+ effectivePlan: planKey,
+ storedPlan: planKey,
+ inboxesUsed,
+ inboxesLimit,
+ inboxesAvailable,
+ canCreateInbox,
+ hasConcurrentOrders,
+ maxConcurrentOrders: hasConcurrentOrders ? Infinity : limits.concurrentOrders,
+ isActive,
+ isTrialing: trialing,
+ isPastDue,
+ subscriptionStatus: user?.xpay_subscription_status || null,
+ subscriptionTier: getSubscriptionTier(user),
+ trialActive: trialing,
+ trialEndsAt: user?.xpay_trial_ends_at || null,
+ introOfferUsed: usedIntroOffer,
+ needsIntroOffer,
+ needsPaidSubscription,
+ needsPaymentMethodUpdate: isPastDue,
+ blockingReason,
+ recommendedCheckoutIntent,
+ isFullyPaid: ['starter', 'growth', 'unlimited'].includes(planKey) && isActive,
+ hasBillingPortal: Boolean(user?.xpay_customer_id),
+ cleanupDueAt: null,
+ hasBillingIssue: isPastDue,
+ canAccessApp,
+ canAccessApi: ['growth', 'unlimited'].includes(planKey),
+ hasUnlimitedOrders: planKey === 'unlimited',
+ canDownloadAll: canAccessApp,
+ };
 }
