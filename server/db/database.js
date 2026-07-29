@@ -359,5 +359,7 @@ export function updateApiKeyLastUsed(id) {
 }
 
 export function deleteApiKey(id) {
- return db.prepare('DELETE FROM api_keys WHERE id = ?').run(id);
+  return db.prepare('DELETE FROM api_keys WHERE id = ?').run(id);
 }
+
+export const touchApiKey = updateApiKeyLastUsed;
