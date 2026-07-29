@@ -45,13 +45,13 @@ function getRequestBaseUrl(req) {
 }
 
 function buildSubscriptionUpdate(user, xpaySub, planKey) {
-  const customerId = xpaySub?.customerId || xpaySub?.customer?.customerId || user.xpay_customer_id || null;
+ const customerId = xpaySub?.customerId || xpaySub?.customer?.customerId || user.xpay_customer_id || null;
 
-  return {
-  plan: isSubscriptionActive(xpaySub?.status) ? planKey : (user.plan || 'free'),
-  xpay_customer_id: customerId,
-  xpay_subscription_id: xpaySub?.subscriptionId || xpaySub?.id || null,
-  xpay_subscription_status: xpaySub?.status || null,
+ return {
+ plan: isSubscriptionActive(xpaySub?.status) ? planKey : (user.plan || 'free'),
+ xpay_customer_id: customerId,
+ xpay_subscription_id: xpaySub?.subscriptionId || xpaySub?.id || null,
+ xpay_subscription_status: xpaySub?.status || null,
  xpay_subscription_plan: planKey,
  xpay_trial_ends_at: xpaySub?.trial_end_date || null,
  xpay_last_payment_status: xpaySub?.last_payment_status || 'unknown',
@@ -70,8 +70,8 @@ async function ensureXpayCustomer(user, baseUrl) {
  redirect_url: `${baseUrl}/billing/return`,
  });
 
-  const customerId = response?.data?.customerId || response?.customerId || response?.data?.id || response?.id;
-  if (customerId) {
+ const customerId = response?.data?.customerId || response?.customerId || response?.data?.id || response?.id;
+ if (customerId) {
  updateUserBillingById(user.id, { xpay_customer_id: String(customerId) });
  }
 
@@ -104,28 +104,28 @@ router.post('/checkout', async (req, res) => {
  const baseUrl = getRequestBaseUrl(req);
  const customerId = await ensureXpayCustomer(user, baseUrl);
 
-  const setupResponse = await xpay.request('POST', '/setup-method/create', {
-  customerId: customerId,
-  amount: TRIAL_AUTH_CHARGE_CENTS,
-  currency: 'USD',
-  billingDetails: {
-    email: user.email,
-    name: user.name || user.email.split('@')[0],
-    country: req.headers['cf-ipcountry'] || 'US',
-  },
-  phoneNumberRequired: false,
-  paymentMethods: ["CARD", "APPLE_PAY", "GOOGLE_PAY"],
-  productPage: {
-    name: "Unlimited Mailboxes Starter",
-    description: "Create The First 100 Inboxes For Just One Dollar."
-  },
-  callbackUrl: `${baseUrl}/billing/return`,
-  metadata: {
-    app: "unlimited_mailboxes",
-    user_id: String(user.id),
-    purpose: "trial_auth"
-  }
-  });
+ const setupResponse = await xpay.request('POST', '/setup-method/create', {
+ customerId: customerId,
+ amount: TRIAL_AUTH_CHARGE_CENTS,
+ currency: 'USD',
+ billingDetails: {
+ email: user.email,
+ name: user.name || user.email.split('@')[0],
+ country: req.headers['cf-ipcountry'] || 'US',
+ },
+ phoneNumberRequired: false,
+ paymentMethods: ["CARD", "APPLE_PAY", "GOOGLE_PAY"],
+ productPage: {
+ name: "Unlimited Mailboxes Starter",
+ description: "Create The First 100 Inboxes For Just One Dollar."
+ },
+ callbackUrl: `${baseUrl}/billing/return`,
+ metadata: {
+ app: "unlimited_mailboxes",
+ user_id: String(user.id),
+ purpose: "trial_auth"
+ }
+ });
 
  const setupId = setupResponse?.data?.setupMethodId || setupResponse?.setupMethodId;
  const redirectUrl = setupResponse?.data?.fwdUrl || setupResponse?.fwdUrl;
@@ -190,34 +190,34 @@ router.post('/subscribe', async (req, res) => {
  const trialEnd = new Date();
  trialEnd.setDate(trialEnd.getDate() + TRIAL_DAYS);
 
-  const subResponse = await xpay.request('POST', '/subscription/create', {
-  customerId: customerId,
-  customerDetails: {
-    email: user.email,
-    name: user.name || user.email.split('@')[0],
-    country: req.headers['cf-ipcountry'] || 'US',
-  },
-  amount: plan.amountCents,
-  currency: 'USD',
-  interval: plan.interval,
-  intervalCount: plan.intervalCount,
-  trialDays: TRIAL_DAYS,
-  cycleCount: -1,
-  metadata: {
-  plan_key: planKey,
-  user_id: String(user.id),
-  },
-  callbackUrl: `${baseUrl}/billing/webhook`,
-  cancelUrl: `${baseUrl}/billing/cancel`,
-  productPage: {
-    name: plan.name,
-    description: `Subscription for ${plan.name} plan.`
-  }
-  });
+ const subResponse = await xpay.request('POST', '/subscription/create', {
+ customerId: customerId,
+ customerDetails: {
+ email: user.email,
+ name: user.name || user.email.split('@')[0],
+ country: req.headers['cf-ipcountry'] || 'US',
+ },
+ amount: plan.amountCents,
+ currency: 'USD',
+ interval: plan.interval,
+ intervalCount: plan.intervalCount,
+ trialDays: TRIAL_DAYS,
+ cycleCount: -1,
+ metadata: {
+ plan_key: planKey,
+ user_id: String(user.id),
+ },
+ callbackUrl: `${baseUrl}/billing/webhook`,
+ cancelUrl: `${baseUrl}/billing/cancel`,
+ productPage: {
+ name: plan.name,
+ description: `Subscription for ${plan.name} plan.`
+ }
+ });
 
-  const sub = subResponse?.data || subResponse;
-  if (!sub?.subscriptionId && !sub?.id) {
-  throw new Error(subResponse?.message || 'Failed to create subscription.');
+ const sub = subResponse?.data || subResponse;
+ if (!sub?.subscriptionId && !sub?.id) {
+ throw new Error(subResponse?.message || 'Failed to create subscription.');
  }
 
  const update = buildSubscriptionUpdate(user, sub, planKey);
@@ -229,10 +229,10 @@ router.post('/subscribe', async (req, res) => {
  const latest = getUserById(user.id) || user;
  req.session.user = serializeSessionUser(latest);
 
-  return res.json({
-  success: true,
-  subscriptionId: sub.subscriptionId || sub.id,
-  status: sub.status,
+ return res.json({
+ success: true,
+ subscriptionId: sub.subscriptionId || sub.id,
+ status: sub.status,
  plan: planKey,
  trialEndsAt: trialEnd.toISOString(),
  message: `7-day trial started. Card will be charged ${plan.displayPrice} after the trial.`,
@@ -307,8 +307,59 @@ router.post('/return', async (req, res) => {
  }
 
  try {
-  // Wait briefly in case webhook arrives, but don't save setupId as pm_id
-  await new Promise(r => setTimeout(r, 1000));
+ // Auto-create subscription after successful setup-method
+ if (!user.xpay_subscription_id && !user.xpay_subscription_status) {
+ try {
+ const baseUrl = getRequestBaseUrl(req);
+ const planKey = 'starter';
+ const plan = PLANS[planKey];
+
+ const trialEnd = new Date();
+ trialEnd.setDate(trialEnd.getDate() + TRIAL_DAYS);
+
+ const subResponse = await xpay.request('POST', '/subscription/create', {
+ customerId: user.xpay_customer_id,
+ customerDetails: {
+ email: user.email,
+ name: user.name || user.email.split('@')[0],
+ country: req.headers['cf-ipcountry'] || 'US',
+ },
+ amount: plan.amountCents,
+ currency: 'USD',
+ interval: plan.interval,
+ intervalCount: plan.intervalCount,
+ trialDays: TRIAL_DAYS,
+ cycleCount: -1,
+ metadata: {
+ plan_key: planKey,
+ user_id: String(user.id),
+ source: 'auto_subscribe_after_setup',
+ },
+ callbackUrl: baseUrl + '/billing/webhook',
+ cancelUrl: baseUrl + '/billing/cancel',
+ productPage: {
+ name: plan.name,
+ description: 'Subscription for ' + plan.name + ' plan.',
+ }
+ });
+
+ const sub = subResponse.data || subResponse;
+ if (sub && (sub.subscriptionId || sub.id)) {
+ updateUserBillingById(user.id, {
+ plan: 'starter',
+ xpay_subscription_id: sub.subscriptionId || sub.id,
+ xpay_subscription_status: sub.status || 'trialing',
+ xpay_subscription_plan: 'starter',
+ xpay_trial_ends_at: trialEnd.toISOString(),
+ });
+ }
+ } catch (subError) {
+ console.error('[billing] auto-subscribe after setup failed:', subError);
+ }
+ }
+
+ // Wait briefly in case webhook arrives, then save setupId as pm_id
+ await new Promise(r => setTimeout(r, 1500));
 
  const latest = getUserById(user.id) || user;
  req.session.user = serializeSessionUser(latest);
@@ -402,8 +453,8 @@ router.post('/webhook', async (req, res) => {
 
  switch (true) {
  case eventType === 'payment_method' || eventType === 'payment_method.added': {
-      const customerId = event?.data?.customerId || event?.data?.customer?.customerId || event?.data?.customer_id || event?.data?.customer?.id;
-      const pmId = event?.data?.paymentMethodId || event?.data?.id || event?.data?.pm_id;
+ const customerId = event?.data?.customerId || event?.data?.customer?.customerId || event?.data?.customer_id || event?.data?.customer?.id;
+ const pmId = event?.data?.paymentMethodId || event?.data?.id || event?.data?.pm_id;
  if (customerId && pmId) {
  const user = getUserByXpayCustomerId(String(customerId));
  if (user) {
@@ -418,9 +469,9 @@ router.post('/webhook', async (req, res) => {
 
  case eventType === 'subscription' || eventType === 'subscription.created': {
  const subData = event?.data || event;
-      const customerId = subData?.customerId || subData?.customer_id || subData?.customer?.customerId || subData?.customer?.id;
-      const subId = subData?.subscriptionId || subData?.id;
-      const planKey = subData?.metadata?.plan_key || 'starter';
+ const customerId = subData?.customerId || subData?.customer_id || subData?.customer?.customerId || subData?.customer?.id;
+ const subId = subData?.subscriptionId || subData?.id;
+ const planKey = subData?.metadata?.plan_key || 'starter';
  const status = subData?.status || 'active';
 
  const user = customerId ? getUserByXpayCustomerId(String(customerId)) : null;
@@ -499,10 +550,19 @@ router.post('/webhook', async (req, res) => {
  const user = getUserByXpaySubscriptionId(String(subId));
  if (!user) break;
 
- updateUserBillingById(user.id, {
+ const invoiceId = subData?.invoice?.id || subData?.invoiceId || subData?.invoice_id;
+ const invoiceUrl = subData?.invoice?.url || subData?.invoiceUrl || subData?.invoice_url;
+ const invoiceStatus = subData?.invoice?.status || subData?.invoice_status;
+
+ const updates = {
  xpay_subscription_status: subData?.status === 'trial' ? 'trial' : 'past_due',
  xpay_last_payment_status: 'failed',
- });
+ };
+ if (invoiceId) updates.xpay_last_invoice_id = String(invoiceId);
+ if (invoiceStatus) updates.xpay_last_invoice_status = String(invoiceStatus);
+ if (invoiceUrl) updates.xpay_last_invoice_url = String(invoiceUrl);
+
+ updateUserBillingById(user.id, updates);
  break;
  }
 
@@ -546,9 +606,17 @@ router.post('/webhook', async (req, res) => {
  };
 
  const mappedStatus = statusMap[status] || status;
- updateUserBillingById(user.id, {
- xpay_subscription_status: mappedStatus,
- });
+
+ const invoiceId = intentData?.invoice?.id || intentData?.invoiceId || intentData?.invoice_id;
+ const invoiceUrl = intentData?.invoice?.url || intentData?.invoiceUrl || intentData?.invoice_url;
+ const invoiceStatus = intentData?.invoice?.status || intentData?.invoice_status;
+
+ const updates = { xpay_subscription_status: mappedStatus };
+ if (invoiceId) updates.xpay_last_invoice_id = String(invoiceId);
+ if (invoiceUrl) updates.xpay_last_invoice_url = String(invoiceUrl);
+ if (invoiceStatus) updates.xpay_last_invoice_status = String(invoiceStatus);
+
+ updateUserBillingById(user.id, updates);
  break;
  }
 
@@ -585,6 +653,9 @@ export function serializeXpayBillingState(user) {
  subscriptionId: user.xpay_subscription_id || null,
  paymentMethodStatus: user.xpay_last_payment_status || null,
  lastPaymentStatus: user.xpay_last_payment_status || null,
+ invoiceId: user.xpay_last_invoice_id || null,
+ invoiceStatus: user.xpay_last_invoice_status || null,
+ invoiceUrl: user.xpay_last_invoice_url || null,
  inboxesUsed: user.inboxes_used || 0,
  inboxesLimit: user.inboxes_limit || 0,
  hasConcurrentOrders: Boolean(user.has_concurrent_orders),

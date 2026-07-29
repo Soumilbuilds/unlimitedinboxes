@@ -54,12 +54,27 @@ function redirectToOrders() {
 }
 
 function OverdueInvoiceRecovery({ billing, refreshBilling }) {
+ const invoiceUrl = billing?.invoiceUrl;
+ const invoiceId = billing?.invoiceId;
+
  return (
  <div className="billing-overdue-panel">
  <div className="alert error billing-page-alert">
  Invoice overdue. Access is paused until the open payment is settled.
+ {invoiceId && <span style={{ display: 'block', fontSize: '0.85em', marginTop: '4px', opacity: 0.8 }}>Invoice: {invoiceId}</span>}
  </div>
  <div className="billing-overdue-actions">
+ {invoiceUrl && (
+ <a
+ className="btn primary"
+ href={invoiceUrl}
+ target="_blank"
+ rel="noopener noreferrer"
+ style={{ textDecoration: 'none', marginRight: '8px' }}
+ >
+ Pay Invoice
+ </a>
+ )}
  <button
  className="btn ghost"
  type="button"

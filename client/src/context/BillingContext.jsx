@@ -31,7 +31,8 @@ function buildBlockingCheckout(billing) {
  allowClose: false,
  headline: 'No Active Subscription Found',
  subheadline: 'Create The First 100 Inboxes For Just One Dollar.',
- description: null
+ description: null,
+ showInvoice: false
  };
  }
 
@@ -44,7 +45,8 @@ function buildBlockingCheckout(billing) {
  allowClose: false,
  headline: 'Payment Issue',
  subheadline: 'Your payment could not be processed. Please update your payment method to restore access.',
- description: null
+ description: null,
+ showInvoice: true
  };
  }
 
@@ -94,7 +96,8 @@ function buildUpgradeCheckout(intent) {
  allowClose: false,
  headline: 'Payment Issue',
  subheadline: 'Your payment could not be processed. Please update your payment method to restore access.',
- description: null
+ description: null,
+ showInvoice: true
  };
  }
 
@@ -258,6 +261,10 @@ export function BillingProvider({ children }) {
  }
 
  if (location.pathname === '/billing') {
+ return;
+ }
+
+ if (blockingCheckout.intent === 'retry') {
  return;
  }
 

@@ -77,12 +77,15 @@ function parseNameLines(text) {
 
 function buildBillingRequiredNotice(billing, responseData = {}) {
  const blockingReason = responseData.blockingReason || billing?.blockingReason;
+ const invoiceUrl = responseData.invoiceUrl || billing?.invoiceUrl;
+
  if (blockingReason === 'subscription_past_due') {
  return {
  intent: 'retry',
  title: 'Subscription Past Due',
  subtitle: 'Pay the open invoice to restore access.',
- action: 'Pay Invoice'
+ action: 'Pay Invoice',
+ invoiceUrl,
  };
  }
 
@@ -90,7 +93,8 @@ function buildBillingRequiredNotice(billing, responseData = {}) {
  intent: 'starter',
  title: 'No Active Subscription Found',
  subtitle: 'Create The First 100 Inboxes For Just One Dollar.',
- action: 'Create Inboxes'
+ action: 'Create Inboxes',
+ invoiceUrl: null,
  };
 }
 
@@ -932,12 +936,25 @@ export default function Orders() {
  {billingRequiredNotice.subtitle}
  </p>
  <div className="modal-actions centered">
+ {billingRequiredNotice.invoiceUrl ? (
+ <a
+ className="btn accent"
+ href={billingRequiredNotice.invoiceUrl}
+ target="_blank"
+ rel="noopener noreferrer"
+ style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+ >
+ {billingRequiredNotice.action}
+ <span style={{ fontSize: '0.85em' }}>↗</span>
+ </a>
+ ) : (
  <button
  className="btn accent"
  onClick={() => void openUpgrade(billingRequiredNotice.intent)}
  >
  {billingRequiredNotice.action}
  </button>
+ )}
  </div>
  </div>
  </div>

@@ -90,7 +90,7 @@ function getTenantPurchaseAmountCents(tenantType, quantity) {
 }
 
 async function chargeSavedPaymentMethodForTenantPurchase(user, tenantType, quantity) {
- if (!user?.xpay_customer_id || !user?.xpay_pm_id) {
+ if (!user?.xpay_customer_id || !user?.xpay_default_payment_method_id) {
  return { paid: false, reason: 'no_default_payment_method' };
  }
 
@@ -98,7 +98,7 @@ async function chargeSavedPaymentMethodForTenantPurchase(user, tenantType, quant
  const cents = centsForTenantPurchase(tenantType, quantity);
  const response = await xpay.request('POST', '/payments/charge-tokenised-pm', {
  customer_id: user.xpay_customer_id,
- payment_method_id: user.xpay_pm_id,
+ pm_id: user.xpay_default_payment_method_id,
  amount: cents,
  currency: 'USD',
  description: `${quantity} ${tenantType === 'usTenant' ? 'US IP' : 'Asia IP'} tenant${quantity === 1 ? '' : 's'}`,
