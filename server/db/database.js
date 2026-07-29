@@ -163,6 +163,12 @@ function ensureUserBillingColumns() {
  ensureColumn('users', 'has_concurrent_orders', 'INTEGER DEFAULT 0');
 }
 
+function ensureTenantPurchasesColumns() {
+  ensureColumn('tenant_purchases', 'xpay_checkout_id', 'TEXT');
+  ensureColumn('tenant_purchases', 'xpay_charge_id', 'TEXT');
+  ensureColumn('tenant_purchases', 'xpay_customer_id', 'TEXT');
+}
+
 function backfillLifetimeCompletedOrders() {
  db.prepare(`
  UPDATE users
@@ -189,6 +195,7 @@ ensureTenantsRedirectColumn();
 ensureTenantsMfaSecretColumn();
 ensureOrdersUserColumn();
 ensureUserBillingColumns();
+ensureTenantPurchasesColumns();
 backfillLifetimeCompletedOrders();
 
 // --- USERS ---
@@ -366,4 +373,36 @@ export const touchApiKey = updateApiKeyLastUsed;
 
 export function updateTenantId(userId, tenantId) {
   return db.prepare('UPDATE users SET tenant_id = ? WHERE id = ?').run(tenantId, userId);
+}
+
+// --- TENANT PURCHASES ---
+
+export function createTenantPurchaseRecord(record) {
+  const stmt = db.prepare(`
+    INSERT INTO tenant_purchases (
+      user_id,
+      tenant_type,
+      quantity,
+      amount_cents,
+      currency,
+      status,
+      xpay_checkout_id,
+      xpay_charge_id,
+      xpay_customer_id,
+      error_message
+    )
+    VALUES (
+      @user_id,
+      @tenant_type,
+      @quantity,
+      @amount_cents,
+      COALESCE(@currency, 'usd'),
+      COALESCE(@status, 'pending'),
+      @xpay_checkout_id,
+      @xpay_charge_id,
+      @xpay_customer_id,
+      @error_message
+    )
+  `);
+  return stmt.run(record);
 }
