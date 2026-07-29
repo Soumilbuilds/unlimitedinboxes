@@ -1,550 +1,558 @@
 import { Router } from 'express';
+import crypto from 'node:crypto';
 import {
-  getUserByEmail,
-  getUserById,
-  getUserByStripeCustomerId,
-  getUserByStripeSubscriptionId,
-  updateUserBillingById,
-  updateTenantPurchaseByCheckoutSession,
-  resetOrdersUsed
+ getUserByEmail,
+ getUserById,
+ getUserByXpayCustomerId,
+ getUserByXpaySubscriptionId,
+ updateUserBillingById,
 } from '../db/database.js';
-import { getUserAccessState } from '../services/access.js';
-import {
-  createStripeCheckoutSession,
-  createCustomerPortalSession,
-  cancelSubscription,
-  retrieveCheckoutSession,
-  isCheckoutSessionComplete,
-  getSubscription,
-  getPendingInvoice,
-  verifyStripeWebhookSignature,
-  serializeStripeBillingState,
-  isStripeConfigured,
-  createResellerCheckoutSession,
-  createPerOrderCheckoutSession,
-  chargeSavedPaymentMethodForQuota,
-  STRIPE_PRICES
-} from '../services/stripe.js';
+import { xpay, PLANS, ADDON_CONCURRENT_ORDERS, TRIAL_DAYS, TRIAL_AUTH_CHARGE_CENTS, isSubscriptionActive } from '../services/xpay.js';
 
 const router = Router();
 
-const VALID_CHECKOUT_INTENTS = new Set(['intro', 'standard', 'advanced', 'reseller', 'perOrder']);
+function serializeSessionUser(user) {
+ return {
+ id: user.id,
+ email: user.email,
+ plan: user.plan || 'free',
+ billingStatus: user.xpay_subscription_status || null,
+ };
+}
 
-const serializeSessionUser = (user) => ({
-  id: user.id,
-  email: user.email,
-  plan: user.plan || 'free',
-  billingStatus: user.stripe_subscription_status || null
-});
-
-const getCurrentUser = (req) => {
-  const id = req.session?.user?.id;
-  if (id) return getUserById(id);
-  if (req.session?.user?.email) return getUserByEmail(req.session.user.email);
-  return null;
-};
+function getCurrentUser(req) {
+ const id = req.session?.user?.id;
+ if (id) return getUserById(id);
+ if (req.session?.user?.email) return getUserByEmail(req.session.user.email);
+ return null;
+}
 
 function getRequestBaseUrl(req) {
-  const origin = req.get('origin');
-  const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000')
-    .split(',')
-    .map(value => value.trim())
-    .filter(Boolean);
+ const origin = req.get('origin');
+ const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000')
+ .split(',')
+ .map((value) => value.trim())
+ .filter(Boolean);
 
-  if (
-    origin
-    && (
-      allowedOrigins.includes(origin)
-      || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)
-    )
-  ) {
-    return origin;
-  }
+ if (
+ origin
+ && (allowedOrigins.includes(origin) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin))
+ ) {
+ return origin;
+ }
 
-  return process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com';
+ return process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com';
 }
 
-function idOf(value) {
-  if (!value) return null;
-  if (typeof value === 'string') return value;
-  return value.id || null;
+function buildSubscriptionUpdate(user, xpaySub, planKey) {
+ const customerId = xpaySub?.customer?.id || user.xpay_customer_id || null;
+
+ return {
+ plan: isSubscriptionActive(xpaySub?.status) ? planKey : (user.plan || 'free'),
+ xpay_customer_id: customerId,
+ xpay_subscription_id: xpaySub?.id || null,
+ xpay_subscription_status: xpaySub?.status || null,
+ xpay_subscription_plan: planKey,
+ xpay_trial_ends_at: xpaySub?.trial_end_date || null,
+ xpay_last_payment_status: xpaySub?.last_payment_status || 'unknown',
+ };
 }
 
-function isoFromUnix(timestamp) {
-  return timestamp ? new Date(timestamp * 1000).toISOString() : null;
-}
+async function ensureXpayCustomer(user, baseUrl) {
+ if (user.xpay_customer_id) {
+ return user.xpay_customer_id;
+ }
 
-function planFromSubscription(sub, fallback = 'standard') {
-  const metadataPlan = sub?.metadata?.plan_key;
-  if (metadataPlan) return metadataPlan;
+ const response = await xpay.request('POST', '/customer/create', {
+ customer_id: String(user.id),
+ email: user.email,
+ full_name: user.name || user.email.split('@')[0],
+ redirect_url: `${baseUrl}/billing/return`,
+ });
 
-  const priceId = sub?.items?.data?.[0]?.price?.id || null;
-  if (priceId === STRIPE_PRICES.advanced) return 'advanced';
-  if (priceId === STRIPE_PRICES.standard || priceId === STRIPE_PRICES.intro) return fallback || 'standard';
-  return fallback || 'standard';
-}
+ const customerId = response?.data?.id || response?.id;
+ if (customerId) {
+ updateUserBillingById(user.id, { xpay_customer_id: String(customerId) });
+ }
 
-async function resolveSubscription(subscriptionLike) {
-  const subscriptionId = idOf(subscriptionLike);
-  if (!subscriptionId) return null;
-  if (typeof subscriptionLike === 'object' && subscriptionLike.current_period_end) {
-    return subscriptionLike;
-  }
-  return getSubscription(subscriptionId);
-}
-
-async function resolveInvoiceForStatus(customerId, latestInvoice, subscriptionStatus) {
-  if (latestInvoice && typeof latestInvoice === 'object') {
-    return latestInvoice;
-  }
-  if (['past_due', 'unpaid', 'incomplete'].includes(subscriptionStatus)) {
-    return getPendingInvoice(customerId);
-  }
-  return null;
-}
-
-async function buildSubscriptionUpdate(user, sub, fallbackPlan = 'standard', invoiceOverride = null) {
-  const customerId = idOf(sub.customer) || user.stripe_customer_id || null;
-  const latestInvoice = await resolveInvoiceForStatus(
-    customerId,
-    invoiceOverride || sub.latest_invoice,
-    sub.status
-  );
-  const planKey = planFromSubscription(sub, fallbackPlan);
-  const storedPlan = sub.status === 'trialing'
-    ? 'intro'
-    : (planKey === 'advanced' ? 'advanced' : 'standard');
-
-  return {
-    plan: ['active', 'trialing'].includes(sub.status) ? storedPlan : (user.plan || 'free'),
-    stripe_customer_id: customerId,
-    stripe_subscription_id: sub.id,
-    stripe_subscription_status: sub.status,
-    stripe_product: planKey,
-    stripe_plan_id: sub.items?.data?.[0]?.price?.id || null,
-    stripe_current_period_end: isoFromUnix(sub.current_period_end),
-    stripe_trial_ends_at: isoFromUnix(sub.trial_end),
-    stripe_cancel_at_period_end: sub.cancel_at_period_end ? 1 : 0,
-    stripe_default_payment_method_id: idOf(sub.default_payment_method),
-    stripe_last_payment_status: latestInvoice?.status === 'paid' ? 'paid' : (latestInvoice?.status || 'unknown'),
-    stripe_last_invoice_id: latestInvoice?.id || null,
-    stripe_last_invoice_status: latestInvoice?.status || null,
-    stripe_last_invoice_url: latestInvoice?.hosted_invoice_url || null,
-    stripe_intro_offer_used: planKey === 'intro' || user.stripe_intro_offer_used ? 1 : 0,
-    reseller_plan: sub.metadata?.plan_key === 'reseller' ? 1 : (sub.metadata?.plan_key === 'perOrder' ? 0 : user.reseller_plan),
-    orders_per_month: sub.metadata?.plan_key === 'perOrder'
-      ? parseInt(sub.metadata?.quantity || '0', 10)
-      : user.orders_per_month,
-  };
+ return customerId;
 }
 
 router.post('/checkout', async (req, res) => {
-  if (!req.session.authenticated || !req.session.user?.id) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+ if (!req.session.authenticated || !req.session.user?.id) {
+ return res.status(401).json({ error: 'Unauthorized' });
+ }
 
-  const user = getCurrentUser(req);
-  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+ const user = getCurrentUser(req);
+ if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-  const intent = VALID_CHECKOUT_INTENTS.has(String(req.body?.intent || '').toLowerCase().trim())
-    ? String(req.body.intent).toLowerCase().trim()
-    : 'standard';
+ if (!xpay.configured) {
+ return res.status(503).json({ error: 'xPay is not configured.' });
+ }
 
-  if (!isStripeConfigured()) {
-    return res.status(503).json({ error: 'Stripe is not configured.' });
-  }
+ const planKey = req.body?.plan || 'starter';
+ const plan = PLANS[planKey];
+ if (!plan) {
+ return res.status(400).json({ error: `Unknown plan: ${planKey}` });
+ }
 
-  if (!STRIPE_PRICES[intent]) {
-    return res.status(400).json({ error: `Unknown plan: ${intent}` });
-  }
+ try {
+ if (user.xpay_subscription_status && isSubscriptionActive(user.xpay_subscription_status)) {
+ return res.status(409).json({ error: 'Your subscription is already active.' });
+ }
 
-  try {
-    const access = getUserAccessState(user);
+ const baseUrl = getRequestBaseUrl(req);
+ const customerId = await ensureXpayCustomer(user, baseUrl);
 
-    if (access.hasBillingIssue || user.stripe_subscription_status === 'past_due') {
-      const serialized = serializeStripeBillingState(user);
-      return res.status(402).json({
-        error: 'Invoice overdue. Pay the open Stripe invoice to restore access.',
-        overdueInvoiceUrl: serialized.overdueInvoiceUrl,
-      });
-    }
+ const setupResponse = await xpay.request('POST', '/setup-method/create', {
+ customer_id: customerId,
+ amount: TRIAL_AUTH_CHARGE_CENTS,
+ currency: 'USD',
+ description: 'Card verification — $1.00 auth',
+ });
 
-    if (intent === 'intro') {
-      if (access.introOfferUsed && !access.trialActive) {
-        return res.status(409).json({ error: 'Your three-day trial has already been used.' });
-      }
-      if (access.trialActive || access.isFullyPaid) {
-        return res.status(409).json({ error: 'Your account already has active access.' });
-      }
-    }
+ const setupId = setupResponse?.data?.id || setupResponse?.id;
+ const redirectUrl = setupResponse?.data?.redirect_url || setupResponse?.redirect_url;
 
-    if (intent === 'standard' && (access.subscriptionTier === 'standard' || access.subscriptionTier === 'advanced')) {
-      return res.status(409).json({ error: 'Your paid subscription is already active.' });
-    }
+ if (redirectUrl) {
+ return res.json({
+ redirectUrl,
+ setupId,
+ provider: 'xpay',
+ plan: planKey,
+ });
+ }
 
-    if (intent === 'advanced' && access.subscriptionTier === 'advanced') {
-      return res.status(409).json({ error: 'Advanced is already active on this account.' });
-    }
+ if (setupId) {
+ updateUserBillingById(user.id, { xpay_pm_id: String(setupId), xpay_payment_method_status: 'active' });
+ return res.json({
+ success: true,
+ setupId,
+ provider: 'xpay',
+ plan: planKey,
+ });
+ }
 
-    if (intent === 'reseller') {
-      const checkout = await createResellerCheckoutSession(user, { appBaseUrl: getRequestBaseUrl(req) });
-      updateUserBillingById(user.id, { stripe_checkout_session_id: checkout.sessionId });
-      return res.json({ sessionId: checkout.sessionId, url: checkout.url, checkoutUrl: checkout.url });
-    }
+ return res.json({
+ success: true,
+ setupId,
+ provider: 'xpay',
+ plan: planKey,
+ });
+ } catch (error) {
+ console.error('[billing] xPay setup-method failed:', error);
+ return res.status(500).json({ error: error.message || 'Failed to authenticate payment method.' });
+ }
+});
 
-    if (intent === 'perOrder') {
-      const quantity = Math.max(3, parseInt(req.body?.quantity, 10) || 3);
-      const checkout = await createPerOrderCheckoutSession(user, quantity, { appBaseUrl: getRequestBaseUrl(req) });
-      updateUserBillingById(user.id, { stripe_checkout_session_id: checkout.sessionId });
-      return res.json({ sessionId: checkout.sessionId, url: checkout.url, checkoutUrl: checkout.url });
-    }
+router.post('/subscribe', async (req, res) => {
+ if (!req.session.authenticated || !req.session.user?.id) {
+ return res.status(401).json({ error: 'Unauthorized' });
+ }
 
-    const checkout = await createStripeCheckoutSession(user, intent, {
-      appBaseUrl: getRequestBaseUrl(req),
-    });
+ const user = getCurrentUser(req);
+ if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-    updateUserBillingById(user.id, { stripe_checkout_session_id: checkout.sessionId });
+ if (!xpay.configured) {
+ return res.status(503).json({ error: 'xPay is not configured.' });
+ }
 
-    return res.json({
-      sessionId: checkout.sessionId,
-      clientSecret: checkout.clientSecret,
-      url: checkout.url,
-      purchaseUrl: checkout.url,
-      checkoutUrl: checkout.url,
-      provider: 'stripe',
-      plan: intent,
-    });
-  } catch (error) {
-    console.error('[billing] Stripe checkout failed:', error);
-    return res.status(500).json({ error: error.message || 'Failed to create checkout session.' });
-  }
+ const planKey = req.body?.plan || 'starter';
+ const plan = PLANS[planKey];
+ if (!plan) {
+ return res.status(400).json({ error: `Unknown plan: ${planKey}` });
+ }
+
+ if (user.xpay_subscription_status && isSubscriptionActive(user.xpay_subscription_status)) {
+ return res.status(409).json({ error: 'Your subscription is already active.' });
+ }
+
+ try {
+ const baseUrl = getRequestBaseUrl(req);
+ const customerId = await ensureXpayCustomer(user, baseUrl);
+
+ const trialEnd = new Date();
+ trialEnd.setDate(trialEnd.getDate() + TRIAL_DAYS);
+
+ const subResponse = await xpay.request('POST', '/subscription/create', {
+ customer_id: customerId,
+ product_name: plan.name,
+ amount: plan.amountCents,
+ currency: 'USD',
+ interval: plan.interval,
+ interval_count: plan.intervalCount,
+ trial_days: TRIAL_DAYS,
+ cycle_count: -1,
+ metadata: {
+ plan_key: planKey,
+ user_id: String(user.id),
+ },
+ callback_url: `${baseUrl}/billing/webhook`,
+ cancel_url: `${baseUrl}/billing/cancel`,
+ product_page: `${baseUrl}/billing`,
+ });
+
+ const sub = subResponse?.data || subResponse;
+ if (!sub?.id) {
+ throw new Error(subResponse?.message || 'Failed to create subscription.');
+ }
+
+ const update = buildSubscriptionUpdate(user, sub, planKey);
+ updateUserBillingById(user.id, {
+ ...update,
+ xpay_trial_ends_at: trialEnd.toISOString(),
+ });
+
+ const latest = getUserById(user.id) || user;
+ req.session.user = serializeSessionUser(latest);
+
+ return res.json({
+ success: true,
+ subscriptionId: sub.id,
+ status: sub.status,
+ plan: planKey,
+ trialEndsAt: trialEnd.toISOString(),
+ message: `7-day trial started. Card will be charged ${plan.displayPrice} after the trial.`,
+ });
+ } catch (error) {
+ console.error('[billing] xPay subscription failed:', error);
+ return res.status(500).json({ error: error.message || 'Failed to create subscription.' });
+ }
 });
 
 router.get('/status', async (req, res) => {
-  if (!req.session.authenticated || !req.session.user?.id) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+ if (!req.session.authenticated || !req.session.user?.id) {
+ return res.status(401).json({ error: 'Unauthorized' });
+ }
 
-  const user = getCurrentUser(req);
-  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+ const user = getCurrentUser(req);
+ if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-  if (isStripeConfigured() && user.stripe_subscription_id) {
-    try {
-      const sub = await getSubscription(user.stripe_subscription_id);
-      const update = await buildSubscriptionUpdate(user, sub, user.stripe_product || 'standard');
-      updateUserBillingById(user.id, update);
+ const billingStatus = serializeXpayBillingState(user);
 
-      const refreshed = getUserById(user.id) || user;
-      req.session.user = serializeSessionUser(refreshed);
-      return res.json(serializeStripeBillingState(refreshed));
-    } catch (error) {
-      console.error('[billing] Stripe status sync failed:', error.message);
-    }
-  }
-
-  req.session.user = serializeSessionUser(user);
-  return res.json(serializeStripeBillingState(user));
-});
-
-router.get('/portal', async (req, res) => {
-  if (!req.session.authenticated || !req.session.user?.id) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  const user = getCurrentUser(req);
-  if (!user) return res.status(401).json({ error: 'Unauthorized' });
-
-  if (!isStripeConfigured()) {
-    return res.status(503).json({ error: 'Stripe is not configured.' });
-  }
-
-  try {
-    if (user.stripe_customer_id) {
-      const session = await createCustomerPortalSession(user, user.stripe_customer_id, {
-        appBaseUrl: getRequestBaseUrl(req),
-      });
-      return res.json({ url: session.url });
-    }
-
-    return res.status(404).json({ error: 'No Stripe customer exists for this account yet.' });
-  } catch (error) {
-    console.error('[billing] Stripe portal failed:', error.message);
-    return res.status(500).json({ error: error.message || 'Failed to open billing portal.' });
-  }
+ req.session.user = serializeSessionUser(user);
+ return res.json(billingStatus);
 });
 
 router.post('/cancel', async (req, res) => {
-  if (!req.session.authenticated || !req.session.user?.id) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+ if (!req.session.authenticated || !req.session.user?.id) {
+ return res.status(401).json({ error: 'Unauthorized' });
+ }
 
-  const user = getCurrentUser(req);
-  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+ const user = getCurrentUser(req);
+ if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-  if (!user.stripe_subscription_id) {
-    return res.status(400).json({ error: 'No active subscription to cancel.' });
-  }
+ if (!user.xpay_subscription_id) {
+ return res.status(400).json({ error: 'No active subscription to cancel.' });
+ }
 
-  try {
-    const sub = await cancelSubscription(user.stripe_subscription_id);
-    const update = await buildSubscriptionUpdate(user, sub, user.stripe_product || 'standard');
-    updateUserBillingById(user.id, update);
-    const latest = getUserById(user.id) || user;
-    req.session.user = serializeSessionUser(latest);
-    return res.json({ success: true, message: 'Subscription will cancel at the end of the billing period.' });
-  } catch (error) {
-    console.error('[billing] Stripe cancel failed:', error);
-    return res.status(500).json({ error: error.message });
-  }
+ try {
+ const subResponse = await xpay.request('POST', '/subscription/merchant/cancel', {
+ subscription_id: user.xpay_subscription_id,
+ });
+
+ const sub = subResponse?.data || subResponse;
+
+ updateUserBillingById(user.id, {
+ xpay_subscription_status: sub?.status || 'cancelled',
+ });
+
+ const latest = getUserById(user.id) || user;
+ req.session.user = serializeSessionUser(latest);
+
+ return res.json({
+ success: true,
+ message: 'Subscription will be cancelled. Access continues until the end of the billing period.',
+ });
+ } catch (error) {
+ console.error('[billing] xPay cancel failed:', error);
+ return res.status(500).json({ error: error.message });
+ }
 });
 
 router.post('/return', async (req, res) => {
-  if (!req.session.authenticated || !req.session.user?.id) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+ if (!req.session.authenticated || !req.session.user?.id) {
+ return res.status(401).json({ error: 'Unauthorized' });
+ }
 
-  const user = getCurrentUser(req);
-  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+ const user = getCurrentUser(req);
+ if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-  const sessionId = req.body?.sessionId || req.query?.session_id || user.stripe_checkout_session_id || null;
+ const setupId = req.body?.setupId || req.query?.setup_id || null;
+ if (!setupId) {
+ return res.json({ success: true, status: user.xpay_subscription_status, plan: user.plan });
+ }
 
-  if (!sessionId) {
-    return res.status(400).json({ error: 'No session ID provided.' });
-  }
+ try {
+ updateUserBillingById(user.id, {
+ xpay_pm_id: String(setupId),
+ xpay_payment_method_status: 'active',
+ });
 
-  try {
-    const session = await retrieveCheckoutSession(sessionId);
-    if (!isCheckoutSessionComplete(session)) {
-      return res.status(400).json({ error: 'Payment not complete.' });
-    }
+ const latest = getUserById(user.id) || user;
+ req.session.user = serializeSessionUser(latest);
 
-    const sub = await resolveSubscription(session.subscription);
-    if (!sub) {
-      return res.status(400).json({ error: 'Checkout session did not include a subscription.' });
-    }
-
-    const planKey = session.metadata?.plan_key || sub.metadata?.plan_key || 'standard';
-    const update = await buildSubscriptionUpdate(user, sub, planKey);
-    update.stripe_checkout_session_id = null;
-    update.stripe_intro_offer_used = planKey === 'intro' ? 1 : (user.stripe_intro_offer_used || 0);
-    updateUserBillingById(user.id, update);
-
-    const latest = getUserById(user.id) || user;
-    req.session.user = serializeSessionUser(latest);
-
-    return res.json({
-      ...serializeStripeBillingState(latest),
-      provider: 'stripe',
-    });
-  } catch (error) {
-    console.error('[billing] Stripe return failed:', error);
-    return res.status(500).json({ error: error.message || 'Failed to finalize checkout.' });
-  }
-});
-
-router.post('/checkout-additional-orders', async (req, res) => {
-  if (!req.session.authenticated || !req.session.user?.id) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  const user = getCurrentUser(req);
-  if (!user) return res.status(401).json({ error: 'Unauthorized' });
-
-  const quantity = Math.max(3, parseInt(req.body?.quantity, 10) || 3);
-  if (!isStripeConfigured()) {
-    return res.status(503).json({ error: 'Stripe is not configured.' });
-  }
-
-  const checkout = await createPerOrderCheckoutSession(user, quantity, { appBaseUrl: getRequestBaseUrl(req) });
-  updateUserBillingById(user.id, { stripe_checkout_session_id: checkout.sessionId });
-
-  return res.json({ sessionId: checkout.sessionId, url: checkout.url, checkoutUrl: checkout.url, quantity });
+ return res.json({
+ success: true,
+ setupId,
+ status: latest.xpay_subscription_status,
+ plan: latest.plan,
+ provider: 'xpay',
+ });
+ } catch (error) {
+ console.error('[billing] xPay return failed:', error);
+ return res.status(500).json({ error: error.message || 'Failed to finalize setup.' });
+ }
 });
 
 router.get('/quota', async (req, res) => {
-  if (!req.session.authenticated || !req.session.user?.id) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  const user = getCurrentUser(req);
-  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+ if (!req.session.authenticated || !req.session.user?.id) {
+ return res.status(401).json({ error: 'Unauthorized' });
+ }
+ const user = getCurrentUser(req);
+ if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-  return res.json({
-    isReseller: Boolean(user.reseller_plan),
-    ordersPerMonth: user.orders_per_month || 0,
-    ordersUsedThisPeriod: user.orders_used_this_period || 0,
-    availableOrders: user.reseller_plan
-      ? 'unlimited'
-      : Math.max(0, (user.orders_per_month || 0) - (user.orders_used_this_period || 0)),
-  });
+ return res.json({
+ plan: user.xpay_subscription_plan || user.plan || 'free',
+ inboxesUsed: user.inboxes_used || 0,
+ inboxesLimit: user.inboxes_limit || 0,
+ hasConcurrentOrders: Boolean(user.has_concurrent_orders),
+ subscriptionStatus: user.xpay_subscription_status || null,
+ });
 });
 
 router.post('/auto-charge-quota', async (req, res) => {
-  if (!req.session.authenticated || !req.session.user?.id) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  const user = getCurrentUser(req);
-  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+ if (!req.session.authenticated || !req.session.user?.id) {
+ return res.status(401).json({ error: 'Unauthorized' });
+ }
+ const user = getCurrentUser(req);
+ if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-  // Only for non-reseller users with no available orders
-  if (user.reseller_plan) {
-    return res.status(400).json({ error: 'Reseller plan has unlimited orders' });
-  }
+ if (!user.xpay_pm_id) {
+ return res.status(400).json({ error: 'No payment method on file.' });
+ }
 
-  const available = (user.orders_per_month || 0) - (user.orders_used_this_period || 0);
-  if (available > 0) {
-    return res.status(400).json({ error: 'No auto-charge needed, orders available' });
-  }
+ if (!isSubscriptionActive(user.xpay_subscription_status)) {
+ return res.status(400).json({ error: 'Active subscription required.' });
+ }
 
-  const quantity = Math.max(3, parseInt(req.body?.quantity, 10) || 3);
-  const result = await chargeSavedPaymentMethodForQuota(user, quantity);
+ try {
+ const result = await xpay.request('POST', '/payments/charge-tokenised-pm', {
+ customer_id: user.xpay_customer_id,
+ pm_id: user.xpay_pm_id,
+ amount: ADDON_CONCURRENT_ORDERS.amountCents,
+ currency: 'USD',
+ description: 'Concurrent Orders Add-on',
+ });
 
-  if (result.paid) {
-    // Add the purchased quantity to orders_per_month
-    updateUserBillingById(user.id, { orders_per_month: (user.orders_per_month || 0) + quantity });
-    return res.json({ success: true, ordersAdded: quantity });
-  }
+ const success = result?.success !== false && result?.status !== 'failed';
 
-  return res.status(402).json({ error: 'Payment failed', reason: result.reason });
+ if (success) {
+ updateUserBillingById(user.id, { has_concurrent_orders: 1 });
+ return res.json({ success: true, message: 'Concurrent orders add-on activated.' });
+ }
+
+ updateUserBillingById(user.id, { xpay_last_payment_status: 'failed' });
+ return res.status(402).json({ error: 'Payment failed', reason: result?.message || 'Card declined' });
+ } catch (error) {
+ console.error('[billing] xPay auto-charge failed:', error);
+ return res.status(500).json({ error: error.message || 'Payment processing failed.' });
+ }
 });
 
 router.post('/webhook', async (req, res) => {
-  if (!isStripeConfigured()) {
-    return res.status(503).json({ error: 'Stripe not configured.' });
-  }
+ if (!xpay.configured) {
+ return res.status(503).json({ error: 'xPay not configured.' });
+ }
 
-  const sig = req.headers['stripe-signature'] || '';
-  const rawBody = req.rawBody || req.body;
+ const rawBody = req.rawBody || JSON.stringify(req.body || {});
+ const signature = req.headers['xpay-signature'] || '';
 
-  let event;
-  try {
-    event = verifyStripeWebhookSignature(
-      typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody),
-      sig
-    );
-  } catch (error) {
-    console.error('[stripe-webhook] Signature verification failed:', error.message);
-    return res.status(400).json({ error: error.message });
-  }
+ let event;
+ try {
+ event = xpay.verifyWebhookSignature(rawBody, signature, process.env.XPAY_WEBHOOK_SECRET);
+ } catch (error) {
+ console.error('[xpay-webhook] Signature verification failed:', error.message);
+ return res.status(400).json({ error: 'Invalid signature.' });
+ }
 
-  try {
-    switch (event.type) {
-      case 'checkout.session.completed': {
-        const session = event.data.object;
+ try {
+ const eventType = event?.type || event?.event_type || event?.action || '';
 
-        if (session.metadata?.type === 'tenant_purchase') {
-          const custId = idOf(session.customer);
-          updateTenantPurchaseByCheckoutSession(session.id, {
-            status: session.payment_status === 'paid' ? 'paid' : 'complete',
-            stripe_payment_intent_id: idOf(session.payment_intent),
-            stripe_customer_id: custId,
-          });
-          if (custId) {
-            const userId = Number(session.metadata?.user_id);
-            const user = userId ? getUserById(userId) : null;
-            if (user && !user.stripe_customer_id) {
-              updateUserBillingById(user.id, { stripe_customer_id: custId });
-            }
-          }
-          break;
-        }
+ switch (true) {
+ case eventType === 'payment_method' || eventType === 'payment_method.added': {
+ const customerId = event?.data?.customer_id || event?.data?.customer?.id;
+ const pmId = event?.data?.id || event?.data?.pm_id;
+ if (customerId && pmId) {
+ const user = getUserByXpayCustomerId(String(customerId));
+ if (user) {
+ updateUserBillingById(user.id, {
+ xpay_pm_id: String(pmId),
+ xpay_payment_method_status: 'active',
+ });
+ }
+ }
+ break;
+ }
 
-        const userId = session.metadata?.user_id;
-        if (!userId) break;
+ case eventType === 'subscription' || eventType === 'subscription.created': {
+ const subData = event?.data || event;
+ const customerId = subData?.customer_id || subData?.customer?.id;
+ const subId = subData?.id;
+ const planKey = subData?.metadata?.plan_key || 'starter';
+ const status = subData?.status || 'active';
 
-        const user = getUserById(Number(userId));
-        if (!user) break;
+ const user = customerId ? getUserByXpayCustomerId(String(customerId)) : null;
+ if (!user && subId) {
+ getUserByXpaySubscriptionId(String(subId));
+ }
+ if (!user) break;
 
-        const sub = await resolveSubscription(session.subscription);
-        if (!sub) break;
+ updateUserBillingById(user.id, {
+ plan: isSubscriptionActive(status) ? planKey : (user.plan || 'free'),
+ xpay_subscription_id: subId ? String(subId) : user.xpay_subscription_id,
+ xpay_subscription_status: status,
+ xpay_subscription_plan: planKey,
+ xpay_last_payment_status: subData?.last_payment_status || 'paid',
+ });
 
-        const planKey = session.metadata?.plan_key || sub.metadata?.plan_key || 'standard';
-        const update = await buildSubscriptionUpdate(user, sub, planKey);
-        update.stripe_checkout_session_id = null;
-        update.stripe_intro_offer_used = planKey === 'intro' ? 1 : (user.stripe_intro_offer_used || 0);
-        updateUserBillingById(user.id, update);
-        break;
-      }
+ if (subData?.trial_end_date) {
+ updateUserBillingById(user.id, { xpay_trial_ends_at: subData.trial_end_date });
+ }
+ break;
+ }
 
-      case 'customer.subscription.updated': {
-        const sub = event.data.object;
-        const user = getUserByStripeSubscriptionId(sub.id) || getUserByStripeCustomerId(idOf(sub.customer));
-        if (!user) break;
+ case eventType === 'subscription.updated' || eventType === 'subscription.status_changed': {
+ const subData = event?.data || event;
+ const subId = subData?.id;
+ const planKey = subData?.metadata?.plan_key || 'starter';
+ const status = subData?.status || 'unknown';
 
-        const update = await buildSubscriptionUpdate(user, sub, user.stripe_product || 'standard');
-        updateUserBillingById(user.id, update);
+ if (!subId) break;
+ const user = getUserByXpaySubscriptionId(String(subId));
+ if (!user) break;
 
-        if (sub.metadata?.plan_key === 'reseller') {
-          updateUserBillingById(user.id, { reseller_plan: 1, orders_per_month: 0 });
-        } else if (sub.metadata?.plan_key === 'perOrder') {
-          const quantity = parseInt(sub.metadata?.quantity || '0', 10);
-          updateUserBillingById(user.id, { reseller_plan: 0, orders_per_month: quantity });
-          // Reset usage at start of new billing period
-          if (sub.status === 'active') {
-            resetOrdersUsed(user.id);
-          }
-        }
-        break;
-      }
+ updateUserBillingById(user.id, {
+ plan: isSubscriptionActive(status) ? planKey : 'free',
+ xpay_subscription_status: status,
+ xpay_subscription_plan: planKey,
+ xpay_last_payment_status: subData?.last_payment_status || user.xpay_last_payment_status || 'unknown',
+ });
+ break;
+ }
 
-      case 'customer.subscription.deleted': {
-        const sub = event.data.object;
-        const user = getUserByStripeSubscriptionId(sub.id) || getUserByStripeCustomerId(idOf(sub.customer));
-        if (!user) break;
-        updateUserBillingById(user.id, {
-          plan: 'free',
-          stripe_subscription_status: 'canceled',
-          stripe_cancel_at_period_end: 0,
-          reseller_plan: 0,
-          orders_per_month: 0,
-        });
-        break;
-      }
+ case eventType === 'subscription.cancelled' || eventType === 'subscription.ended': {
+ const subData = event?.data || event;
+ const subId = subData?.id;
+ if (!subId) break;
+ const user = getUserByXpaySubscriptionId(String(subId));
+ if (!user) break;
 
-      case 'invoice.payment_failed': {
-        const invoice = event.data.object;
-        const user = getUserByStripeSubscriptionId(idOf(invoice.subscription))
-          || getUserByStripeCustomerId(idOf(invoice.customer));
-        if (!user) break;
-        updateUserBillingById(user.id, {
-          stripe_subscription_status: 'past_due',
-          stripe_last_invoice_id: invoice.id,
-          stripe_last_invoice_status: invoice.status || 'open',
-          stripe_last_invoice_url: invoice.hosted_invoice_url || user.stripe_last_invoice_url || null,
-          stripe_last_payment_status: 'failed',
-        });
-        break;
-      }
+ updateUserBillingById(user.id, {
+ plan: 'free',
+ xpay_subscription_status: 'cancelled',
+ xpay_subscription_id: null,
+ });
+ break;
+ }
 
-      case 'invoice.paid': {
-        const invoice = event.data.object;
-        const user = getUserByStripeSubscriptionId(idOf(invoice.subscription))
-          || getUserByStripeCustomerId(idOf(invoice.customer));
-        if (!user) break;
+ case eventType === 'payment.failed' || eventType === 'subscription.payment_failed': {
+ const subData = event?.data?.subscription || event?.data || event;
+ const subId = subData?.id;
+ if (!subId) break;
+ const user = getUserByXpaySubscriptionId(String(subId));
+ if (!user) break;
 
-        const sub = invoice.subscription ? await resolveSubscription(invoice.subscription) : null;
-        if (sub) {
-          const update = await buildSubscriptionUpdate(user, sub, user.stripe_product || 'standard', invoice);
-          updateUserBillingById(user.id, update);
-        } else {
-          updateUserBillingById(user.id, {
-            stripe_subscription_status: 'active',
-            stripe_last_invoice_id: invoice.id,
-            stripe_last_invoice_status: 'paid',
-            stripe_last_invoice_url: invoice.hosted_invoice_url || null,
-            stripe_last_payment_status: 'paid',
-          });
-        }
-        break;
-      }
+ updateUserBillingById(user.id, {
+ xpay_subscription_status: subData?.status === 'trial' ? 'trial' : 'past_due',
+ xpay_last_payment_status: 'failed',
+ });
+ break;
+ }
 
-      default:
-        break;
-    }
+ case eventType === 'payment.succeeded' || eventType === 'subscription.payment_succeeded': {
+ const subData = event?.data?.subscription || event?.data || event;
+ const subId = subData?.id;
+ const planKey = subData?.metadata?.plan_key || 'starter';
+ const status = subData?.status || 'active';
 
-    return res.json({ received: true });
-  } catch (error) {
-    console.error('[stripe-webhook] Handler error:', error.message);
-    return res.status(500).json({ error: 'Webhook handler failed.' });
-  }
+ if (!subId) break;
+ const user = getUserByXpaySubscriptionId(String(subId));
+ if (!user) break;
+
+ updateUserBillingById(user.id, {
+ plan: isSubscriptionActive(status) ? planKey : user.plan,
+ xpay_subscription_status: status,
+ xpay_subscription_plan: planKey,
+ xpay_last_payment_status: 'paid',
+ });
+ break;
+ }
+
+ case eventType === 'intent' || eventType === 'subscription.intent': {
+ const intentData = event?.data || event;
+ const subId = intentData?.id;
+ const status = intentData?.status;
+
+ if (!subId) break;
+ const user = getUserByXpaySubscriptionId(String(subId));
+ if (!user) break;
+
+ const statusMap = {
+ active: 'ACTIVE',
+ trialing: 'TRIALING',
+ created: 'CREATED',
+ cycle_charged: 'ACTIVE',
+ unpaid: 'UNPAID',
+ cancelled: 'CANCELLED',
+ ended: 'ENDED',
+ paused: 'PAUSED',
+ };
+
+ const mappedStatus = statusMap[status] || status;
+ updateUserBillingById(user.id, {
+ xpay_subscription_status: mappedStatus,
+ });
+ break;
+ }
+
+ default:
+ break;
+ }
+
+ return res.json({ received: true, event_type: eventType });
+ } catch (error) {
+ console.error('[xpay-webhook] Handler error:', error.message);
+ return res.status(500).json({ error: 'Webhook handler failed.' });
+ }
 });
+
+export function serializeXpayBillingState(user) {
+ const status = user.xpay_subscription_status || null;
+ const plan = user.xpay_subscription_plan || user.plan || 'free';
+
+ const isActive = isSubscriptionActive(status);
+ const isPastDue = ['UNPAID', 'PAST_DUE'].includes(status);
+
+ const trialEnd = user.xpay_trial_ends_at ? new Date(user.xpay_trial_ends_at) : null;
+ const isTrialing = trialEnd && trialEnd > new Date() && status === 'TRIALING';
+
+ return {
+ provider: 'xpay',
+ plan,
+ status,
+ isActive,
+ isTrialing,
+ isPastDue,
+ trialEndsAt: user.xpay_trial_ends_at || null,
+ customerId: user.xpay_customer_id || null,
+ subscriptionId: user.xpay_subscription_id || null,
+ paymentMethodStatus: user.xpay_payment_method_status || null,
+ lastPaymentStatus: user.xpay_last_payment_status || null,
+ inboxesUsed: user.inboxes_used || 0,
+ inboxesLimit: user.inboxes_limit || 0,
+ hasConcurrentOrders: Boolean(user.has_concurrent_orders),
+ };
+}
 
 export default router;

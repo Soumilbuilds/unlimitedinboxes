@@ -83,7 +83,7 @@ export default function TenantCheckout() {
           <div style={{ textAlign: 'center', padding: '40px 20px' }}>
             <div className="spinner" style={{ margin: '0 auto 20px' }} />
             <p style={{ color: '#fff', marginBottom: '20px', fontSize: '16px' }}>
-              Opening secure Stripe checkout...
+              Opening secure checkout...
             </p>
             <a
               href={checkoutUrl}

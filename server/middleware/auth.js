@@ -17,7 +17,7 @@ export function attachAccessState(req, _res, next) {
     if (latest) {
       req.session.user.plan = latest.plan || 'free';
       req.session.user.id = latest.id;
-      req.session.user.billingStatus = latest.stripe_subscription_status || null;
+      req.session.user.billingStatus = latest.xpay_subscription_status || null;
       req.accessState = getUserAccessState(latest);
     }
   }

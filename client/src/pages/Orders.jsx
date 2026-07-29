@@ -88,7 +88,7 @@ function buildBillingRequiredNotice(billing, responseData = {}) {
 
  return {
  intent: 'starter',
- title: 'No active subscription found',
+ title: 'No Active Subscription Found',
  subtitle: 'Create the first 100 inboxes for just one dollar.',
  action: 'Create Inboxes'
  };

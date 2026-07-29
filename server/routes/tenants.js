@@ -6,6 +6,7 @@ import {
  getTenants,
  getTenantByIdForUser,
  getUserByEmail,
+ getUserByXpayCustomerId,
  updateTenantCloudflare,
  updateTenantStatus,
  updateTenantDetails,
@@ -14,17 +15,12 @@ import {
 import { createZone } from '../services/cloudflare.js';
 import { ensureSpfRecord, ensureDmarcRecord, ensureDkimRecords } from '../services/emailAuth.js';
 import {
- chargeSavedPaymentMethodForTenantPurchase,
- createTenantCheckoutSession,
- getTenantPurchaseAmountCents,
- isStripeConfigured
-} from '../services/stripe.js';
-import {
  loginToSecurityCenter,
  ensureDkimSelectors,
  retryEnableDkimSigning
 } from '../services/securityCenterDkim.js';
 import { isValidTotpSecret } from '../services/totp.js';
+import { xpay, PLANS } from '../services/xpay.js';
 
 const router = express.Router();
 const { MASTER_CLIENT_ID, MASTER_REDIRECT_URI } = process.env;
@@ -75,9 +71,104 @@ function normalizeTenantPurchase(body = {}) {
  };
 }
 
+function centsForTenantUnit(tenantType) {
+ const PLAN_PRICES = {
+ usTenant: 15,
+ asiaTenant: 20,
+ };
+ const unit = PLAN_PRICES[tenantType];
+ if (!unit) throw new Error(`Unknown tenant type: ${tenantType}`);
+ return Math.round(unit * 100);
+}
+
+function centsForTenantPurchase(tenantType, quantity) {
+ return centsForTenantUnit(tenantType) * quantity;
+}
+
+function getTenantPurchaseAmountCents(tenantType, quantity) {
+ return centsForTenantPurchase(tenantType, quantity);
+}
+
+async function chargeSavedPaymentMethodForTenantPurchase(user, tenantType, quantity) {
+ if (!user?.xpay_customer_id || !user?.xpay_pm_id) {
+ return { paid: false, reason: 'no_default_payment_method' };
+ }
+
+ try {
+ const cents = centsForTenantPurchase(tenantType, quantity);
+ const response = await xpay.request('POST', '/payments/charge-tokenised-pm', {
+ customer_id: user.xpay_customer_id,
+ payment_method_id: user.xpay_pm_id,
+ amount: cents,
+ currency: 'USD',
+ description: `${quantity} ${tenantType === 'usTenant' ? 'US IP' : 'Asia IP'} tenant${quantity === 1 ? '' : 's'}`,
+ metadata: {
+ type: 'tenant_purchase',
+ user_id: String(user.id),
+ tenant_type: tenantType,
+ quantity: String(quantity),
+ },
+ });
+
+ const charged = response?.data || response;
+ const isPaid = String(charged?.status || '').toLowerCase() === 'succeeded'
+ || String(charged?.payment_status || '').toLowerCase() === 'paid';
+
+ return {
+ paid: isPaid,
+ chargeId: charged?.id || null,
+ reason: charged?.status || charged?.payment_status || 'unknown',
+ error: isPaid ? null : { message: charged?.message || charged?.error || 'Payment not confirmed' },
+ };
+ } catch (error) {
+ return {
+ paid: false,
+ reason: error.code || error.type || 'payment_failed',
+ error: { message: error.message },
+ };
+ }
+}
+
+async function createTenantCheckoutSession(user, tenantType, quantity, opts = {}) {
+ const baseUrl = getRequestBaseUrl(req);
+ const cents = centsForTenantPurchase(tenantType, quantity);
+
+ const response = await xpay.request('POST', '/billing/checkout', {
+ customer_id: user.xpay_customer_id || undefined,
+ amount: cents,
+ currency: 'USD',
+ type: 'one_time',
+ description: `${quantity} ${tenantType === 'usTenant' ? 'US IP' : 'Asia IP'} tenant${quantity === 1 ? '' : 's'}`,
+ metadata: {
+ type: 'tenant_purchase',
+ user_id: String(user.id),
+ tenant_type: tenantType,
+ quantity: String(quantity),
+ fallback_reason: opts.metadata?.fallback_reason || 'checkout_required',
+ },
+ success_url: `${baseUrl}/tenants?tenant_purchase=success`,
+ cancel_url: `${baseUrl}/tenants`,
+ callback_url: `${baseUrl}/billing/webhook`,
+ });
+
+ const checkout = response?.data || response;
+ const checkoutId = checkout?.id || checkout?.checkout_id || checkout?.session_id;
+ const checkoutUrl = checkout?.url || checkout?.checkout_url || checkout?.redirect_url;
+
+ if (!checkoutId) {
+ throw new Error(checkout?.message || checkout?.error || 'Failed to create xPay checkout session.');
+ }
+
+ return {
+ sessionId: String(checkoutId),
+ url: checkoutUrl,
+ customerId: user.xpay_customer_id || null,
+ };
+}
+
 router.post('/purchase-checkout', async (req, res) => {
- if (!isStripeConfigured()) {
- return res.status(503).json({ error: 'Stripe is not configured.' });
+ if (!xpay.configured) {
+ return res.status(503).json({ error: 'xPay is not configured.' });
  }
 
  const user = getUserByEmail(req.session.user.email);
@@ -99,15 +190,14 @@ router.post('/purchase-checkout', async (req, res) => {
  quantity,
  amount_cents: amountCents,
  status: 'paid',
- stripe_payment_intent_id: savedCardCharge.paymentIntent.id,
- stripe_customer_id: user.stripe_customer_id,
+ xpay_charge_id: savedCardCharge.chargeId,
+ xpay_customer_id: user.xpay_customer_id,
  });
 
  return res.json({
  success: true,
  paid: true,
- provider: 'stripe',
- paymentIntentId: savedCardCharge.paymentIntent.id,
+ paymentIntentId: savedCardCharge.chargeId,
  });
  }
 
@@ -124,21 +214,20 @@ router.post('/purchase-checkout', async (req, res) => {
  quantity,
  amount_cents: amountCents,
  status: 'pending',
- stripe_checkout_session_id: checkout.sessionId,
- stripe_customer_id: checkout.customerId || user.stripe_customer_id || null,
+ xpay_checkout_id: checkout.sessionId,
+ xpay_customer_id: checkout.customerId || user.xpay_customer_id || null,
  error_message: savedCardCharge.error?.message || null,
  });
 
  return res.json({
  success: true,
  paid: false,
- provider: 'stripe',
  sessionId: checkout.sessionId,
  purchaseUrl: checkout.url,
  checkoutUrl: checkout.url,
  });
  } catch (error) {
- console.error('[tenants] Stripe tenant purchase failed:', error);
+ console.error('[tenants] xPay tenant purchase failed:', error);
  return res.status(500).json({ error: error.message || 'Failed to start tenant purchase.' });
  }
 });
