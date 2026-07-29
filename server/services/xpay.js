@@ -78,6 +78,8 @@ export class XPayClient {
  }
 }
 
+export const xpay = new XPayClient(process.env.XPAY_PUBLIC_KEY, process.env.XPAY_PRIVATE_KEY);
+
 export const PLANS = {
  starter: { name: 'Starter', amountCents: 4999, interval: 'WEEK', intervalCount: 4, displayPrice: '$49.99 every 4 weeks', monthlyPrice: '$49.99' },
  growth: { name: 'Growth', amountCents: 9999, interval: 'WEEK', intervalCount: 4, displayPrice: '$99.99 every 4 weeks', monthlyPrice: '$99.99' },
