@@ -274,7 +274,7 @@ router.get('/', (req, res) => {
  }
 });
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
  try {
  const { tenant_id, total_mailboxes, mailbox_password, order_name, mailbox_names } = req.body;
  if (!tenant_id) return res.status(400).json({ error: 'Tenant ID is required' });
