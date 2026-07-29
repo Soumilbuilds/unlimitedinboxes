@@ -104,12 +104,28 @@ router.post('/checkout', async (req, res) => {
  const baseUrl = getRequestBaseUrl(req);
  const customerId = await ensureXpayCustomer(user, baseUrl);
 
- const setupResponse = await xpay.request('POST', '/setup-method/create', {
- customer_id: customerId,
- amount: TRIAL_AUTH_CHARGE_CENTS,
- currency: 'USD',
- description: 'Card verification — $1.00 auth',
- });
+  const setupResponse = await xpay.request('POST', '/setup-method/create', {
+  customerId: customerId,
+  amount: TRIAL_AUTH_CHARGE_CENTS,
+  currency: 'USD',
+  billingDetails: {
+    email: user.email,
+    name: user.name || user.email.split('@')[0],
+    country: req.headers['cf-ipcountry'] || 'US',
+  },
+  phoneNumberRequired: false,
+  paymentMethods: ["CARD", "APPLE_PAY", "GOOGLE_PAY"],
+  productPage: {
+    name: "Unlimited Mailboxes Starter",
+    description: "Create The First 100 Inboxes For Just One Dollar."
+  },
+  callbackUrl: `${baseUrl}/billing/return`,
+  metadata: {
+    app: "unlimited_mailboxes",
+    user_id: String(user.id),
+    purpose: "trial_auth"
+  }
+  });
 
  const setupId = setupResponse?.data?.setupMethodId || setupResponse?.setupMethodId;
  const redirectUrl = setupResponse?.data?.fwdUrl || setupResponse?.fwdUrl;
@@ -174,23 +190,30 @@ router.post('/subscribe', async (req, res) => {
  const trialEnd = new Date();
  trialEnd.setDate(trialEnd.getDate() + TRIAL_DAYS);
 
- const subResponse = await xpay.request('POST', '/subscription/create', {
- customer_id: customerId,
- product_name: plan.name,
- amount: plan.amountCents,
- currency: 'USD',
- interval: plan.interval,
- interval_count: plan.intervalCount,
- trial_days: TRIAL_DAYS,
- cycle_count: -1,
- metadata: {
- plan_key: planKey,
- user_id: String(user.id),
- },
- callback_url: `${baseUrl}/billing/webhook`,
- cancel_url: `${baseUrl}/billing/cancel`,
- product_page: `${baseUrl}/billing`,
- });
+  const subResponse = await xpay.request('POST', '/subscription/create', {
+  customerId: customerId,
+  customerDetails: {
+    email: user.email,
+    name: user.name || user.email.split('@')[0],
+    country: req.headers['cf-ipcountry'] || 'US',
+  },
+  amount: plan.amountCents,
+  currency: 'USD',
+  interval: plan.interval,
+  intervalCount: plan.intervalCount,
+  trialDays: TRIAL_DAYS,
+  cycleCount: -1,
+  metadata: {
+  plan_key: planKey,
+  user_id: String(user.id),
+  },
+  callbackUrl: `${baseUrl}/billing/webhook`,
+  cancelUrl: `${baseUrl}/billing/cancel`,
+  productPage: {
+    name: plan.name,
+    description: `Subscription for ${plan.name} plan.`
+  }
+  });
 
   const sub = subResponse?.data || subResponse;
   if (!sub?.subscriptionId && !sub?.id) {

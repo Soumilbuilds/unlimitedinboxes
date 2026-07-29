@@ -30,7 +30,7 @@ function buildBlockingCheckout(billing) {
  intent: 'starter',
  allowClose: false,
  headline: 'No Active Subscription Found',
- subheadline: 'Create the first 100 inboxes for just one dollar.',
+ subheadline: 'Create The First 100 Inboxes For Just One Dollar.',
  description: null
  };
  }
@@ -83,7 +83,7 @@ function buildUpgradeCheckout(intent) {
  intent: 'starter',
  allowClose: true,
  headline: 'No Active Subscription Found',
- subheadline: 'Create the first 100 inboxes for just one dollar.',
+ subheadline: 'Create The First 100 Inboxes For Just One Dollar.',
  description: null
  };
  }
