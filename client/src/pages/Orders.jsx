@@ -948,7 +948,7 @@ export default function Orders() {
  <div className="modal upgrade-modal" onClick={(e) => e.stopPropagation()}>
  <div className="wizard-header">
  <div>
- <h2>only multi-order plan not detected</h2>
+ <h2>Only Multi-Order Plan Not Detected</h2>
  </div>
  <button className="icon-btn" onClick={() => setProcessingLimitNotice(false)} title="Close">✕</button>
  </div>
