@@ -82,7 +82,7 @@ function buildUpgradeCheckout(intent) {
  return {
  intent: 'starter',
  allowClose: true,
- headline: 'No active subscription found',
+ headline: 'No Active Subscription Found',
  subheadline: 'Create the first 100 inboxes for just one dollar.',
  description: null
  };

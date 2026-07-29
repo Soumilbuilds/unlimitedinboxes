@@ -45,13 +45,13 @@ function getRequestBaseUrl(req) {
 }
 
 function buildSubscriptionUpdate(user, xpaySub, planKey) {
- const customerId = xpaySub?.customer?.id || user.xpay_customer_id || null;
+  const customerId = xpaySub?.customerId || xpaySub?.customer?.customerId || user.xpay_customer_id || null;
 
- return {
- plan: isSubscriptionActive(xpaySub?.status) ? planKey : (user.plan || 'free'),
- xpay_customer_id: customerId,
- xpay_subscription_id: xpaySub?.id || null,
- xpay_subscription_status: xpaySub?.status || null,
+  return {
+  plan: isSubscriptionActive(xpaySub?.status) ? planKey : (user.plan || 'free'),
+  xpay_customer_id: customerId,
+  xpay_subscription_id: xpaySub?.subscriptionId || xpaySub?.id || null,
+  xpay_subscription_status: xpaySub?.status || null,
  xpay_subscription_plan: planKey,
  xpay_trial_ends_at: xpaySub?.trial_end_date || null,
  xpay_last_payment_status: xpaySub?.last_payment_status || 'unknown',
@@ -70,8 +70,8 @@ async function ensureXpayCustomer(user, baseUrl) {
  redirect_url: `${baseUrl}/billing/return`,
  });
 
- const customerId = response?.data?.id || response?.id;
- if (customerId) {
+  const customerId = response?.data?.customerId || response?.customerId || response?.data?.id || response?.id;
+  if (customerId) {
  updateUserBillingById(user.id, { xpay_customer_id: String(customerId) });
  }
 
@@ -90,7 +90,7 @@ router.post('/checkout', async (req, res) => {
  return res.status(503).json({ error: 'xPay is not configured.' });
  }
 
- const planKey = req.body?.plan || 'starter';
+ const planKey = req.body?.plan || req.body?.intent || 'starter';
  const plan = PLANS[planKey];
  if (!plan) {
  return res.status(400).json({ error: `Unknown plan: ${planKey}` });
@@ -111,8 +111,8 @@ router.post('/checkout', async (req, res) => {
  description: 'Card verification — $1.00 auth',
  });
 
- const setupId = setupResponse?.data?.id || setupResponse?.id;
- const redirectUrl = setupResponse?.data?.redirect_url || setupResponse?.redirect_url;
+ const setupId = setupResponse?.data?.setupMethodId || setupResponse?.setupMethodId;
+ const redirectUrl = setupResponse?.data?.fwdUrl || setupResponse?.fwdUrl;
 
  if (redirectUrl) {
  return res.json({
@@ -157,7 +157,7 @@ router.post('/subscribe', async (req, res) => {
  return res.status(503).json({ error: 'xPay is not configured.' });
  }
 
- const planKey = req.body?.plan || 'starter';
+ const planKey = req.body?.plan || req.body?.intent || 'starter';
  const plan = PLANS[planKey];
  if (!plan) {
  return res.status(400).json({ error: `Unknown plan: ${planKey}` });
@@ -192,9 +192,9 @@ router.post('/subscribe', async (req, res) => {
  product_page: `${baseUrl}/billing`,
  });
 
- const sub = subResponse?.data || subResponse;
- if (!sub?.id) {
- throw new Error(subResponse?.message || 'Failed to create subscription.');
+  const sub = subResponse?.data || subResponse;
+  if (!sub?.subscriptionId && !sub?.id) {
+  throw new Error(subResponse?.message || 'Failed to create subscription.');
  }
 
  const update = buildSubscriptionUpdate(user, sub, planKey);
@@ -206,10 +206,10 @@ router.post('/subscribe', async (req, res) => {
  const latest = getUserById(user.id) || user;
  req.session.user = serializeSessionUser(latest);
 
- return res.json({
- success: true,
- subscriptionId: sub.id,
- status: sub.status,
+  return res.json({
+  success: true,
+  subscriptionId: sub.subscriptionId || sub.id,
+  status: sub.status,
  plan: planKey,
  trialEndsAt: trialEnd.toISOString(),
  message: `7-day trial started. Card will be charged ${plan.displayPrice} after the trial.`,
@@ -381,8 +381,8 @@ router.post('/webhook', async (req, res) => {
 
  switch (true) {
  case eventType === 'payment_method' || eventType === 'payment_method.added': {
- const customerId = event?.data?.customer_id || event?.data?.customer?.id;
- const pmId = event?.data?.id || event?.data?.pm_id;
+      const customerId = event?.data?.customerId || event?.data?.customer?.customerId || event?.data?.customer_id || event?.data?.customer?.id;
+      const pmId = event?.data?.paymentMethodId || event?.data?.id || event?.data?.pm_id;
  if (customerId && pmId) {
  const user = getUserByXpayCustomerId(String(customerId));
  if (user) {
@@ -397,9 +397,9 @@ router.post('/webhook', async (req, res) => {
 
  case eventType === 'subscription' || eventType === 'subscription.created': {
  const subData = event?.data || event;
- const customerId = subData?.customer_id || subData?.customer?.id;
- const subId = subData?.id;
- const planKey = subData?.metadata?.plan_key || 'starter';
+      const customerId = subData?.customerId || subData?.customer_id || subData?.customer?.customerId || subData?.customer?.id;
+      const subId = subData?.subscriptionId || subData?.id;
+      const planKey = subData?.metadata?.plan_key || 'starter';
  const status = subData?.status || 'active';
 
  const user = customerId ? getUserByXpayCustomerId(String(customerId)) : null;
