@@ -90,7 +90,7 @@ router.post('/checkout', async (req, res) => {
  return res.status(503).json({ error: 'xPay is not configured.' });
  }
 
- const planKey = req.body?.plan || req.body?.intent || 'starter';
+ let intentVal = req.body?.intent; let planKey = req.body?.plan || (intentVal === 'retry' ? user.xpay_subscription_plan : intentVal) || 'starter';
  const plan = PLANS[planKey];
  if (!plan) {
  return res.status(400).json({ error: `Unknown plan: ${planKey}` });
@@ -173,7 +173,7 @@ router.post('/subscribe', async (req, res) => {
  return res.status(503).json({ error: 'xPay is not configured.' });
  }
 
- const planKey = req.body?.plan || req.body?.intent || 'starter';
+ let intentVal = req.body?.intent; let planKey = req.body?.plan || (intentVal === 'retry' ? user.xpay_subscription_plan : intentVal) || 'starter';
  const plan = PLANS[planKey];
  if (!plan) {
  return res.status(400).json({ error: `Unknown plan: ${planKey}` });

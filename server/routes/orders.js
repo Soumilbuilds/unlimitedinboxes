@@ -295,14 +295,10 @@ router.post('/', async (req, res) => {
  });
  }
 
- const accessState = req.accessState || getUserAccessState(req.session.user);
- if (!accessState.canAccessApp) {
- return res.status(403).json(billingRequiredPayload(accessState, 'creating an order'));
- }
-
- if (!accessState.canCreateInbox) {
+ let accessState = req.accessState || getUserAccessState(req.session.user);
  const user = req.session.user;
- if (user.xpay_pm_id && user.xpay_customer_id) {
+
+ if ((!accessState.canAccessApp || !accessState.canCreateInbox) && user.xpay_pm_id && user.xpay_customer_id) {
  const currentPlan = user.xpay_subscription_plan || 'free';
  let nextPlanKey = 'starter';
  if (currentPlan === 'starter') nextPlanKey = 'growth';
@@ -310,53 +306,69 @@ router.post('/', async (req, res) => {
  
  if (nextPlanKey !== currentPlan && nextPlanKey !== 'free') {
  try {
- const nextPlan = PLANS[nextPlanKey];
- const result = await xpay.request('POST', '/payments/charge-tokenised-pm', {
- customer_id: user.xpay_customer_id,
- pm_id: user.xpay_pm_id,
- amount: nextPlan.amountCents,
- currency: 'USD',
- description: `Upgrade to ${nextPlan.name} Plan`,
- });
- 
- if (result?.success !== false && result?.status !== 'failed') {
- updateUserBillingById(user.id, {
- xpay_subscription_plan: nextPlanKey,
- plan: nextPlanKey,
- xpay_subscription_status: 'active',
- xpay_trial_ends_at: null
- });
- user.xpay_subscription_plan = nextPlanKey;
- user.plan = nextPlanKey;
- user.xpay_subscription_status = 'active';
- req.accessState = getUserAccessState(user);
- accessState = req.accessState;
- } else {
- return res.status(402).json({
- code: 'PAYMENT_FAILED',
- error: `Your card on file failed to charge for the ${nextPlan.name} upgrade. Please pay the invoice to continue.`,
- reason: result?.message || 'Card declined'
- });
- }
+  const nextPlan = PLANS[nextPlanKey];
+  const chargeAmount = currentPlan === 'free' ? TRIAL_AUTH_CHARGE_CENTS : nextPlan.amountCents;
+  const descriptionText = currentPlan === 'free' ? 'Starter Plan Trial - 100 Inboxes for $1' : `Upgrade to ${nextPlan.name} Plan`;
+
+  const result = await xpay.request('POST', '/payments/charge-tokenised-pm', {
+  customerId: user.xpay_customer_id,
+  pmId: user.xpay_pm_id,
+  amount: chargeAmount,
+  currency: 'USD',
+  description: descriptionText,
+  receiptId: `first_charge_${user.id}_${Date.now()}`
+  });
+  
+  if (result?.success !== false && result?.status !== 'failed') {
+  updateUserBillingById(user.id, {
+  xpay_subscription_plan: nextPlanKey,
+  plan: nextPlanKey,
+  xpay_subscription_status: 'active',
+  xpay_trial_ends_at: null
+  });
+  user.xpay_subscription_plan = nextPlanKey;
+  user.plan = nextPlanKey;
+  user.xpay_subscription_status = 'active';
+  req.accessState = getUserAccessState(user);
+  accessState = req.accessState;
+  } else {
+  updateUserBillingById(user.id, {
+  xpay_subscription_plan: nextPlanKey,
+  plan: nextPlanKey,
+  xpay_subscription_status: 'past_due'
+  });
+  return res.status(402).json({
+  code: 'PAYMENT_FAILED',
+  blockingReason: 'subscription_past_due',
+  error: `Your card on file failed to charge for the ${nextPlan.name} upgrade. Please pay the invoice to continue.`,
+  reason: result?.message || 'Card declined'
+  });
+  }
  } catch (err) {
- return res.status(402).json({
- code: 'PAYMENT_FAILED',
- error: `Failed to charge for the ${nextPlanKey} upgrade. Please pay the invoice.`,
- reason: err.message
- });
+  updateUserBillingById(user.id, {
+  xpay_subscription_plan: nextPlanKey,
+  plan: nextPlanKey,
+  xpay_subscription_status: 'past_due'
+  });
+  return res.status(402).json({
+  code: 'PAYMENT_FAILED',
+  blockingReason: 'subscription_past_due',
+  error: `Failed to charge for the ${nextPlanKey} upgrade. Please pay the invoice.`,
+  reason: err.message
+  });
  }
- } else {
+ }
+ }
+
+ if (!accessState.canAccessApp) {
+ return res.status(403).json(billingRequiredPayload(accessState, 'creating an order'));
+ }
+
+ if (!accessState.canCreateInbox) {
  return res.status(403).json({
  code: 'INBOX_LIMIT_REACHED',
  error: `You have reached your plan's inbox limit (${accessState.inboxesLimit}). Upgrade your plan for more inboxes.`
  });
- }
- } else {
- return res.status(403).json({
- code: 'INBOX_LIMIT_REACHED',
- error: `You have reached your plan's inbox limit (${accessState.inboxesLimit}). Upgrade your plan for more inboxes.`
- });
- }
  }
 
  const safeName = typeof order_name === 'string' && order_name.trim() ? order_name.trim() : null;
