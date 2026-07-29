@@ -296,10 +296,50 @@ router.post('/', async (req, res) => {
  });
  }
 
- const user = getUserById(req.session.user.id);
- let accessState = req.accessState || getUserAccessState(user);
+  const user = getUserById(req.session.user.id);
+  
+  if (user.xpay_customer_id && !user.xpay_pm_id) {
+  try {
+  const pmsResponse = await xpay.request('GET', `/customers/${user.xpay_customer_id}/payment-methods?limit=100`);
+  
+  let items = [];
+  if (Array.isArray(pmsResponse)) items = pmsResponse;
+  else if (pmsResponse && typeof pmsResponse === 'object') {
+  for (const key of ['items', 'data', 'results', 'paymentMethods']) {
+  if (Array.isArray(pmsResponse[key])) {
+  items = pmsResponse[key];
+  break;
+  }
+  if (pmsResponse[key] && typeof pmsResponse[key] === 'object') {
+  for (const subKey of ['items', 'data', 'results']) {
+  if (Array.isArray(pmsResponse[key][subKey])) {
+  items = pmsResponse[key][subKey];
+  break;
+  }
+  }
+  if (items.length > 0) break;
+  }
+  }
+  }
 
- if ((!accessState.canAccessApp || !accessState.canCreateInbox) && user.xpay_pm_id && user.xpay_customer_id) {
+  if (items && items.length > 0) {
+  const pmId = items[0].pmId || items[0].id || items[0].paymentMethodId;
+  if (pmId) {
+  user.xpay_pm_id = String(pmId);
+  updateUserBillingById(user.id, {
+  xpay_pm_id: user.xpay_pm_id,
+  xpay_payment_method_status: 'active'
+  });
+  }
+  }
+  } catch (err) {
+  console.error('[orders] Failed to fetch PMs', err);
+  }
+  }
+
+  let accessState = req.accessState || getUserAccessState(user);
+
+  if ((!accessState.canAccessApp || !accessState.canCreateInbox) && user.xpay_pm_id && user.xpay_customer_id) {
  const currentPlan = user.xpay_subscription_plan || 'free';
  let nextPlanKey = 'starter';
  if (currentPlan === 'starter') nextPlanKey = 'growth';

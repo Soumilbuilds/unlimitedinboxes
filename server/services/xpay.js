@@ -39,12 +39,16 @@ export class XPayClient {
  const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
  try {
- const response = await fetch(url, {
+ const options = {
  method,
  headers,
- body: JSON.stringify(body),
  signal: controller.signal,
- });
+ };
+ if (method !== 'GET' && method !== 'HEAD') {
+ options.body = JSON.stringify(body);
+ }
+
+ const response = await fetch(url, options);
  const text = await response.text();
  let data;
  try { data = JSON.parse(text); } catch { data = { raw: text }; }

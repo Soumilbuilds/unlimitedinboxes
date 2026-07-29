@@ -307,10 +307,8 @@ router.post('/return', async (req, res) => {
  }
 
  try {
- updateUserBillingById(user.id, {
- xpay_pm_id: String(setupId),
- xpay_payment_method_status: 'active',
- });
+  // Wait briefly in case webhook arrives, but don't save setupId as pm_id
+  await new Promise(r => setTimeout(r, 1000));
 
  const latest = getUserById(user.id) || user;
  req.session.user = serializeSessionUser(latest);
