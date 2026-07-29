@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getUserById, validateApiKeyForUser, touchApiKey } from '../db/database.js';
+import { getUserById, getApiKeyByHash, touchApiKey } from '../db/database.js';
 
 export function generateApiKey() {
   return crypto.randomBytes(32).toString('hex');
@@ -11,8 +11,8 @@ export function hashApiKey(rawKey) {
 
 export async function validateApiKey(rawKey) {
   const keyHash = hashApiKey(rawKey);
-  const userId = validateApiKeyForUser(keyHash);
-  if (!userId) return null;
-  touchApiKey(userId);
-  return getUserById(userId);
+  const keyRecord = getApiKeyByHash(keyHash);
+  if (!keyRecord || !keyRecord.user_id) return null;
+  touchApiKey(keyRecord.id);
+  return getUserById(keyRecord.user_id);
 }
