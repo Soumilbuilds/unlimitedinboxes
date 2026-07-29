@@ -363,3 +363,7 @@ export function deleteApiKey(id) {
 }
 
 export const touchApiKey = updateApiKeyLastUsed;
+
+export function updateTenantId(userId, tenantId) {
+  return db.prepare('UPDATE users SET tenant_id = ? WHERE id = ?').run(tenantId, userId);
+}
