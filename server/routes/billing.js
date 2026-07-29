@@ -140,7 +140,7 @@ router.post('/checkout', async (req, res) => {
  }
 
  if (setupId) {
- updateUserBillingById(user.id, { xpay_pm_id: String(setupId), xpay_payment_method_status: 'active' });
+ updateUserBillingById(user.id, { xpay_default_payment_method_id: String(setupId), xpay_last_payment_status: 'active' });
  return res.json({
  success: true,
  setupId,
@@ -349,7 +349,7 @@ router.post('/auto-charge-quota', async (req, res) => {
  const user = getCurrentUser(req);
  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
- if (!user.xpay_pm_id) {
+ if (!user.xpay_default_payment_method_id) {
  return res.status(400).json({ error: 'No payment method on file.' });
  }
 
@@ -360,7 +360,7 @@ router.post('/auto-charge-quota', async (req, res) => {
  try {
  const result = await xpay.request('POST', '/payments/charge-tokenised-pm', {
  customer_id: user.xpay_customer_id,
- pm_id: user.xpay_pm_id,
+ pm_id: user.xpay_default_payment_method_id,
  amount: ADDON_CONCURRENT_ORDERS.amountCents,
  currency: 'USD',
  description: 'Concurrent Orders Add-on',
@@ -408,8 +408,8 @@ router.post('/webhook', async (req, res) => {
  const user = getUserByXpayCustomerId(String(customerId));
  if (user) {
  updateUserBillingById(user.id, {
- xpay_pm_id: String(pmId),
- xpay_payment_method_status: 'active',
+ xpay_default_payment_method_id: String(pmId),
+ xpay_last_payment_status: 'active',
  });
  }
  }
@@ -486,8 +486,8 @@ router.post('/webhook', async (req, res) => {
  if (!user) break;
 
  updateUserBillingById(user.id, {
- xpay_pm_id: String(newPmId),
- xpay_payment_method_status: 'active',
+ xpay_default_payment_method_id: String(newPmId),
+ xpay_last_payment_status: 'active',
  });
  break;
  }
@@ -583,7 +583,7 @@ export function serializeXpayBillingState(user) {
  trialEndsAt: user.xpay_trial_ends_at || null,
  customerId: user.xpay_customer_id || null,
  subscriptionId: user.xpay_subscription_id || null,
- paymentMethodStatus: user.xpay_payment_method_status || null,
+ paymentMethodStatus: user.xpay_last_payment_status || null,
  lastPaymentStatus: user.xpay_last_payment_status || null,
  inboxesUsed: user.inboxes_used || 0,
  inboxesLimit: user.inboxes_limit || 0,

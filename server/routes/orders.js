@@ -298,7 +298,7 @@ router.post('/', async (req, res) => {
 
   const user = getUserById(req.session.user.id);
   
-  if (user.xpay_customer_id && !user.xpay_pm_id) {
+  if (user.xpay_customer_id && !user.xpay_default_payment_method_id) {
   try {
   const pmsResponse = await xpay.request('GET', `/customers/${user.xpay_customer_id}/payment-methods?limit=100`);
   
@@ -325,10 +325,10 @@ router.post('/', async (req, res) => {
   if (items && items.length > 0) {
   const pmId = items[0].pmId || items[0].id || items[0].paymentMethodId;
   if (pmId) {
-  user.xpay_pm_id = String(pmId);
+  user.xpay_default_payment_method_id = String(pmId);
   updateUserBillingById(user.id, {
-  xpay_pm_id: user.xpay_pm_id,
-  xpay_payment_method_status: 'active'
+  xpay_default_payment_method_id: user.xpay_default_payment_method_id,
+  xpay_last_payment_status: 'active'
   });
   }
   }
@@ -339,7 +339,7 @@ router.post('/', async (req, res) => {
 
   let accessState = req.accessState || getUserAccessState(user);
 
-  if ((!accessState.canAccessApp || !accessState.canCreateInbox) && user.xpay_pm_id && user.xpay_customer_id) {
+  if ((!accessState.canAccessApp || !accessState.canCreateInbox) && user.xpay_default_payment_method_id && user.xpay_customer_id) {
  const currentPlan = user.xpay_subscription_plan || 'free';
  let nextPlanKey = 'starter';
  if (currentPlan === 'starter') nextPlanKey = 'growth';
@@ -353,7 +353,7 @@ router.post('/', async (req, res) => {
 
   const result = await xpay.request('POST', '/payments/charge-tokenised-pm', {
   customerId: user.xpay_customer_id,
-  pmId: user.xpay_pm_id,
+  pmId: user.xpay_default_payment_method_id,
   amount: chargeAmount,
   currency: 'USD',
   description: descriptionText,
