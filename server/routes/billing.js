@@ -194,6 +194,18 @@ router.post('/checkout', async (req, res) => {
  return res.status(503).json({ error: 'xPay is not configured.' });
  }
 
+ if (
+ user.xpay_subscription_status
+ && isSubscriptionActive(user.xpay_subscription_status)
+ && user.xpay_subscription_checkout_url
+ ) {
+ return res.json({
+ redirectUrl: user.xpay_subscription_checkout_url,
+ subscriptionId: user.xpay_subscription_id,
+ provider: 'xpay',
+ });
+ }
+
  if (user.xpay_subscription_status && isSubscriptionActive(user.xpay_subscription_status)) {
  return res.status(409).json({ error: 'Your subscription is already active.' });
  }
