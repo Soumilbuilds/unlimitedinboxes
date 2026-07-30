@@ -32,7 +32,7 @@ export class XPayClient {
  Accept: 'application/json',
  };
  if (idempotencyKey) {
- headers['X-Pay-Idempotency-Key'] = idempotencyKey;
+ headers['Idempotency-Key'] = idempotencyKey;
  }
 
  const controller = new AbortController();
@@ -54,7 +54,12 @@ export class XPayClient {
  try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
  if (!response.ok) {
- const err = new Error(data?.message || data?.error || `xPay error ${response.status}`);
+ const err = new Error(
+ data?.errorDescription
+ || data?.message
+ || data?.error
+ || `xPay error ${response.status}`
+ );
  err.status = response.status;
  err.body = data;
  throw err;
@@ -116,6 +121,58 @@ export function buildProfile(user) {
  email,
  contactNumber: /^\+[1-9]\d{7,14}$/.test(phone) ? phone : '+14155552671',
  customerAddress: { country: /^[A-Z]{2}$/.test(country) ? country : 'US' },
+ };
+}
+
+export function buildOneTimeCheckoutPayload({
+ user,
+ customerId,
+ amount,
+ description,
+ callbackUrl,
+ cancelUrl,
+ metadata = {},
+ receiptId,
+}) {
+ return {
+ amount,
+ currency: 'USD',
+ receiptId,
+ customerDetails: buildProfile(user),
+ customerId,
+ description,
+ callbackUrl,
+ cancelUrl,
+ paymentMethods: ['CARD', 'APPLE_PAY', 'GOOGLE_PAY'],
+ metadata,
+ phoneNumberRequired: false,
+ tokenise: true,
+ productPage: {
+ name: 'Unlimited Mailboxes Starter',
+ description: 'Create the first 100 inboxes for $1.',
+ },
+ };
+}
+
+export async function createOneTimeCheckout(client, options) {
+ const payload = buildOneTimeCheckoutPayload(options);
+ const response = await client.request(
+ 'POST',
+ '/payments/create-intent',
+ payload,
+ stableKey(options.receiptId)
+ );
+ const intent = response?.data || response;
+ const intentId = intent?.xIntentId || intent?.intentId || intent?.id;
+ const redirectUrl = intent?.fwdUrl || intent?.redirectUrl || intent?.url;
+
+ if (!intentId || !redirectUrl) {
+ throw new Error(intent?.errorDescription || intent?.message || 'Failed to create payment intent.');
+ }
+
+ return {
+ intentId: String(intentId),
+ redirectUrl,
  };
 }
 

@@ -7,7 +7,17 @@ import {
  getUserByXpaySubscriptionId,
  updateUserBillingById,
 } from '../db/database.js';
-import { xpay, PLANS, ADDON_CONCURRENT_ORDERS, TRIAL_DAYS, TRIAL_AUTH_CHARGE_CENTS, isSubscriptionActive, isSubscriptionPastDue } from '../services/xpay.js';
+import {
+ xpay,
+ PLANS,
+ ADDON_CONCURRENT_ORDERS,
+ TRIAL_DAYS,
+ TRIAL_AUTH_CHARGE_CENTS,
+ buildProfile,
+ createOneTimeCheckout,
+ isSubscriptionActive,
+ isSubscriptionPastDue,
+} from '../services/xpay.js';
 
 const router = Router();
 
@@ -63,12 +73,12 @@ async function ensureXpayCustomer(user, baseUrl) {
  return user.xpay_customer_id;
  }
 
- const response = await xpay.request('POST', '/customer/create', {
- customer_id: String(user.id),
- email: user.email,
- full_name: user.name || user.email.split('@')[0],
- redirect_url: `${baseUrl}/billing/return`,
- });
+ const response = await xpay.request(
+ 'POST',
+ '/customer/create',
+ { customerDetails: buildProfile(user) },
+ `customer.${user.id}`
+ );
 
  const customerId = response?.data?.customerId || response?.customerId || response?.data?.id || response?.id;
  if (customerId) {
@@ -197,32 +207,29 @@ router.post('/checkout', async (req, res) => {
  const baseUrl = getRequestBaseUrl(req);
  const customerId = await ensureXpayCustomer(user, baseUrl);
 
- const sessionResponse = await xpay.request('POST', '/billing/checkout', {
- customerId: customerId,
+ const receiptId = `trial_auth_${user.id}_${Date.now()}`;
+ const checkout = await createOneTimeCheckout(xpay, {
+ user,
+ customerId,
  amount: TRIAL_AUTH_CHARGE_CENTS,
- currency: 'USD',
- type: 'one_time',
  description: 'Starter Plan Trial - $1 for 100 Inboxes',
+ receiptId,
  metadata: {
  purpose: 'trial_auth',
  user_id: String(user.id),
  },
- success_url: `${baseUrl}/billing?billing=success&session_id=`,
- cancel_url: `${baseUrl}/billing?intent=starter`,
- callback_url: `${baseUrl}/billing/webhook`,
+ callbackUrl: `${baseUrl}/billing?billing=success&intent=starter`,
+ cancelUrl: `${baseUrl}/billing?intent=starter`,
  });
 
- const session = sessionResponse?.data || sessionResponse;
- const sessionId = session?.id || session?.checkout_id || session?.session_id;
- const redirectUrl = session?.url || session?.checkout_url || session?.redirect_url;
-
- if (!sessionId || !redirectUrl) {
- throw new Error(session?.message || session?.error || 'Failed to create payment session.');
- }
+ updateUserBillingById(user.id, {
+ xpay_checkout_id: checkout.intentId,
+ xpay_subscription_plan: 'trial',
+ });
 
  return res.json({
- redirectUrl: redirectUrl.includes('?') ? redirectUrl : redirectUrl,
- sessionId: String(sessionId),
+ redirectUrl: checkout.redirectUrl,
+ sessionId: checkout.intentId,
  provider: 'xpay',
  });
  } catch (error) {
@@ -371,7 +378,12 @@ router.post('/return', async (req, res) => {
  const user = getCurrentUser(req);
  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
- const sessionId = req.body?.sessionId || req.body?.setupId || req.query?.session_id || null;
+ const sessionId = req.body?.sessionId
+ || req.body?.setupId
+ || req.query?.xIntentId
+ || req.query?.x_intent_id
+ || req.query?.session_id
+ || null;
  if (!sessionId) {
  return res.json({ success: true, status: user.xpay_subscription_status, plan: user.plan });
  }
@@ -379,62 +391,31 @@ router.post('/return', async (req, res) => {
  try {
  const latest = getUserById(user.id) || user;
 
- // If payment already failed (webhook beat us to it), just return current state
- const isAlreadyPastDue = isSubscriptionPastDue(latest.xpay_subscription_status);
- const alreadyHasSubscription = latest.xpay_subscription_id && isSubscriptionActive(latest.xpay_subscription_status);
+ if (latest.xpay_checkout_id !== String(sessionId)) {
+ return res.status(400).json({ error: 'Payment session does not match this account.' });
+ }
 
- // Auto-create subscription with 7-day trial only if no subscription exists yet
- // and payment wasn't marked as failed
- if (!latest.xpay_subscription_id && !latest.xpay_subscription_status && !isAlreadyPastDue) {
- try {
- const baseUrl = getRequestBaseUrl(req);
- const planKey = 'starter';
- const plan = PLANS[planKey];
+ const intentResponse = await xpay.request(
+ 'GET',
+ `/payments/v2/get-intent/${encodeURIComponent(sessionId)}`
+ );
+ const intent = intentResponse?.data || intentResponse;
+ const paymentStatus = String(intent?.status || '').toUpperCase();
+
+ if (!['SUCCESS', 'SUCCEEDED', 'PAID'].includes(paymentStatus)) {
+ return res.status(409).json({ error: 'Payment is not complete yet.' });
+ }
 
  const trialEnd = new Date();
  trialEnd.setDate(trialEnd.getDate() + TRIAL_DAYS);
-
- const subResponse = await xpay.request('POST', '/subscription/create', {
- customerId: latest.xpay_customer_id,
- customerDetails: {
- email: latest.email,
- name: latest.name || latest.email.split('@')[0],
- country: req.headers['cf-ipcountry'] || 'US',
- },
- amount: plan.amountCents,
- currency: 'USD',
- interval: plan.interval,
- intervalCount: plan.intervalCount,
- trialDays: TRIAL_DAYS,
- cycleCount: -1,
- metadata: {
- plan_key: planKey,
- user_id: String(latest.id),
- source: 'auto_subscribe_after_trial_auth',
- },
- callbackUrl: baseUrl + '/billing/webhook',
- cancelUrl: baseUrl + '/billing/cancel',
- productPage: {
- name: plan.name,
- description: 'Subscription for ' + plan.name + ' plan.',
- }
- });
-
- const sub = subResponse?.data || subResponse;
- if (sub && (sub.subscriptionId || sub.id)) {
  updateUserBillingById(latest.id, {
- plan: 'starter',
- xpay_subscription_id: sub.subscriptionId || sub.id,
- xpay_subscription_status: sub.status || 'trialing',
- xpay_subscription_plan: 'starter',
+ plan: 'trial',
+ xpay_subscription_plan: 'trial',
+ xpay_subscription_status: 'trialing',
  xpay_trial_ends_at: trialEnd.toISOString(),
+ xpay_intro_offer_used: 1,
  xpay_last_payment_status: 'paid',
  });
- }
- } catch (subError) {
- console.error('[billing] auto-subscribe after $1 payment failed:', subError);
- }
- }
 
  const refreshed = getUserById(latest.id) || latest;
  req.session.user = serializeSessionUser(refreshed);

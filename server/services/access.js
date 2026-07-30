@@ -45,8 +45,9 @@ export function getSubscriptionTier(user) {
 
 export function hasUsedIntroOffer(user) {
  return Boolean(
- user?.xpay_subscription_id
- || user?.xpay_customer_id
+ user?.xpay_intro_offer_used
+ || user?.xpay_subscription_id
+ || ['trial', 'starter', 'growth', 'unlimited'].includes(user?.plan)
  );
 }
 

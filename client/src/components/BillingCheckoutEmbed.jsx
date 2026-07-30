@@ -9,7 +9,10 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function getReturnSession() {
  const params = new URLSearchParams(window.location.search);
  if (params.get('billing') === 'success') {
- return params.get('session_id') || params.get('setup_method_id');
+ return params.get('xIntentId')
+ || params.get('x_intent_id')
+ || params.get('session_id')
+ || params.get('setup_method_id');
  }
  return null;
 }
