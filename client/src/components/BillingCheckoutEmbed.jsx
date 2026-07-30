@@ -30,20 +30,20 @@ function isSynced(status, intent) {
 
 async function pollBilling(intent, sessionId, onSynced, onError, cancelled) {
  for (let attempt = 0; attempt < STATUS_POLL_ATTEMPTS; attempt += 1) {
- if (cancelled.current) return;
+ if (cancelled.current) return false;
 
  try {
  if (sessionId) {
  const returnResponse = await api.post('/billing/return', { sessionId });
  if (returnResponse.data?.redirectUrl) {
  window.location.assign(returnResponse.data.redirectUrl);
- return;
+ return true;
  }
  }
  const res = await api.get('/billing/status');
  if (isSynced(res.data, intent)) {
  await onSynced?.(res.data);
- return;
+ return true;
  }
  } catch {
  // Keep polling while payment status updates.
@@ -53,8 +53,9 @@ async function pollBilling(intent, sessionId, onSynced, onError, cancelled) {
  }
 
  if (!cancelled.current) {
- onError?.('Payment processed. Refreshing access now...');
+ onError?.('xPay has not confirmed this payment yet. Please do not pay again; refresh this page after checking the payment status.');
  }
+ return false;
 }
 
 export default function BillingCheckoutEmbed({ intent = 'standard', onSynced, onError, openBillingPortal }) {
@@ -71,7 +72,11 @@ export default function BillingCheckoutEmbed({ intent = 'standard', onSynced, on
  async function finalizeReturn() {
  setError('');
  setMessage('Finalizing payment...');
- await pollBilling(intent, sessionId, onSynced, onError, cancelled);
+ const synced = await pollBilling(intent, sessionId, onSynced, onError, cancelled);
+ if (!synced && !cancelled.current) {
+ setError('xPay has not confirmed this payment yet. Please do not pay again. Refresh this page after checking the payment status.');
+ setMessage('');
+ }
  }
 
  async function redirectToHostedCheckout() {
