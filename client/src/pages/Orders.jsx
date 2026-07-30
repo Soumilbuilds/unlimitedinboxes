@@ -79,11 +79,11 @@ function buildBillingRequiredNotice(billing, responseData = {}) {
  const blockingReason = responseData.blockingReason || billing?.blockingReason;
  const invoiceUrl = responseData.invoiceUrl || billing?.invoiceUrl;
 
- if (blockingReason === 'subscription_past_due') {
+ if (blockingReason === 'subscription_past_due' || responseData.code === 'PAYMENT_REQUIRED') {
  return {
  intent: 'retry',
- title: 'Subscription Past Due',
- subtitle: 'Pay the open invoice to restore access.',
+ title: responseData.title || 'Subscription Past Due',
+ subtitle: responseData.subtitle || responseData.error || 'Pay the open invoice to restore access.',
  action: 'Pay Invoice',
  invoiceUrl,
  };

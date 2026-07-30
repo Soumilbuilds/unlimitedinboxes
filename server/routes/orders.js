@@ -406,6 +406,38 @@ router.post('/', async (req, res) => {
  }
  }
 
+ if (!accessState.canAccessApp || !accessState.canCreateInbox) {
+ // Try auto-setup for users without billing (no customer, no PM, or missing subscription)
+ const needsAutoSetup = !user.xpay_customer_id || !user.xpay_default_payment_method_id || !user.xpay_subscription_id;
+ if (needsAutoSetup) {
+ try {
+ const baseUrl = process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com';
+ const { autoSetupBilling } = await import('../routes/billing.js');
+ const setupResult = await autoSetupBilling(user, baseUrl);
+ if (!setupResult.success) {
+ return res.status(402).json({
+ code: 'PAYMENT_REQUIRED',
+ blockingReason: 'subscription_past_due',
+ error: setupResult.reason || 'Payment required. Please pay the invoice to continue.',
+ reason: setupResult.reason || 'Card declined',
+ ...(setupResult.invoiceUrl ? { invoiceUrl: setupResult.invoiceUrl } : {})
+ });
+ }
+ // Refresh user data after successful setup
+ user = getUserById(req.session.user.id);
+ req.accessState = getUserAccessState(user);
+ } catch (setupErr) {
+ console.error('[orders] auto-setup billing failed:', setupErr);
+ return res.status(402).json({
+ code: 'BILLING_REQUIRED',
+ blockingReason: 'needs_paid_subscription',
+ error: 'Unable to process payment. Please try again.',
+ reason: setupErr.message
+ });
+ }
+ }
+ }
+
  if (!accessState.canAccessApp) {
  return res.status(403).json(billingRequiredPayload(accessState, 'creating an order'));
  }

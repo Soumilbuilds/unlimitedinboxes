@@ -206,13 +206,13 @@ export function BillingProvider({ children }) {
  if (!user?.id) return;
  const params = new URLSearchParams(location.search);
  const billingParam = params.get('billing');
- const setupMethodId = params.get('setup_method_id');
- if (!billingParam || !setupMethodId) {
+ const sessionId = params.get('session_id') || params.get('setup_method_id');
+ if (!billingParam || !sessionId) {
  return;
  }
 
  try {
- await api.post('/billing/return', { setupMethodId });
+ await api.post('/billing/return', { sessionId });
  await refreshUser({ force: true, minIntervalMs: 0 });
  await refreshBilling({ force: true, minIntervalMs: 0 });
  } catch (error) {
@@ -256,7 +256,7 @@ export function BillingProvider({ children }) {
  const blockingCheckout = buildBlockingCheckout(billing);
 
  useEffect(() => {
- if (!user?.id || !blockingCheckout || !billing?.isTrialing || billing.plan === 'trial') {
+ if (!user?.id || !blockingCheckout) {
  return;
  }
 
@@ -269,7 +269,7 @@ export function BillingProvider({ children }) {
  }
 
  redirectToBilling(blockingCheckout.intent, { replace: true });
- }, [user?.id, billing?.isTrialing, billing?.plan, blockingCheckout?.intent, location.pathname]);
+ }, [user?.id, billing?.isTrialing, billing?.plan, billing?.blockingReason, blockingCheckout?.intent, location.pathname]);
 
  return (
  <BillingContext.Provider value={value}>
