@@ -105,6 +105,7 @@ export const ADDON_CONCURRENT_ORDERS = {
 
 export const TRIAL_DAYS = 7;
 export const TRIAL_AUTH_CHARGE_CENTS = 100; // $1.00 auth charge
+export const SUBSCRIPTION_CYCLE_COUNT = 120;
 
 export function getPlanByKey(key) {
  return PLANS[key] || null;
@@ -192,7 +193,7 @@ export function buildStarterSubscriptionPayload({
  customerId,
  interval: plan.interval,
  intervalCount: plan.intervalCount,
- cycleCount: -1,
+ cycleCount: SUBSCRIPTION_CYCLE_COUNT,
  trialPeriodCount: TRIAL_DAYS,
  trialPeriodInterval: 'DAY',
  metadata: {

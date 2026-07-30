@@ -103,6 +103,7 @@ test('builds the $49.99 starter subscription with a 7-day xPay trial', () => {
  assert.equal(payload.currency, 'USD');
  assert.equal(payload.interval, 'WEEK');
  assert.equal(payload.intervalCount, 4);
+ assert.equal(payload.cycleCount, 120);
  assert.equal(payload.trialPeriodCount, 7);
  assert.equal(payload.trialPeriodInterval, 'DAY');
  assert.equal(payload.trialDays, undefined);
