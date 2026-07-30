@@ -13,6 +13,7 @@ import redirectRoutes from './routes/redirects.js';
 import apiRoutes from './routes/api.js';
 import apiKeyRoutes from './routes/apiKeys.js';
 import { resumeInterruptedOrders } from './services/orderProcessor.js';
+import { createManagedBillingWorker } from './services/recurringBilling.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,6 +24,7 @@ const HOST = process.env.HOST || '0.0.0.0';
 const isProd = process.env.NODE_ENV === 'production';
 const orderResumeIntervalMs = Math.max(Number(process.env.ORDER_RESUME_INTERVAL_MS || 30000) || 30000, 5000);
 const orderResumeEnabled = process.env.ORDER_RESUME_ENABLED !== 'false';
+const managedBillingWorker = createManagedBillingWorker();
 const corsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000')
   .split(',')
   .map(origin => origin.trim())
@@ -430,6 +432,7 @@ if (process.env.NODE_ENV === 'production') {
 
 app.listen(PORT, HOST, () => {
   console.log(`Server running on http://${HOST}:${PORT}`);
+  managedBillingWorker.start();
 
   if (!orderResumeEnabled) {
     console.log('Order resume worker disabled.');

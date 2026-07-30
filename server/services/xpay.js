@@ -105,7 +105,6 @@ export const ADDON_CONCURRENT_ORDERS = {
 
 export const TRIAL_DAYS = 7;
 export const TRIAL_AUTH_CHARGE_CENTS = 100; // $1.00 auth charge
-export const SUBSCRIPTION_CYCLE_COUNT = 1300;
 
 export function getPlanByKey(key) {
  return PLANS[key] || null;
@@ -150,7 +149,7 @@ export function buildOneTimeCheckoutPayload({
  tokenise: true,
  productPage: {
  name: 'Unlimited Mailboxes Starter',
- description: 'Create the first 100 inboxes for $1.',
+ description: '$1 today for 100 inboxes. Your saved card will be charged $49.99 in 7 days, then every 4 weeks until cancelled.',
  },
  };
 }
@@ -177,65 +176,16 @@ export async function createOneTimeCheckout(client, options) {
  };
 }
 
-export function buildStarterSubscriptionPayload({
- user,
- customerId,
- callbackUrl,
- cancelUrl,
- receiptId,
- plan = PLANS.starter,
-}) {
- return {
- amount: plan.amountCents,
- currency: 'USD',
- receiptId,
- customerDetails: buildProfile(user),
- customerId,
- interval: plan.interval,
- intervalCount: plan.intervalCount,
- cycleCount: SUBSCRIPTION_CYCLE_COUNT,
- trialPeriodCount: TRIAL_DAYS,
- trialPeriodInterval: 'DAY',
- metadata: {
- purpose: 'starter_subscription',
- plan_key: 'starter',
- user_id: String(user.id),
- },
- callbackUrl,
- cancelUrl,
- phoneNumberRequired: false,
- productPage: {
- name: `${plan.name} Subscription`,
- description: `${plan.displayPrice} after a ${TRIAL_DAYS}-day trial.`,
- },
- };
-}
-
-export async function createStarterSubscriptionCheckout(client, options) {
- const payload = buildStarterSubscriptionPayload(options);
+export async function listLivePaymentMethods(client, customerId) {
  const response = await client.request(
- 'POST',
- '/subscription/create',
- payload,
- stableKey(options.receiptId)
+ 'GET',
+ `/customer/${encodeURIComponent(customerId)}/payment-method-tokens?status=LIVE&limit=100`
  );
- const subscription = response?.data || response;
- const subscriptionId = subscription?.subscriptionId || subscription?.id;
- const redirectUrl = subscription?.fwdUrl || subscription?.redirectUrl || subscription?.url;
-
- if (!subscriptionId) {
- throw new Error(
- subscription?.errorDescription
- || subscription?.message
- || 'Failed to create starter subscription.'
- );
- }
-
- return {
- subscriptionId: String(subscriptionId),
- redirectUrl: redirectUrl || null,
- status: String(subscription?.status || 'CREATED').toUpperCase(),
- };
+ const data = response?.data || response;
+ const items = Array.isArray(data)
+ ? data
+ : (data?.items || data?.results || data?.paymentMethods || []);
+ return items.filter((item) => String(item?.status || 'LIVE').toUpperCase() === 'LIVE');
 }
 
 export function isSubscriptionActive(status) {

@@ -8,6 +8,8 @@ const __dirname = dirname(__filename);
 const db = new Database(join(__dirname, 'app.db'));
 
 db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+db.pragma('busy_timeout = 5000');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -90,6 +92,38 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_used_at DATETIME,
     FOREIGN KEY(user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS managed_billing_cycles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    cycle_number INTEGER NOT NULL,
+    due_at TEXT NOT NULL,
+    next_attempt_at TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'USD',
+    receipt_id TEXT NOT NULL UNIQUE,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    provider_intent_id TEXT UNIQUE,
+    locked_at TEXT,
+    lock_owner TEXT,
+    last_error TEXT,
+    paid_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, cycle_number),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_managed_billing_cycles_due
+    ON managed_billing_cycles(status, next_attempt_at, due_at);
+
+  CREATE TABLE IF NOT EXISTS xpay_webhook_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT,
+    processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
@@ -174,6 +208,12 @@ function ensureUserBillingColumns() {
   ensureColumn('users', 'xpay_last_invoice_url', 'TEXT');
   ensureColumn('users', 'xpay_trial_ends_at', 'TEXT');
   ensureColumn('users', 'xpay_default_payment_method_id', 'TEXT');
+  ensureColumn('users', 'xpay_billing_mode', 'TEXT');
+  ensureColumn('users', 'xpay_recurring_enabled', 'INTEGER DEFAULT 0');
+  ensureColumn('users', 'xpay_next_charge_at', 'TEXT');
+  ensureColumn('users', 'xpay_billing_cycle', 'INTEGER DEFAULT 0');
+  ensureColumn('users', 'xpay_billing_processing_at', 'TEXT');
+  ensureColumn('users', 'xpay_cancelled_at', 'TEXT');
 
   ensureColumn('users', 'whop_membership_id', 'TEXT');
   ensureColumn('users', 'whop_membership_status', 'TEXT');
@@ -286,6 +326,12 @@ const USER_BILLING_COLUMNS = new Set([
   'xpay_last_invoice_url',
   'xpay_trial_ends_at',
   'xpay_default_payment_method_id',
+  'xpay_billing_mode',
+  'xpay_recurring_enabled',
+  'xpay_next_charge_at',
+  'xpay_billing_cycle',
+  'xpay_billing_processing_at',
+  'xpay_cancelled_at',
   'whop_membership_id',
   'whop_membership_status',
   'whop_plan_id',
@@ -313,6 +359,268 @@ export function updateUserBillingById(id, updates = {}) {
     WHERE id = @id
   `);
   return stmt.run(values);
+}
+
+// --- APP-MANAGED RECURRING BILLING ---
+
+export function enrollManagedRecurringBilling(userId, {
+  firstChargeAt,
+  amountCents,
+  currency = 'USD',
+  planKey = 'starter',
+}) {
+  const firstDue = new Date(firstChargeAt).toISOString();
+  const receiptId = `starter_u${userId}_c1`;
+  const idempotencyKey = `starter.u${userId}.c1`;
+
+  return db.transaction(() => {
+    updateUserBillingById(userId, {
+      plan: 'trial',
+      xpay_billing_mode: 'managed',
+      xpay_recurring_enabled: 1,
+      xpay_subscription_plan: planKey,
+      xpay_subscription_status: 'TRIALING',
+      xpay_trial_ends_at: firstDue,
+      xpay_current_period_end: firstDue,
+      xpay_next_charge_at: firstDue,
+      xpay_billing_cycle: 0,
+      xpay_cancel_at_period_end: 0,
+      xpay_cancelled_at: null,
+      xpay_subscription_checkout_url: null,
+      inboxes_limit: 100,
+    });
+
+    db.prepare(`
+      INSERT OR IGNORE INTO managed_billing_cycles (
+        user_id, cycle_number, due_at, next_attempt_at, amount_cents,
+        currency, receipt_id, idempotency_key, status
+      ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'pending')
+    `).run(
+      userId,
+      firstDue,
+      firstDue,
+      amountCents,
+      String(currency).toUpperCase(),
+      receiptId,
+      idempotencyKey
+    );
+
+    return db.prepare(
+      'SELECT * FROM managed_billing_cycles WHERE user_id = ? AND cycle_number = 1'
+    ).get(userId);
+  })();
+}
+
+export function getManagedBillingCyclesForUser(userId) {
+  return db.prepare(`
+    SELECT *
+    FROM managed_billing_cycles
+    WHERE user_id = ?
+    ORDER BY cycle_number ASC
+  `).all(userId);
+}
+
+export function getManagedBillingCycleByReceiptId(receiptId) {
+  return db.prepare(
+    'SELECT * FROM managed_billing_cycles WHERE receipt_id = ?'
+  ).get(receiptId);
+}
+
+export function getManagedBillingCycleByProviderIntentId(intentId) {
+  return db.prepare(
+    'SELECT * FROM managed_billing_cycles WHERE provider_intent_id = ?'
+  ).get(intentId);
+}
+
+export function claimDueManagedBillingCycle({
+  now,
+  staleBefore,
+  lockOwner,
+}) {
+  return db.transaction(() => {
+    const cycle = db.prepare(`
+      SELECT c.*
+      FROM managed_billing_cycles c
+      JOIN users u ON u.id = c.user_id
+      WHERE COALESCE(u.xpay_recurring_enabled, 0) = 1
+        AND COALESCE(u.xpay_cancel_at_period_end, 0) = 0
+        AND c.due_at <= @now
+        AND (
+          (c.status IN ('pending', 'retry') AND c.next_attempt_at <= @now)
+          OR (c.status = 'processing' AND c.locked_at < @staleBefore)
+        )
+      ORDER BY c.next_attempt_at ASC, c.id ASC
+      LIMIT 1
+    `).get({ now, staleBefore });
+
+    if (!cycle) return null;
+
+    const result = db.prepare(`
+      UPDATE managed_billing_cycles
+      SET status = 'processing',
+          locked_at = @now,
+          lock_owner = @lockOwner,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = @id
+        AND (
+          status IN ('pending', 'retry')
+          OR (status = 'processing' AND locked_at < @staleBefore)
+        )
+    `).run({ id: cycle.id, now, staleBefore, lockOwner });
+
+    if (!result.changes) return null;
+    return db.prepare(`
+      SELECT c.*, u.xpay_customer_id, u.xpay_default_payment_method_id,
+             u.xpay_recurring_enabled, u.xpay_cancel_at_period_end
+      FROM managed_billing_cycles c
+      JOIN users u ON u.id = c.user_id
+      WHERE c.id = ?
+    `).get(cycle.id);
+  })();
+}
+
+export function completeManagedBillingCycle(cycleId, {
+  providerIntentId,
+  paidAt,
+  nextDueAt,
+  intervalAmountCents,
+}) {
+  return db.transaction(() => {
+    const cycle = db.prepare(
+      'SELECT * FROM managed_billing_cycles WHERE id = ?'
+    ).get(cycleId);
+    if (!cycle || cycle.status === 'succeeded') return cycle;
+
+    const paidIso = new Date(paidAt).toISOString();
+    const nextDueIso = new Date(nextDueAt).toISOString();
+    db.prepare(`
+      UPDATE managed_billing_cycles
+      SET status = 'succeeded',
+          provider_intent_id = COALESCE(provider_intent_id, ?),
+          paid_at = ?,
+          locked_at = NULL,
+          lock_owner = NULL,
+          last_error = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(providerIntentId || null, paidIso, cycleId);
+
+    updateUserBillingById(cycle.user_id, {
+      plan: 'starter',
+      xpay_billing_mode: 'managed',
+      xpay_subscription_plan: 'starter',
+      xpay_subscription_status: 'ACTIVE',
+      xpay_last_payment_status: 'paid',
+      xpay_trial_ends_at: null,
+      xpay_current_period_end: nextDueIso,
+      xpay_next_charge_at: nextDueIso,
+      xpay_billing_cycle: cycle.cycle_number,
+      xpay_billing_processing_at: null,
+      inboxes_limit: 500,
+    });
+
+    const nextCycle = cycle.cycle_number + 1;
+    db.prepare(`
+      INSERT OR IGNORE INTO managed_billing_cycles (
+        user_id, cycle_number, due_at, next_attempt_at, amount_cents,
+        currency, receipt_id, idempotency_key, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+    `).run(
+      cycle.user_id,
+      nextCycle,
+      nextDueIso,
+      nextDueIso,
+      intervalAmountCents,
+      cycle.currency,
+      `starter_u${cycle.user_id}_c${nextCycle}`,
+      `starter.u${cycle.user_id}.c${nextCycle}`
+    );
+
+    return db.prepare(
+      'SELECT * FROM managed_billing_cycles WHERE id = ?'
+    ).get(cycleId);
+  })();
+}
+
+export function retryManagedBillingCycle(cycleId, {
+  error,
+  nextAttemptAt,
+  terminal = false,
+  providerIntentId = null,
+}) {
+  return db.transaction(() => {
+    const cycle = db.prepare(
+      'SELECT * FROM managed_billing_cycles WHERE id = ?'
+    ).get(cycleId);
+    if (!cycle || cycle.status === 'succeeded') return cycle;
+
+    const status = terminal ? 'action_required' : 'retry';
+    db.prepare(`
+      UPDATE managed_billing_cycles
+      SET status = ?,
+          attempt_count = attempt_count + 1,
+          next_attempt_at = ?,
+          provider_intent_id = COALESCE(provider_intent_id, ?),
+          locked_at = NULL,
+          lock_owner = NULL,
+          last_error = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      status,
+      new Date(nextAttemptAt).toISOString(),
+      providerIntentId,
+      String(error || 'Payment failed').slice(0, 1000),
+      cycleId
+    );
+
+    updateUserBillingById(cycle.user_id, {
+      plan: 'free',
+      xpay_subscription_status: 'PAST_DUE',
+      xpay_last_payment_status: 'failed',
+      xpay_billing_processing_at: null,
+    });
+
+    return db.prepare(
+      'SELECT * FROM managed_billing_cycles WHERE id = ?'
+    ).get(cycleId);
+  })();
+}
+
+export function cancelManagedRecurringBilling(userId, cancelledAt = new Date()) {
+  const cancelledIso = new Date(cancelledAt).toISOString();
+  return db.transaction(() => {
+    updateUserBillingById(userId, {
+      xpay_recurring_enabled: 0,
+      xpay_cancel_at_period_end: 1,
+      xpay_cancelled_at: cancelledIso,
+      xpay_next_charge_at: null,
+      xpay_billing_processing_at: null,
+    });
+    db.prepare(`
+      UPDATE managed_billing_cycles
+      SET status = 'cancelled',
+          locked_at = NULL,
+          lock_owner = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = ? AND status IN ('pending', 'retry', 'processing')
+    `).run(userId);
+    return getUserById(userId);
+  })();
+}
+
+export function recordXpayWebhookEvent(eventId, eventType) {
+  if (!eventId) return true;
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO xpay_webhook_events (event_id, event_type)
+    VALUES (?, ?)
+  `).run(String(eventId), String(eventType || ''));
+  return result.changes > 0;
+}
+
+export function forgetXpayWebhookEvent(eventId) {
+  if (!eventId) return;
+  db.prepare('DELETE FROM xpay_webhook_events WHERE event_id = ?').run(String(eventId));
 }
 
 // --- TENANTS ---

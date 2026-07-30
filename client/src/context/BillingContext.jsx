@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import api from '../lib/api';
 import { useAuth } from './AuthContext';
 
@@ -131,9 +131,8 @@ function buildUpgradeCheckout(intent) {
 }
 
 export function BillingProvider({ children }) {
- const navigate = useNavigate();
  const location = useLocation();
- const { user, refreshUser } = useAuth();
+ const { user } = useAuth();
  const [billing, setBilling] = useState(null);
  const [loading, setLoading] = useState(true);
  const refreshState = useRef({
@@ -202,45 +201,9 @@ export function BillingProvider({ children }) {
  return request;
  };
 
- const finalizeReturn = async () => {
- if (!user?.id) return;
- const params = new URLSearchParams(location.search);
- const billingParam = params.get('billing');
- const sessionId = params.get('xpay_intent_id')
- || params.get('xIntentId')
- || params.get('x_intent_id')
- || params.get('intentId')
- || params.get('subscriptionId')
- || params.get('subscription_id')
- || params.get('session_id')
- || params.get('setup_method_id')
- || (billingParam === 'subscription-success' ? '__stored_subscription__' : null)
- || (billingParam === 'success' ? '__stored_checkout__' : null);
- if (!sessionId) {
- return;
- }
-
- try {
- const returnResponse = await api.post('/billing/return', { sessionId });
- if (returnResponse.data?.redirectUrl) {
- window.location.assign(returnResponse.data.redirectUrl);
- return;
- }
- await refreshUser({ force: true, minIntervalMs: 0 });
- await refreshBilling({ force: true, minIntervalMs: 0 });
- navigate(location.pathname, { replace: true });
- } catch (error) {
- console.error(error);
- }
- };
-
  useEffect(() => {
  void refreshBilling({ force: true, minIntervalMs: 0 });
  }, [user?.id]);
-
- useEffect(() => {
- void finalizeReturn();
- }, [user?.id, location.search]);
 
  const openUpgrade = (intent = 'standard') => {
  const checkout = buildUpgradeCheckout(intent);
@@ -250,6 +213,19 @@ export function BillingProvider({ children }) {
  const openBillingPortal = async () => {
  if (billing?.isPastDue) {
  redirectToBilling('retry');
+ return;
+ }
+
+ if (billing?.billingMode === 'managed' && billing?.recurringEnabled) {
+ const accessEnd = billing.currentPeriodEnd || billing.trialEndsAt;
+ const suffix = accessEnd
+ ? ` Access continues until ${new Date(accessEnd).toLocaleDateString()}.`
+ : '';
+ if (!window.confirm(`Cancel automatic renewal? No further recurring charges will be made.${suffix}`)) {
+ return;
+ }
+ await api.post('/billing/cancel');
+ await refreshBilling({ force: true, minIntervalMs: 0 });
  return;
  }
 

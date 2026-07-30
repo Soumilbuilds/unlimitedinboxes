@@ -3,9 +3,8 @@ import test from 'node:test';
 
 import {
  buildOneTimeCheckoutPayload,
- buildStarterSubscriptionPayload,
  createOneTimeCheckout,
- createStarterSubscriptionCheckout,
+ listLivePaymentMethods,
 } from '../services/xpay.js';
 
 const user = {
@@ -35,6 +34,8 @@ test('builds the supported xPay $1 checkout payload', () => {
  assert.equal(payload.callbackUrl, 'https://app.example.com/billing?billing=success&intent=starter');
  assert.equal(payload.tokenise, true);
  assert.deepEqual(payload.paymentMethods, ['CARD', 'APPLE_PAY', 'GOOGLE_PAY']);
+ assert.match(payload.productPage.description, /\$49\.99 in 7 days/);
+ assert.match(payload.productPage.description, /every 4 weeks until cancelled/);
 });
 
 test('uses /payments/create-intent and normalizes the hosted checkout response', async () => {
@@ -90,53 +91,22 @@ test('rejects malformed provider responses before returning them to the browser'
  );
 });
 
-test('builds the $49.99 starter subscription with a 7-day xPay trial', () => {
- const payload = buildStarterSubscriptionPayload({
-  user,
-  customerId: 'cus_test',
-  receiptId: 'starter_subscription_42',
-  callbackUrl: 'https://app.example.com/billing?billing=subscription-success&intent=starter',
-  cancelUrl: 'https://app.example.com/billing?billing=subscription-cancelled&intent=starter',
- });
-
- assert.equal(payload.amount, 4999);
- assert.equal(payload.currency, 'USD');
- assert.equal(payload.interval, 'WEEK');
- assert.equal(payload.intervalCount, 4);
- assert.equal(payload.cycleCount, 1300);
- assert.equal(payload.trialPeriodCount, 7);
- assert.equal(payload.trialPeriodInterval, 'DAY');
- assert.equal(payload.trialDays, undefined);
- assert.deepEqual(payload.metadata, {
-  purpose: 'starter_subscription',
-  plan_key: 'starter',
-  user_id: '42',
- });
-});
-
-test('uses the supported xPay subscription endpoint and hosted return URL', async () => {
+test('retrieves the live tokenized card without another hosted checkout', async () => {
  const calls = [];
  const client = {
   async request(...args) {
    calls.push(args);
    return {
-    subscriptionId: 'sub_test',
-    fwdUrl: 'https://pay.xpaycheckout.com/?subscription_id=sub_test',
+    data: [
+     { paymentMethodId: 'pmt_live', status: 'LIVE' },
+     { paymentMethodId: 'pmt_deleted', status: 'DELETED' },
+    ],
    };
   },
  };
 
- const checkout = await createStarterSubscriptionCheckout(client, {
-  user,
-  customerId: 'cus_test',
-  receiptId: 'starter_subscription_42',
-  callbackUrl: 'https://app.example.com/billing?billing=subscription-success&intent=starter',
-  cancelUrl: 'https://app.example.com/billing?billing=subscription-cancelled&intent=starter',
- });
-
- assert.equal(calls[0][0], 'POST');
- assert.equal(calls[0][1], '/subscription/create');
- assert.equal(checkout.subscriptionId, 'sub_test');
- assert.equal(checkout.status, 'CREATED');
- assert.match(checkout.redirectUrl, /subscription_id=sub_test/);
+ const methods = await listLivePaymentMethods(client, 'cus_test');
+ assert.equal(calls[0][0], 'GET');
+ assert.equal(calls[0][1], '/customer/cus_test/payment-method-tokens?status=LIVE&limit=100');
+ assert.deepEqual(methods, [{ paymentMethodId: 'pmt_live', status: 'LIVE' }]);
 });

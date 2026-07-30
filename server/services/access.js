@@ -59,15 +59,19 @@ export function getUserAccessState(user) {
  const hasConcurrentOrders = Boolean(user?.has_concurrent_orders);
 
  const subscriptionStatus = (user?.xpay_subscription_status || '').toUpperCase();
- const isActive = isSubscriptionActive(subscriptionStatus);
  const isPastDue = isSubscriptionPastDue(subscriptionStatus);
  const trialing = isOnTrial(user);
+ const periodEnd = user?.xpay_current_period_end ? new Date(user.xpay_current_period_end) : null;
+ const cancelledAtPeriodEnd = Boolean(user?.xpay_cancel_at_period_end);
+ const paidPeriodActive = subscriptionStatus === 'ACTIVE'
+ && (!cancelledAtPeriodEnd || (periodEnd && periodEnd > new Date()));
+ const isActive = paidPeriodActive || trialing;
 
  const inboxesAvailable = inboxesLimit === Infinity
  ? Infinity
  : Math.max(0, inboxesLimit - inboxesUsed);
  const canCreateInbox = inboxesLimit === Infinity || inboxesUsed < inboxesLimit;
- const canAccessApp = isActive || trialing;
+ const canAccessApp = isActive;
 
  const usedIntroOffer = hasUsedIntroOffer(user);
  const needsIntroOffer = !canAccessApp && !usedIntroOffer;
@@ -75,7 +79,9 @@ export function getUserAccessState(user) {
 
  const blockingReason = isPastDue
  ? 'payment_overdue'
- : (needsIntroOffer ? 'needs_intro_offer' : (!canAccessApp ? 'needs_paid_subscription' : null));
+ : (cancelledAtPeriodEnd && !canAccessApp
+ ? 'subscription_cancelled'
+ : (needsIntroOffer ? 'needs_intro_offer' : (!canAccessApp ? 'needs_paid_subscription' : null)));
 
  const recommendedCheckoutIntent = isPastDue
  ? 'retry'
@@ -107,6 +113,8 @@ export function getUserAccessState(user) {
  hasBillingPortal: Boolean(user?.xpay_customer_id),
  cleanupDueAt: null,
  hasBillingIssue: isPastDue,
+ cancelAtPeriodEnd: cancelledAtPeriodEnd,
+ currentPeriodEnd: user?.xpay_current_period_end || null,
  canAccessApp,
  canAccessApi: ['growth', 'unlimited'].includes(planKey),
  hasUnlimitedOrders: planKey === 'unlimited',

@@ -20,10 +20,10 @@ function getBillingCopy(intent, billing) {
  };
  }
 
- if (intent === 'trial') {
+ if (intent === 'trial' || intent === 'starter') {
  return {
- headline: 'No Active Subscription Found',
- subheadline: 'Start 7-Day Free Trial'
+ headline: '100 inboxes for $1 today',
+ subheadline: 'One secure checkout. Your saved card is charged $49.99 after 7 days, then every 4 weeks until cancelled.'
  };
  }
 
@@ -90,7 +90,7 @@ function OverdueInvoiceRecovery({ billing, refreshBilling }) {
 export default function BillingCheckout() {
  const location = useLocation();
  const [searchParams] = useSearchParams();
- const { billing, refreshBilling } = useBilling();
+ const { billing, loading, refreshBilling } = useBilling();
 
  const intent = useMemo(() => {
  const raw = searchParams.get('intent');
@@ -108,15 +108,10 @@ export default function BillingCheckout() {
  return;
  }
 
- if (
- location.pathname === '/billing'
- && !billing.blockingReason
- && intent === 'trial'
- && billing.plan !== 'trial'
- ) {
+ if (location.pathname === '/billing' && billing.canAccessApp) {
  redirectToOrders();
  }
- }, [billing, intent, location.pathname]);
+ }, [billing, location.pathname]);
 
  return (
  <main className="billing-page">
@@ -126,7 +121,12 @@ export default function BillingCheckout() {
  {copy.subheadline ? <p>{copy.subheadline}</p> : null}
  </div>
 
- {intent === 'retry' || billing?.blockingReason === 'payment_overdue' ? (
+ {loading || !billing ? (
+ <div className="billing-page-loading">
+ <div className="spinner" />
+ <p>Checking your billing status...</p>
+ </div>
+ ) : intent === 'retry' || billing?.blockingReason === 'payment_overdue' ? (
  <OverdueInvoiceRecovery
  billing={billing}
  refreshBilling={refreshBilling}

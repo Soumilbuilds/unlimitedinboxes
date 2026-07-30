@@ -38,3 +38,22 @@ test('billing status exposes trial access to the Orders page', () => {
  assert.equal(status.isTrialing, true);
  assert.equal(status.inboxesLimit, 100);
 });
+
+test('an expired cancelled trial cannot retain access forever', () => {
+ const status = serializeXpayBillingState({
+  id: 42,
+  email: 'customer@example.com',
+  plan: 'trial',
+  xpay_subscription_plan: 'starter',
+  xpay_subscription_status: 'TRIALING',
+  xpay_trial_ends_at: new Date(Date.now() - 1000).toISOString(),
+  xpay_current_period_end: new Date(Date.now() - 1000).toISOString(),
+  xpay_intro_offer_used: 1,
+  xpay_cancel_at_period_end: 1,
+  inboxes_used: 0,
+ });
+
+ assert.equal(status.canAccessApp, false);
+ assert.equal(status.isTrialing, false);
+ assert.equal(status.blockingReason, 'subscription_cancelled');
+});

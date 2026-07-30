@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -12,106 +12,115 @@ function getReturnSession() {
  || params.get('xIntentId')
  || params.get('x_intent_id')
  || params.get('intentId')
- || params.get('subscriptionId')
- || params.get('subscription_id')
- || params.get('session_id')
- || params.get('setup_method_id');
+ || params.get('session_id');
  if (sessionId) return sessionId;
- if (params.get('billing') === 'subscription-success') return '__stored_subscription__';
  return params.get('billing') === 'success' ? '__stored_checkout__' : null;
 }
 
-function isSynced(status, intent) {
- if (!status) return false;
- if (intent === 'advanced') return Boolean(status.plan === 'unlimited');
- if (intent === 'standard') return status.plan === 'starter' || status.plan === 'growth' || status.plan === 'unlimited' || Boolean(status.isActive);
- return Boolean(status.canAccessApp || status.isTrialing || status.isActive);
+function isSynced(status) {
+ return Boolean(status?.canAccessApp || status?.isTrialing || status?.isActive);
 }
 
-async function pollBilling(intent, sessionId, onSynced, onError, cancelled) {
+export default function BillingCheckoutEmbed({ onSynced, onError }) {
+ const { user } = useAuth();
+ const [error, setError] = useState('');
+ const [message, setMessage] = useState('Checking your billing status...');
+ const [ready, setReady] = useState(false);
+ const [submitting, setSubmitting] = useState(false);
+ const returnedFromXpay = useRef(Boolean(getReturnSession()));
+ const cancelled = useRef(false);
+
+ async function syncStatus() {
+ const statusResponse = await api.get('/billing/status');
+ if (isSynced(statusResponse.data)) {
+ await onSynced?.(statusResponse.data);
+ return true;
+ }
+ return false;
+ }
+
+ async function finalizeReturn(sessionId) {
+ setError('');
+ setReady(false);
+ setMessage('Confirming your $1 payment...');
+
  for (let attempt = 0; attempt < STATUS_POLL_ATTEMPTS; attempt += 1) {
- if (cancelled.current) return false;
-
+ if (cancelled.current) return;
  try {
- if (sessionId) {
- const returnResponse = await api.post('/billing/return', { sessionId });
- if (returnResponse.data?.redirectUrl) {
- window.location.assign(returnResponse.data.redirectUrl);
- return true;
+ await api.post('/billing/return', { sessionId });
+ if (await syncStatus()) return;
+ } catch (requestError) {
+ const status = requestError?.response?.status;
+ if (status && status !== 409 && status < 500) {
+ const detail = requestError?.response?.data?.error || requestError.message;
+ setError(detail);
+ onError?.(detail, requestError);
+ return;
  }
  }
- const res = await api.get('/billing/status');
- if (isSynced(res.data, intent)) {
- await onSynced?.(res.data);
- return true;
- }
- } catch {
- // Keep polling while payment status updates.
- }
-
  await wait(STATUS_POLL_INTERVAL_MS);
  }
 
  if (!cancelled.current) {
- onError?.('xPay has not confirmed this payment yet. Please do not pay again; refresh this page after checking the payment status.');
+ setMessage('');
+ setError('We received your return and are still confirming the payment. Do not pay again.');
  }
- return false;
-}
-
-export default function BillingCheckoutEmbed({ intent = 'standard', onSynced, onError, openBillingPortal }) {
- const { user } = useAuth();
- const [error, setError] = useState('');
- const [message, setMessage] = useState('Preparing secure checkout...');
+ }
 
  useEffect(() => {
  if (!user) return undefined;
-
- const cancelled = { current: false };
+ cancelled.current = false;
  const sessionId = getReturnSession();
 
- async function finalizeReturn() {
- setError('');
- setMessage('Finalizing payment...');
- const synced = await pollBilling(intent, sessionId, onSynced, onError, cancelled);
- if (!synced && !cancelled.current) {
- setError('xPay has not confirmed this payment yet. Please do not pay again. Refresh this page after checking the payment status.');
- setMessage('');
- }
- }
-
- async function redirectToHostedCheckout() {
- try {
- setError('');
- setMessage('Setting up payment...');
- const res = await api.post('/billing/checkout', { intent });
- const checkoutUrl = res.data?.redirectUrl || res.data?.url || res.data?.checkoutUrl || res.data?.purchaseUrl;
- if (!checkoutUrl) throw new Error('No checkout URL returned.');
- window.location.assign(checkoutUrl);
- } catch (err) {
- if (cancelled.current) return;
- const nextError = err?.response?.data?.error || err.message || 'Failed to open checkout.';
- setError(nextError);
- setMessage('');
- onError?.(nextError, err);
- }
- }
-
  if (sessionId) {
- void finalizeReturn();
- } else if (intent === 'retry') {
- setError('');
- setMessage('');
- if (typeof onError === 'function') {
- onError('Please update your payment method to continue.', null);
- }
+ void finalizeReturn(sessionId);
  } else {
- void redirectToHostedCheckout();
+ void syncStatus()
+ .then((synced) => {
+ if (!synced && !cancelled.current) {
+ setMessage('');
+ setReady(true);
+ }
+ })
+ .catch((requestError) => {
+ if (cancelled.current) return;
+ const detail = requestError?.response?.data?.error || requestError.message || 'Could not load billing status.';
+ setError(detail);
+ setMessage('');
+ onError?.(detail, requestError);
+ });
  }
 
  return () => {
  cancelled.current = true;
  };
- }, [user?.id, intent]);
+ }, [user?.id]);
+
+ async function openCheckout() {
+ if (submitting) return;
+ setSubmitting(true);
+ setError('');
+ try {
+ const response = await api.post('/billing/checkout', { intent: 'starter' });
+ const checkoutUrl = response.data?.redirectUrl;
+ if (!checkoutUrl) throw new Error('No checkout URL returned.');
+ window.location.assign(checkoutUrl);
+ } catch (requestError) {
+ if (requestError?.response?.status === 409) {
+ const synced = await syncStatus().catch(() => false);
+ if (synced) return;
+ }
+ const detail = requestError?.response?.data?.error || requestError.message || 'Failed to open checkout.';
+ setError(detail);
+ onError?.(detail, requestError);
+ setSubmitting(false);
+ }
+ }
+
+ async function checkReturnedPayment() {
+ const sessionId = getReturnSession() || '__stored_checkout__';
+ await finalizeReturn(sessionId);
+ }
 
  if (!user) return null;
 
@@ -119,6 +128,30 @@ export default function BillingCheckoutEmbed({ intent = 'standard', onSynced, on
  return (
  <div className="billing-page-empty">
  <div className="alert error billing-page-alert">{error}</div>
+ {returnedFromXpay.current ? (
+ <button className="btn primary" type="button" onClick={() => void checkReturnedPayment()}>
+ Check payment status
+ </button>
+ ) : null}
+ </div>
+ );
+ }
+
+ if (ready) {
+ return (
+ <div className="billing-page-empty">
+ <p>
+ $1 today for your first 100 inboxes. After 7 days, your saved card will be charged
+ {' '}$49.99, then $49.99 every 4 weeks until cancelled.
+ </p>
+ <button
+ className="btn primary"
+ type="button"
+ disabled={submitting}
+ onClick={() => void openCheckout()}
+ >
+ {submitting ? 'Opening secure checkout...' : 'Pay $1 & start 7-day trial'}
+ </button>
  </div>
  );
  }

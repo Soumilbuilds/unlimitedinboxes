@@ -81,12 +81,12 @@ export default function Sidebar() {
       </nav>
 
       <div className="sidebar-footer">
-        {!billing?.isPaid && (
+        {!billing?.canAccessApp && (
           <a className="btn ghost" href={reviewUrl} target="_blank" rel="noreferrer">
             Leave Review
           </a>
         )}
-        {!billing?.isPaid && (
+        {!billing?.canAccessApp && (
           <button className="btn accent" onClick={() => void openUpgrade('standard')}>
             Upgrade
           </button>

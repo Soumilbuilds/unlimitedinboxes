@@ -92,8 +92,8 @@ function buildBillingRequiredNotice(billing, responseData = {}) {
  return {
  intent: 'starter',
  title: 'No Active Subscription Found',
- subtitle: 'Create The First 100 Inboxes For Just One Dollar.',
- action: 'Create Inboxes',
+ subtitle: '$1 today for 100 inboxes. After 7 days, your saved card is charged $49.99, then every 4 weeks until cancelled.',
+ action: 'View $1 Offer',
  invoiceUrl: null,
  };
 }

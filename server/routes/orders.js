@@ -11,10 +11,8 @@ import {
  addOrderLog,
  deleteOrder,
  getOrderLogs as getStoredLogs,
- updateUserBillingById,
  getUserById
 } from '../db/database.js';
-import { xpay, PLANS } from '../services/xpay.js';
 import { getUserAccessState } from '../services/access.js';
 import { processOrder, cancelOrder, getOrderLogs, hasActiveJob } from '../services/orderProcessor.js';
 import { validateApiKey } from '../services/apiKey.js';
@@ -297,146 +295,7 @@ router.post('/', async (req, res) => {
  }
 
  const user = getUserById(req.session.user.id);
-
- if (user.xpay_customer_id && !user.xpay_default_payment_method_id) {
- try {
- const pmsResponse = await xpay.request('GET', `/customers/${user.xpay_customer_id}/payment-methods?limit=100`);
-
- let items = [];
- if (Array.isArray(pmsResponse)) items = pmsResponse;
- else if (pmsResponse && typeof pmsResponse === 'object') {
- for (const key of ['items', 'data', 'results', 'paymentMethods']) {
- if (Array.isArray(pmsResponse[key])) {
- items = pmsResponse[key];
- break;
- }
- if (pmsResponse[key] && typeof pmsResponse[key] === 'object') {
- for (const subKey of ['items', 'data', 'results']) {
- if (Array.isArray(pmsResponse[key][subKey])) {
- items = pmsResponse[key][subKey];
- break;
- }
- }
- if (items.length > 0) break;
- }
- }
- }
-
- if (items && items.length > 0) {
- const pmId = items[0].pmId || items[0].id || items[0].paymentMethodId;
- if (pmId) {
- user.xpay_default_payment_method_id = String(pmId);
- updateUserBillingById(user.id, {
- xpay_default_payment_method_id: user.xpay_default_payment_method_id,
- xpay_last_payment_status: 'active'
- });
- }
- }
- } catch (err) {
- console.error('[orders] Failed to fetch PMs', err);
- }
- }
-
- let accessState = req.accessState || getUserAccessState(user);
-
- if ((!accessState.canAccessApp || !accessState.canCreateInbox) && user.xpay_default_payment_method_id && user.xpay_customer_id) {
- const currentPlan = user.xpay_subscription_plan || 'free';
- let nextPlanKey = 'starter';
- if (currentPlan === 'starter') nextPlanKey = 'growth';
- else if (currentPlan === 'growth') nextPlanKey = 'unlimited';
-
- if (nextPlanKey !== currentPlan && nextPlanKey !== 'free') {
- try {
- const nextPlan = PLANS[nextPlanKey];
- const chargeAmount = currentPlan === 'free' ? TRIAL_AUTH_CHARGE_CENTS : nextPlan.amountCents;
- const descriptionText = currentPlan === 'free' ? 'Starter Plan Trial - 100 Inboxes for $1' : `Upgrade to ${nextPlan.name} Plan`;
-
- const result = await xpay.request('POST', '/payments/charge-tokenised-pm', {
- customerId: user.xpay_customer_id,
- pmId: user.xpay_default_payment_method_id,
- amount: chargeAmount,
- currency: 'USD',
- description: descriptionText,
- receiptId: `first_charge_${user.id}_${Date.now()}`
- });
-
- if (result?.success !== false && result?.status !== 'failed') {
- updateUserBillingById(user.id, {
- xpay_subscription_plan: nextPlanKey,
- plan: nextPlanKey,
- xpay_subscription_status: 'active',
- xpay_trial_ends_at: null
- });
- user.xpay_subscription_plan = nextPlanKey;
- user.plan = nextPlanKey;
- user.xpay_subscription_status = 'active';
- req.accessState = getUserAccessState(user);
- accessState = req.accessState;
- } else {
- const chargeData = result.data || result;
- const invoiceUrl = chargeData.invoice && chargeData.invoice.url || chargeData.invoiceUrl || chargeData.invoice_url || chargeData.url;
-
- updateUserBillingById(user.id, {
- xpay_subscription_plan: nextPlanKey,
- plan: nextPlanKey,
- xpay_subscription_status: 'past_due',
- ...(invoiceUrl ? { xpay_last_invoice_url: String(invoiceUrl) } : {})
- });
- return res.status(402).json({
- code: 'PAYMENT_FAILED',
- blockingReason: 'subscription_past_due',
- error: `Your card on file failed to charge for the ${nextPlan.name} upgrade. Please pay the invoice to continue.`,
- reason: result?.message || 'Card declined',
- ...(invoiceUrl ? { invoiceUrl } : {})
- });
- }
- } catch (err) {
- updateUserBillingById(user.id, {
- xpay_subscription_plan: nextPlanKey,
- plan: nextPlanKey,
- xpay_subscription_status: 'past_due'
- });
- return res.status(402).json({
- code: 'PAYMENT_FAILED',
- blockingReason: 'subscription_past_due',
- error: `Failed to charge for the ${nextPlanKey} upgrade. Please pay the invoice.`,
- reason: err.message
- });
- }
- }
- }
-
- if (!accessState.canAccessApp || !accessState.canCreateInbox) {
- // Try auto-setup for users without billing (no customer, no PM, or missing subscription)
- const needsAutoSetup = !user.xpay_customer_id || !user.xpay_default_payment_method_id || !user.xpay_subscription_id;
- if (needsAutoSetup) {
- try {
- const baseUrl = process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com';
- const { autoSetupBilling } = await import('../routes/billing.js');
- const setupResult = await autoSetupBilling(user, baseUrl);
- if (!setupResult.success) {
- return res.status(402).json({
- code: 'PAYMENT_REQUIRED',
- blockingReason: 'subscription_past_due',
- error: setupResult.reason || 'Payment required. Please pay the invoice to continue.',
- reason: setupResult.reason || 'Card declined',
- ...(setupResult.invoiceUrl ? { invoiceUrl: setupResult.invoiceUrl } : {})
- });
- }
- // Refresh user data after successful setup
- user = getUserById(req.session.user.id);
- req.accessState = getUserAccessState(user);
- } catch (setupErr) {
- console.error('[orders] auto-setup billing failed:', setupErr);
- return res.status(402).json({
- code: 'BILLING_REQUIRED',
- blockingReason: 'needs_paid_subscription',
- error: 'Unable to process payment. Please try again.',
- reason: setupErr.message
- });
- }
- }
- }
+ const accessState = req.accessState || getUserAccessState(user);
 
  if (!accessState.canAccessApp) {
  return res.status(403).json(billingRequiredPayload(accessState, 'creating an order'));
