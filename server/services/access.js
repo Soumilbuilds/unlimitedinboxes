@@ -9,14 +9,14 @@ const PLAN_LIMITS = {
 };
 
 function getPlanKey(user) {
+ const status = (user?.xpay_subscription_status || '').toUpperCase();
+ if (['TRIALING', 'TRIAL'].includes(status)) return 'trial';
+
  const subPlan = user?.xpay_subscription_plan;
  if (subPlan && PLAN_LIMITS[subPlan]) return subPlan;
 
  const stored = user?.plan;
  if (stored && PLAN_LIMITS[stored]) return stored;
-
- const status = (user?.xpay_subscription_status || '').toUpperCase();
- if (['TRIALING', 'TRIAL'].includes(status)) return 'trial';
 
  return 'free';
 }

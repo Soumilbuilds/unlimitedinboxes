@@ -159,11 +159,14 @@ function ensureUserBillingColumns() {
   ensureColumn('users', 'xpay_customer_id', 'TEXT');
   ensureColumn('users', 'xpay_subscription_id', 'TEXT');
   ensureColumn('users', 'xpay_subscription_status', 'TEXT');
+  ensureColumn('users', 'xpay_subscription_plan', 'TEXT');
+  ensureColumn('users', 'xpay_subscription_checkout_url', 'TEXT');
   ensureColumn('users', 'xpay_product', 'TEXT');
   ensureColumn('users', 'xpay_plan_id', 'TEXT');
   ensureColumn('users', 'xpay_current_period_end', 'TEXT');
   ensureColumn('users', 'xpay_cancel_at_period_end', 'INTEGER DEFAULT 0');
   ensureColumn('users', 'xpay_checkout_id', 'TEXT');
+  ensureColumn('users', 'xpay_checkout_url', 'TEXT');
   ensureColumn('users', 'xpay_intro_offer_used', 'INTEGER DEFAULT 0');
   ensureColumn('users', 'xpay_last_payment_status', 'TEXT');
   ensureColumn('users', 'xpay_last_invoice_id', 'TEXT');
@@ -255,6 +258,10 @@ export function getUserByXpaySubscriptionId(subscriptionId) {
   return db.prepare('SELECT * FROM users WHERE xpay_subscription_id = ?').get(subscriptionId);
 }
 
+export function getUserByXpayCheckoutId(checkoutId) {
+  return db.prepare('SELECT * FROM users WHERE xpay_checkout_id = ?').get(checkoutId);
+}
+
 const USER_BILLING_COLUMNS = new Set([
   'plan',
   'lifetime_completed_orders',
@@ -264,11 +271,14 @@ const USER_BILLING_COLUMNS = new Set([
   'xpay_customer_id',
   'xpay_subscription_id',
   'xpay_subscription_status',
+  'xpay_subscription_plan',
+  'xpay_subscription_checkout_url',
   'xpay_product',
   'xpay_plan_id',
   'xpay_current_period_end',
   'xpay_cancel_at_period_end',
   'xpay_checkout_id',
+  'xpay_checkout_url',
   'xpay_intro_offer_used',
   'xpay_last_payment_status',
   'xpay_last_invoice_id',

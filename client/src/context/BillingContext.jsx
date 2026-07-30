@@ -206,19 +206,31 @@ export function BillingProvider({ children }) {
  if (!user?.id) return;
  const params = new URLSearchParams(location.search);
  const billingParam = params.get('billing');
- const sessionId = params.get('session_id') || params.get('setup_method_id');
- if (!billingParam || !sessionId) {
+ const sessionId = params.get('xpay_intent_id')
+ || params.get('xIntentId')
+ || params.get('x_intent_id')
+ || params.get('intentId')
+ || params.get('subscriptionId')
+ || params.get('subscription_id')
+ || params.get('session_id')
+ || params.get('setup_method_id')
+ || (billingParam === 'subscription-success' ? '__stored_subscription__' : null)
+ || (billingParam === 'success' ? '__stored_checkout__' : null);
+ if (!sessionId) {
  return;
  }
 
  try {
- await api.post('/billing/return', { sessionId });
+ const returnResponse = await api.post('/billing/return', { sessionId });
+ if (returnResponse.data?.redirectUrl) {
+ window.location.assign(returnResponse.data.redirectUrl);
+ return;
+ }
  await refreshUser({ force: true, minIntervalMs: 0 });
  await refreshBilling({ force: true, minIntervalMs: 0 });
+ navigate(location.pathname, { replace: true });
  } catch (error) {
  console.error(error);
- } finally {
- navigate(location.pathname, { replace: true });
  }
  };
 

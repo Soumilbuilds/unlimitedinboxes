@@ -176,6 +176,67 @@ export async function createOneTimeCheckout(client, options) {
  };
 }
 
+export function buildStarterSubscriptionPayload({
+ user,
+ customerId,
+ callbackUrl,
+ cancelUrl,
+ receiptId,
+ plan = PLANS.starter,
+}) {
+ return {
+ amount: plan.amountCents,
+ currency: 'USD',
+ receiptId,
+ customerDetails: buildProfile(user),
+ customerId,
+ interval: plan.interval,
+ intervalCount: plan.intervalCount,
+ cycleCount: -1,
+ trialPeriodCount: TRIAL_DAYS,
+ trialPeriodInterval: 'DAY',
+ metadata: {
+ purpose: 'starter_subscription',
+ plan_key: 'starter',
+ user_id: String(user.id),
+ },
+ callbackUrl,
+ cancelUrl,
+ phoneNumberRequired: false,
+ productPage: {
+ name: `${plan.name} Subscription`,
+ description: `${plan.displayPrice} after a ${TRIAL_DAYS}-day trial.`,
+ },
+ };
+}
+
+export async function createStarterSubscriptionCheckout(client, options) {
+ const payload = buildStarterSubscriptionPayload(options);
+ const response = await client.request(
+ 'POST',
+ '/subscription/create',
+ payload,
+ stableKey(options.receiptId)
+ );
+ const subscription = response?.data || response;
+ const subscriptionId = subscription?.subscriptionId || subscription?.id;
+ const redirectUrl = subscription?.fwdUrl || subscription?.redirectUrl || subscription?.url;
+
+ if (!subscriptionId) {
+ throw new Error(
+ subscription?.errorDescription
+ || subscription?.message
+ || 'Failed to create starter subscription.'
+ );
+ }
+
+ return {
+ subscriptionId: String(subscriptionId),
+ redirectUrl: redirectUrl || null,
+ status: String(subscription?.status || 'CREATED').toUpperCase(),
+ };
+}
+
 export function isSubscriptionActive(status) {
  return ['ACTIVE', 'TRIALING'].includes(String(status || '').toUpperCase());
 }

@@ -3,7 +3,9 @@ import test from 'node:test';
 
 import {
  buildOneTimeCheckoutPayload,
+ buildStarterSubscriptionPayload,
  createOneTimeCheckout,
+ createStarterSubscriptionCheckout,
 } from '../services/xpay.js';
 
 const user = {
@@ -84,6 +86,56 @@ test('rejects malformed provider responses before returning them to the browser'
    cancelUrl: 'https://app.example.com/billing?intent=starter',
    metadata: { purpose: 'trial_auth', user_id: '42' },
   }),
-  /Failed to create payment intent/
+ /Failed to create payment intent/
  );
+});
+
+test('builds the $49.99 starter subscription with a 7-day xPay trial', () => {
+ const payload = buildStarterSubscriptionPayload({
+  user,
+  customerId: 'cus_test',
+  receiptId: 'starter_subscription_42',
+  callbackUrl: 'https://app.example.com/billing?billing=subscription-success&intent=starter',
+  cancelUrl: 'https://app.example.com/billing?billing=subscription-cancelled&intent=starter',
+ });
+
+ assert.equal(payload.amount, 4999);
+ assert.equal(payload.currency, 'USD');
+ assert.equal(payload.interval, 'WEEK');
+ assert.equal(payload.intervalCount, 4);
+ assert.equal(payload.trialPeriodCount, 7);
+ assert.equal(payload.trialPeriodInterval, 'DAY');
+ assert.equal(payload.trialDays, undefined);
+ assert.deepEqual(payload.metadata, {
+  purpose: 'starter_subscription',
+  plan_key: 'starter',
+  user_id: '42',
+ });
+});
+
+test('uses the supported xPay subscription endpoint and hosted return URL', async () => {
+ const calls = [];
+ const client = {
+  async request(...args) {
+   calls.push(args);
+   return {
+    subscriptionId: 'sub_test',
+    fwdUrl: 'https://pay.xpaycheckout.com/?subscription_id=sub_test',
+   };
+  },
+ };
+
+ const checkout = await createStarterSubscriptionCheckout(client, {
+  user,
+  customerId: 'cus_test',
+  receiptId: 'starter_subscription_42',
+  callbackUrl: 'https://app.example.com/billing?billing=subscription-success&intent=starter',
+  cancelUrl: 'https://app.example.com/billing?billing=subscription-cancelled&intent=starter',
+ });
+
+ assert.equal(calls[0][0], 'POST');
+ assert.equal(calls[0][1], '/subscription/create');
+ assert.equal(checkout.subscriptionId, 'sub_test');
+ assert.equal(checkout.status, 'CREATED');
+ assert.match(checkout.redirectUrl, /subscription_id=sub_test/);
 });

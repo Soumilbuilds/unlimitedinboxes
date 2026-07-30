@@ -8,20 +8,17 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function getReturnSession() {
  const params = new URLSearchParams(window.location.search);
- if (params.get('billing') === 'success') {
- return params.get('xIntentId')
+ const sessionId = params.get('xpay_intent_id')
+ || params.get('xIntentId')
  || params.get('x_intent_id')
+ || params.get('intentId')
+ || params.get('subscriptionId')
+ || params.get('subscription_id')
  || params.get('session_id')
  || params.get('setup_method_id');
- }
- return null;
-}
-
-function cleanUrl(intent) {
- const params = new URLSearchParams();
- if (intent) params.set('intent', intent);
- const query = params.toString();
- window.history.replaceState({}, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
+ if (sessionId) return sessionId;
+ if (params.get('billing') === 'subscription-success') return '__stored_subscription__';
+ return params.get('billing') === 'success' ? '__stored_checkout__' : null;
 }
 
 function isSynced(status, intent) {
@@ -36,7 +33,13 @@ async function pollBilling(intent, sessionId, onSynced, onError, cancelled) {
  if (cancelled.current) return;
 
  try {
- if (sessionId) await api.post('/billing/return', { sessionId }).catch(() => {});
+ if (sessionId) {
+ const returnResponse = await api.post('/billing/return', { sessionId });
+ if (returnResponse.data?.redirectUrl) {
+ window.location.assign(returnResponse.data.redirectUrl);
+ return;
+ }
+ }
  const res = await api.get('/billing/status');
  if (isSynced(res.data, intent)) {
  await onSynced?.(res.data);
@@ -68,7 +71,6 @@ export default function BillingCheckoutEmbed({ intent = 'standard', onSynced, on
  async function finalizeReturn() {
  setError('');
  setMessage('Finalizing payment...');
- cleanUrl(intent);
  await pollBilling(intent, sessionId, onSynced, onError, cancelled);
  }
 

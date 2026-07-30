@@ -1,12 +1,13 @@
 import { Router } from 'express';
-import crypto from 'node:crypto';
 import {
  getUserByEmail,
  getUserById,
+ getUserByXpayCheckoutId,
  getUserByXpayCustomerId,
  getUserByXpaySubscriptionId,
  updateUserBillingById,
 } from '../db/database.js';
+import { getUserAccessState } from '../services/access.js';
 import {
  xpay,
  PLANS,
@@ -15,6 +16,7 @@ import {
  TRIAL_AUTH_CHARGE_CENTS,
  buildProfile,
  createOneTimeCheckout,
+ createStarterSubscriptionCheckout,
  isSubscriptionActive,
  isSubscriptionPastDue,
 } from '../services/xpay.js';
@@ -54,18 +56,98 @@ function getRequestBaseUrl(req) {
  return process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com';
 }
 
-function buildSubscriptionUpdate(user, xpaySub, planKey) {
- const customerId = xpaySub?.customerId || xpaySub?.customer?.customerId || user.xpay_customer_id || null;
+function isSuccessfulIntroIntent(intent, user, intentId) {
+ const metadata = intent?.metadata || {};
+ return String(intent?.intentId || intent?.xIntentId || intentId) === String(intentId)
+ && String(intent?.status || '').toUpperCase() === 'SUCCESS'
+ && Number(intent?.amount) === TRIAL_AUTH_CHARGE_CENTS
+ && String(intent?.currency || '').toUpperCase() === 'USD'
+ && String(metadata?.purpose || '') === 'trial_auth'
+ && String(metadata?.user_id || '') === String(user.id);
+}
 
+function activateIntroOffer(user) {
+ if (user.xpay_intro_offer_used && isSubscriptionActive(user.xpay_subscription_status)) {
+ return getUserById(user.id) || user;
+ }
+
+ const trialEnd = new Date();
+ trialEnd.setDate(trialEnd.getDate() + TRIAL_DAYS);
+ updateUserBillingById(user.id, {
+ plan: 'trial',
+ xpay_subscription_plan: 'trial',
+ xpay_subscription_status: 'TRIALING',
+ xpay_trial_ends_at: trialEnd.toISOString(),
+ xpay_intro_offer_used: 1,
+ xpay_last_payment_status: 'paid',
+ inboxes_limit: 100,
+ });
+ return getUserById(user.id) || user;
+}
+
+function isOwnedStarterSubscription(subscription, user, subscriptionId) {
+ const metadata = subscription?.metadata || {};
+ return String(subscription?.subscriptionId || subscription?.id || subscriptionId) === String(subscriptionId)
+ && Number(subscription?.amount) === PLANS.starter.amountCents
+ && String(subscription?.currency || '').toUpperCase() === 'USD'
+ && String(metadata?.purpose || '') === 'starter_subscription'
+ && String(metadata?.plan_key || '') === 'starter'
+ && String(metadata?.user_id || '') === String(user.id);
+}
+
+function activateStarterSubscription(user, subscription) {
+ const status = String(subscription?.status || '').toUpperCase();
+ if (!isSubscriptionActive(status)) {
+ return getUserById(user.id) || user;
+ }
+
+ const nextPaymentMs = Number(subscription?.nextPaymentDate);
+ const fallbackTrialEnd = new Date();
+ fallbackTrialEnd.setDate(fallbackTrialEnd.getDate() + TRIAL_DAYS);
+ const trialEnd = Number.isFinite(nextPaymentMs) && nextPaymentMs > Date.now()
+ ? new Date(nextPaymentMs)
+ : fallbackTrialEnd;
+
+ updateUserBillingById(user.id, {
+ plan: status === 'TRIALING' ? 'trial' : 'starter',
+ xpay_subscription_status: status,
+ xpay_subscription_plan: 'starter',
+ xpay_trial_ends_at: status === 'TRIALING' ? trialEnd.toISOString() : null,
+ xpay_subscription_checkout_url: null,
+ xpay_last_payment_status: status === 'ACTIVE' ? 'paid' : user.xpay_last_payment_status,
+ inboxes_limit: status === 'TRIALING' ? 100 : 500,
+ });
+ return getUserById(user.id) || user;
+}
+
+async function ensureStarterSubscriptionCheckout(user, baseUrl) {
+ const latest = getUserById(user.id) || user;
+ if (latest.xpay_subscription_id) {
  return {
- plan: isSubscriptionActive(xpaySub?.status) ? planKey : (user.plan || 'free'),
- xpay_customer_id: customerId,
- xpay_subscription_id: xpaySub?.subscriptionId || xpaySub?.id || null,
- xpay_subscription_status: xpaySub?.status || null,
- xpay_subscription_plan: planKey,
- xpay_trial_ends_at: xpaySub?.trial_end_date || null,
- xpay_last_payment_status: xpaySub?.last_payment_status || 'unknown',
+ subscriptionId: latest.xpay_subscription_id,
+ redirectUrl: latest.xpay_subscription_checkout_url || null,
+ status: String(latest.xpay_subscription_status || 'CREATED').toUpperCase(),
  };
+ }
+
+ const customerId = await ensureXpayCustomer(latest, baseUrl);
+ const checkout = await createStarterSubscriptionCheckout(xpay, {
+ user: latest,
+ customerId,
+ receiptId: `starter_subscription_${latest.id}`,
+ callbackUrl: `${baseUrl}/billing?billing=subscription-success&intent=starter`,
+ cancelUrl: `${baseUrl}/billing?billing=subscription-cancelled&intent=starter`,
+ });
+
+ updateUserBillingById(latest.id, {
+ xpay_subscription_id: checkout.subscriptionId,
+ xpay_subscription_status: latest.xpay_intro_offer_used
+ ? latest.xpay_subscription_status
+ : checkout.status,
+ xpay_subscription_plan: 'starter',
+ xpay_subscription_checkout_url: checkout.redirectUrl,
+ });
+ return checkout;
 }
 
 async function ensureXpayCustomer(user, baseUrl) {
@@ -93,96 +175,9 @@ async function autoSetupBilling(user, baseUrl) {
  throw new Error('xPay is not configured.');
  }
 
- const customerId = await ensureXpayCustomer(user, baseUrl);
- if (!customerId) {
- throw new Error('Failed to create xPay customer.');
- }
-
- // Step 1: $1 auth charge (tokenized payment without pre-existing PM ID)
- const chargeResult = await xpay.request('POST', '/payments/charge-tokenised-pm', {
- customerId: customerId,
- pmId: null,
- amount: TRIAL_AUTH_CHARGE_CENTS,
- currency: 'USD',
- description: 'Starter Plan Trial - $1 for 100 Inboxes',
- receiptId: `trial_auth_${user.id}_${Date.now()}`,
- });
-
- const chargeFailed = chargeResult?.success === false || chargeResult?.status === 'failed';
- if (chargeFailed) {
- const invoiceId = chargeResult?.invoice?.id || chargeResult?.invoiceId || chargeResult?.invoice_id;
- const invoiceUrl = chargeResult?.invoice?.url || chargeResult?.invoiceUrl || chargeResult?.invoice_url;
-
- updateUserBillingById(user.id, {
- xpay_subscription_plan: 'starter',
- xpay_subscription_status: 'past_due',
- xpay_last_payment_status: 'failed',
- ...(invoiceId ? { xpay_last_invoice_id: String(invoiceId) } : {}),
- ...(invoiceUrl ? { xpay_last_invoice_url: String(invoiceUrl) } : {}),
- });
-
  return {
  success: false,
- reason: chargeResult?.message || 'Card declined. Please pay the invoice to continue.',
- invoiceUrl: invoiceUrl || null,
- };
- }
-
- // Step 2: Create subscription with 7-day trial
- const planKey = 'starter';
- const plan = PLANS[planKey];
- const trialEnd = new Date();
- trialEnd.setDate(trialEnd.getDate() + TRIAL_DAYS);
-
- const subResponse = await xpay.request('POST', '/subscription/create', {
- customerId: customerId,
- customerDetails: {
- email: user.email,
- name: user.name || user.email.split('@')[0],
- country: user.country || 'US',
- },
- amount: plan.amountCents,
- currency: 'USD',
- interval: plan.interval,
- intervalCount: plan.intervalCount,
- trialDays: TRIAL_DAYS,
- cycleCount: -1,
- metadata: {
- plan_key: planKey,
- user_id: String(user.id),
- source: 'auto_setup_after_$1_auth',
- },
- callbackUrl: `${baseUrl}/billing/webhook`,
- cancelUrl: `${baseUrl}/billing/cancel`,
- productPage: {
- name: plan.name,
- description: `Subscription for ${plan.name} plan.`,
- }
- });
-
- const sub = subResponse?.data || subResponse;
- if (sub?.subscriptionId || sub?.id) {
- updateUserBillingById(user.id, {
- plan: 'starter',
- xpay_subscription_id: String(sub.subscriptionId || sub.id),
- xpay_subscription_status: sub.status || 'trialing',
- xpay_subscription_plan: 'starter',
- xpay_trial_ends_at: trialEnd.toISOString(),
- xpay_last_payment_status: 'paid',
- });
- return { success: true, status: sub.status || 'trialing' };
- }
-
- // Subscription creation failed but $1 charge went through → mark past due
- updateUserBillingById(user.id, {
- xpay_subscription_plan: 'starter',
- xpay_subscription_status: 'past_due',
- xpay_last_payment_status: 'failed',
- });
-
- return {
- success: false,
- reason: subResponse?.message || 'Failed to create subscription. Please contact support.',
+ reason: 'Complete the secure $1 checkout before creating inboxes.',
  invoiceUrl: null,
  };
 }
@@ -224,6 +219,7 @@ router.post('/checkout', async (req, res) => {
 
  updateUserBillingById(user.id, {
  xpay_checkout_id: checkout.intentId,
+ xpay_checkout_url: checkout.redirectUrl,
  xpay_subscription_plan: 'trial',
  });
 
@@ -251,8 +247,7 @@ router.post('/subscribe', async (req, res) => {
  }
 
  let intentVal = req.body?.intent; let planKey = req.body?.plan || (intentVal === 'retry' ? user.xpay_subscription_plan : intentVal) || 'starter';
- const plan = PLANS[planKey];
- if (!plan) {
+ if (planKey !== 'starter' || !PLANS[planKey]) {
  return res.status(400).json({ error: `Unknown plan: ${planKey}` });
  }
 
@@ -262,57 +257,17 @@ router.post('/subscribe', async (req, res) => {
 
  try {
  const baseUrl = getRequestBaseUrl(req);
- const customerId = await ensureXpayCustomer(user, baseUrl);
-
- const trialEnd = new Date();
- trialEnd.setDate(trialEnd.getDate() + TRIAL_DAYS);
-
- const subResponse = await xpay.request('POST', '/subscription/create', {
- customerId: customerId,
- customerDetails: {
- email: user.email,
- name: user.name || user.email.split('@')[0],
- country: req.headers['cf-ipcountry'] || 'US',
- },
- amount: plan.amountCents,
- currency: 'USD',
- interval: plan.interval,
- intervalCount: plan.intervalCount,
- trialDays: TRIAL_DAYS,
- cycleCount: -1,
- metadata: {
- plan_key: planKey,
- user_id: String(user.id),
- },
- callbackUrl: `${baseUrl}/billing/webhook`,
- cancelUrl: `${baseUrl}/billing/cancel`,
- productPage: {
- name: plan.name,
- description: `Subscription for ${plan.name} plan.`
- }
- });
-
- const sub = subResponse?.data || subResponse;
- if (!sub?.subscriptionId && !sub?.id) {
- throw new Error(subResponse?.message || 'Failed to create subscription.');
- }
-
- const update = buildSubscriptionUpdate(user, sub, planKey);
- updateUserBillingById(user.id, {
- ...update,
- xpay_trial_ends_at: trialEnd.toISOString(),
- });
-
- const latest = getUserById(user.id) || user;
- req.session.user = serializeSessionUser(latest);
+ const checkout = await ensureStarterSubscriptionCheckout(user, baseUrl);
 
  return res.json({
  success: true,
- subscriptionId: sub.subscriptionId || sub.id,
- status: sub.status,
+ subscriptionId: checkout.subscriptionId,
+ status: checkout.status,
  plan: planKey,
- trialEndsAt: trialEnd.toISOString(),
- message: `7-day trial started. Card will be charged ${plan.displayPrice} after the trial.`,
+ redirectUrl: checkout.redirectUrl,
+ message: checkout.status === 'CREATED'
+ ? 'Complete subscription setup to start the 7-day trial.'
+ : 'Starter subscription is active.',
  });
  } catch (error) {
  console.error('[billing] xPay subscription failed:', error);
@@ -378,18 +333,57 @@ router.post('/return', async (req, res) => {
  const user = getCurrentUser(req);
  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
- const sessionId = req.body?.sessionId
+ const requestedSessionId = req.body?.sessionId
  || req.body?.setupId
+ || req.body?.subscriptionId
+ || req.query?.xpay_intent_id
  || req.query?.xIntentId
  || req.query?.x_intent_id
+ || req.query?.intentId
+ || req.query?.subscriptionId
+ || req.query?.subscription_id
  || req.query?.session_id
  || null;
+ const sessionId = requestedSessionId === '__stored_checkout__'
+ ? user.xpay_checkout_id
+ : (requestedSessionId === '__stored_subscription__'
+ ? user.xpay_subscription_id
+ : requestedSessionId);
  if (!sessionId) {
- return res.json({ success: true, status: user.xpay_subscription_status, plan: user.plan });
+ return res.status(400).json({ error: 'Missing payment session.' });
  }
 
  try {
  const latest = getUserById(user.id) || user;
+
+ if (
+ String(sessionId).startsWith('sub_')
+ || String(sessionId) === String(latest.xpay_subscription_id || '')
+ ) {
+ if (String(latest.xpay_subscription_id || '') !== String(sessionId)) {
+ return res.status(400).json({ error: 'Subscription does not match this account.' });
+ }
+ const response = await xpay.request(
+ 'GET',
+ `/subscription/get-subscription/${encodeURIComponent(sessionId)}`
+ );
+ const subscription = response?.data || response;
+ if (!isOwnedStarterSubscription(subscription, latest, sessionId)) {
+ return res.status(400).json({ error: 'Invalid starter subscription.' });
+ }
+ if (!isSubscriptionActive(subscription?.status)) {
+ return res.status(409).json({ error: 'Subscription setup is not complete yet.' });
+ }
+ const refreshed = activateStarterSubscription(latest, subscription);
+ req.session.user = serializeSessionUser(refreshed);
+ return res.json({
+ success: true,
+ subscriptionId: sessionId,
+ status: refreshed.xpay_subscription_status,
+ plan: refreshed.plan,
+ provider: 'xpay',
+ });
+ }
 
  if (latest.xpay_checkout_id !== String(sessionId)) {
  return res.status(400).json({ error: 'Payment session does not match this account.' });
@@ -400,24 +394,14 @@ router.post('/return', async (req, res) => {
  `/payments/v2/get-intent/${encodeURIComponent(sessionId)}`
  );
  const intent = intentResponse?.data || intentResponse;
- const paymentStatus = String(intent?.status || '').toUpperCase();
-
- if (!['SUCCESS', 'SUCCEEDED', 'PAID'].includes(paymentStatus)) {
+ if (!isSuccessfulIntroIntent(intent, latest, sessionId)) {
  return res.status(409).json({ error: 'Payment is not complete yet.' });
  }
 
- const trialEnd = new Date();
- trialEnd.setDate(trialEnd.getDate() + TRIAL_DAYS);
- updateUserBillingById(latest.id, {
- plan: 'trial',
- xpay_subscription_plan: 'trial',
- xpay_subscription_status: 'trialing',
- xpay_trial_ends_at: trialEnd.toISOString(),
- xpay_intro_offer_used: 1,
- xpay_last_payment_status: 'paid',
- });
-
- const refreshed = getUserById(latest.id) || latest;
+ const introUser = activateIntroOffer(latest);
+ const baseUrl = getRequestBaseUrl(req);
+ const subscription = await ensureStarterSubscriptionCheckout(introUser, baseUrl);
+ const refreshed = getUserById(introUser.id) || introUser;
  req.session.user = serializeSessionUser(refreshed);
 
  return res.json({
@@ -425,6 +409,8 @@ router.post('/return', async (req, res) => {
  sessionId,
  status: refreshed.xpay_subscription_status,
  plan: refreshed.plan,
+ redirectUrl: subscription.redirectUrl,
+ subscriptionId: subscription.subscriptionId,
  provider: 'xpay',
  });
  } catch (error) {
@@ -498,16 +484,78 @@ router.post('/webhook', async (req, res) => {
 
  let event;
  try {
- event = xpay.verifyWebhookSignature(rawBody, signature, process.env.XPAY_WEBHOOK_SECRET);
+ const isValid = xpay.verifyWebhookSignature(rawBody, signature, process.env.XPAY_WEBHOOK_SECRET);
+ if (!isValid) {
+ return res.status(400).json({ error: 'Invalid signature.' });
+ }
+ event = req.body || {};
  } catch (error) {
  console.error('[xpay-webhook] Signature verification failed:', error.message);
  return res.status(400).json({ error: 'Invalid signature.' });
  }
 
  try {
- const eventType = event?.type || event?.event_type || event?.action || '';
+ const eventType = event?.eventType || event?.type || event?.event_type || event?.action || '';
 
  switch (true) {
+ case eventType === 'intent.success': {
+ const intentId = event?.intentId || event?.xIntentId;
+ if (!intentId) break;
+ const user = getUserByXpayCheckoutId(String(intentId));
+ if (!user || !isSuccessfulIntroIntent(event, user, intentId)) break;
+ const introUser = activateIntroOffer(user);
+ await ensureStarterSubscriptionCheckout(
+ introUser,
+ process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com'
+ );
+ break;
+ }
+
+ case eventType === 'intent.failed': {
+ const intentId = event?.intentId || event?.xIntentId;
+ if (!intentId) break;
+ const user = getUserByXpayCheckoutId(String(intentId));
+ if (!user) break;
+ updateUserBillingById(user.id, { xpay_last_payment_status: 'failed' });
+ break;
+ }
+
+ case eventType === 'subscription.trialing'
+ || eventType === 'subscription.active'
+ || eventType === 'subscription.cycle_charged': {
+ const subscriptionId = event?.subscriptionId || event?.id;
+ if (!subscriptionId) break;
+ const user = getUserByXpaySubscriptionId(String(subscriptionId));
+ if (!user) break;
+ const metadata = event?.metadata || {};
+ if (
+ metadata?.user_id
+ && String(metadata.user_id) !== String(user.id)
+ ) break;
+ activateStarterSubscription(user, {
+ ...event,
+ subscriptionId,
+ status: eventType === 'subscription.trialing' ? 'TRIALING' : 'ACTIVE',
+ });
+ if (eventType === 'subscription.cycle_charged') {
+ updateUserBillingById(user.id, { xpay_last_payment_status: 'paid' });
+ }
+ break;
+ }
+
+ case eventType === 'subscription.unpaid': {
+ const subscriptionId = event?.subscriptionId || event?.id;
+ if (!subscriptionId) break;
+ const user = getUserByXpaySubscriptionId(String(subscriptionId));
+ if (!user) break;
+ updateUserBillingById(user.id, {
+ plan: 'free',
+ xpay_subscription_status: 'UNPAID',
+ xpay_last_payment_status: 'failed',
+ });
+ break;
+ }
+
  case eventType === 'payment_method' || eventType === 'payment_method.added': {
  const customerId = event?.data?.customerId || event?.data?.customer?.customerId || event?.data?.customer_id || event?.data?.customer?.id;
  const pmId = event?.data?.paymentMethodId || event?.data?.id || event?.data?.pm_id;
@@ -530,9 +578,9 @@ router.post('/webhook', async (req, res) => {
  const planKey = subData?.metadata?.plan_key || 'starter';
  const status = subData?.status || 'active';
 
- const user = customerId ? getUserByXpayCustomerId(String(customerId)) : null;
+ let user = customerId ? getUserByXpayCustomerId(String(customerId)) : null;
  if (!user && subId) {
- getUserByXpaySubscriptionId(String(subId));
+ user = getUserByXpaySubscriptionId(String(subId));
  }
  if (!user) break;
 
@@ -571,7 +619,7 @@ router.post('/webhook', async (req, res) => {
 
  case eventType === 'subscription.cancelled' || eventType === 'subscription.ended': {
  const subData = event?.data || event;
- const subId = subData?.id;
+ const subId = subData?.subscriptionId || subData?.id;
  if (!subId) break;
  const user = getUserByXpaySubscriptionId(String(subId));
  if (!user) break;
@@ -701,8 +749,11 @@ router.post('/webhook', async (req, res) => {
 });
 
 export function serializeXpayBillingState(user) {
- const status = user.xpay_subscription_status || null;
- const plan = user.xpay_subscription_plan || user.plan || 'free';
+ const access = getUserAccessState(user);
+ const status = user.xpay_subscription_status
+ ? String(user.xpay_subscription_status).toUpperCase()
+ : null;
+ const plan = access.effectivePlan;
 
  const isActive = isSubscriptionActive(status);
  const isPastDue = ['UNPAID', 'PAST_DUE'].includes(status);
@@ -711,6 +762,7 @@ export function serializeXpayBillingState(user) {
  const isTrialing = trialEnd && trialEnd > new Date() && status === 'TRIALING';
 
  return {
+ ...access,
  provider: 'xpay',
  plan,
  status,
@@ -725,8 +777,8 @@ export function serializeXpayBillingState(user) {
  invoiceId: user.xpay_last_invoice_id || null,
  invoiceStatus: user.xpay_last_invoice_status || null,
  invoiceUrl: user.xpay_last_invoice_url || null,
- inboxesUsed: user.inboxes_used || 0,
- inboxesLimit: user.inboxes_limit || 0,
+ inboxesUsed: access.inboxesUsed,
+ inboxesLimit: access.inboxesLimit,
  hasConcurrentOrders: Boolean(user.has_concurrent_orders),
  };
 }
