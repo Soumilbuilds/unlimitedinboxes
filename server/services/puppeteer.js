@@ -24,9 +24,15 @@ export function buildTotpResolver(mfaSecret) {
 
 // ─── Browser Lifecycle ────────────────────────────────────────────────────────
 
+let browserPromise = null;
 export async function launchBrowser() {
+ console.log('[Puppeteer] launchBrowser called');
  if (!browser || !browser.isConnected()) {
+ if (!browserPromise) {
+ console.log('[Puppeteer] No browserPromise, creating one');
+ browserPromise = (async () => {
  const isProduction = process.env.NODE_ENV === 'production';
+ console.log(`[Puppeteer] Launching browser, headless: ${isProduction ? 'new' : false}`);
  browser = await puppeteer.launch({
  headless: isProduction ? 'new' : false,
  args: [
@@ -41,7 +47,16 @@ export async function launchBrowser() {
  ignoreDefaultArgs: ['--enable-automation'],
  defaultViewport: { width: 1920, height: 1080 }
  });
+ console.log('[Puppeteer] Browser launched successfully');
+ browserPromise = null;
+ return browser;
+ })();
+ } else {
+ console.log('[Puppeteer] Waiting for existing browserPromise');
  }
+ return browserPromise;
+ }
+ console.log('[Puppeteer] Returning existing connected browser');
  return browser;
 }
 
@@ -53,7 +68,9 @@ export async function closeBrowser() {
 }
 
 export async function createIncognitoPage() {
+ console.log('[Puppeteer] createIncognitoPage called');
  const b = await launchBrowser();
+ console.log('[Puppeteer] browser obtained for createIncognitoPage');
  let context = null;
  if (typeof b.createBrowserContext === 'function') {
  context = await b.createBrowserContext();
@@ -62,7 +79,9 @@ export async function createIncognitoPage() {
  } else {
  throw new Error('Browser isolation is unavailable; refusing to reuse another tenant session');
  }
+ console.log('[Puppeteer] context created');
  const page = await context.newPage();
+ console.log('[Puppeteer] page created');
  await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36');
  return { context, page };
 }

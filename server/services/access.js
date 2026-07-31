@@ -119,5 +119,11 @@ export function getUserAccessState(user) {
  canAccessApi: ['growth', 'unlimited'].includes(planKey),
  hasUnlimitedOrders: planKey === 'unlimited',
  canDownloadAll: canAccessApp,
+ canCreateMoreThanOneCompletedOrder: ['starter', 'growth', 'unlimited'].includes(planKey),
+ canUseCustomNames: ['growth', 'unlimited'].includes(planKey),
+ downloadAllowance: planKey === 'free' ? 0 : (planKey === 'trial' ? inboxesLimit : Infinity),
+ canOpenInboxesPage: canAccessApp,
+ lifetimeCompletedOrders: 0,
+ completedOrderQuotaReached: false,
  };
 }
