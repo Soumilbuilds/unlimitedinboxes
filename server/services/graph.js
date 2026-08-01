@@ -13,7 +13,7 @@ function isServicePrincipalPropagationError(error) {
   return status === 401 && /AADSTS7000229/i.test(description);
 }
 
-async function getAccessToken(clientId, clientSecret, tenantId) {
+async function getAccessToken(clientId, clientSecret, tenantId, skipPropagationWait = false) {
   const params = new URLSearchParams();
   params.append('client_id', clientId);
   params.append('client_secret', clientSecret);
@@ -24,7 +24,7 @@ async function getAccessToken(clientId, clientSecret, tenantId) {
   // AADSTS7000229 until the new enterprise application's service principal has
   // propagated through the tenant. Retry only that transient condition; an
   // invalid/expired secret and all other authentication errors still fail fast.
-  const maxAttempts = 12;
+  const maxAttempts = skipPropagationWait ? 1 : 12;
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -86,16 +86,17 @@ export function isRetryableGraphAuthorizationError(error) {
   return status === 401 || status === 403;
 }
 
-async function runWithFreshGraphToken(clientId, clientSecret, tenantId, action) {
+async function runWithFreshGraphToken(clientId, clientSecret, tenantId, action, skipPropagationWait = false) {
   let lastError = null;
 
-  for (const delayMs of GRAPH_AUTH_PROPAGATION_DELAYS_MS) {
+  const delays = skipPropagationWait ? [0] : GRAPH_AUTH_PROPAGATION_DELAYS_MS;
+  for (const delayMs of delays) {
     if (delayMs > 0) {
       await new Promise(resolve => setTimeout(resolve, delayMs));
     }
 
     try {
-      const token = await getAccessToken(clientId, clientSecret, tenantId);
+      const token = await getAccessToken(clientId, clientSecret, tenantId, skipPropagationWait);
       const client = graphClient(token);
       return await action(client);
     } catch (error) {
@@ -263,7 +264,7 @@ export async function assignGlobalAdminWithClient(client, userId, roleId) {
   }
 }
 
-export async function addDomainToMicrosoft(clientId, clientSecret, tenantId, domain) {
+export async function addDomainToMicrosoft(clientId, clientSecret, tenantId, domain, skipPropagationWait = false) {
   const encodedDomain = encodeURIComponent(domain);
 
   try {
@@ -271,7 +272,8 @@ export async function addDomainToMicrosoft(clientId, clientSecret, tenantId, dom
       clientId,
       clientSecret,
       tenantId,
-      client => client.post('/domains', { id: domain })
+      client => client.post('/domains', { id: domain }),
+      skipPropagationWait
     );
   } catch (createError) {
     const status = createError?.response?.status;
@@ -284,7 +286,8 @@ export async function addDomainToMicrosoft(clientId, clientSecret, tenantId, dom
         clientId,
         clientSecret,
         tenantId,
-        client => client.get(`/domains/${encodedDomain}?$select=id`)
+        client => client.get(`/domains/${encodedDomain}?$select=id`),
+        skipPropagationWait
       );
     } catch (lookupError) {
       if (lookupError?.response?.status === 404) {
@@ -298,7 +301,8 @@ export async function addDomainToMicrosoft(clientId, clientSecret, tenantId, dom
     clientId,
     clientSecret,
     tenantId,
-    client => client.get(`/domains/${encodedDomain}?$select=id,isVerified`)
+    client => client.get(`/domains/${encodedDomain}?$select=id,isVerified`),
+    skipPropagationWait
   );
   if (domainState.data?.isVerified) {
     return {
@@ -320,7 +324,8 @@ export async function addDomainToMicrosoft(clientId, clientSecret, tenantId, dom
         clientId,
         clientSecret,
         tenantId,
-        client => client.get(`/domains/${encodedDomain}/verificationDnsRecords`)
+        client => client.get(`/domains/${encodedDomain}/verificationDnsRecords?$filter=recordType eq 'Txt'`),
+        skipPropagationWait
       );
       break;
     } catch (error) {
