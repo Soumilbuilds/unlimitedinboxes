@@ -10,7 +10,7 @@ function getBillingCopy(intent, billing) {
  return {
  kind: 'overdue',
  headline: 'Invoice Overdue',
- subheadline: 'Pay the open invoice to restore access.'
+ primaryLine: 'Pay the open invoice to restore access.'
  };
  }
 
@@ -22,14 +22,12 @@ function getBillingCopy(intent, billing) {
  return {
  kind: 'initial',
  headline: 'No Active Subscription Found',
- subheadline: usedIntroOffer
- ? 'Create 100 inboxes and send 15,000 cold emails for $9.99.'
- : 'Create 100 inboxes and send 15,000 cold emails for just $1.',
- description: usedIntroOffer
- ? '$9.99 is billed every four weeks. Cancel anytime in one click.'
- : '$9.99 will be charged after the five-day free trial. Cancel anytime in one click.',
- price: usedIntroOffer ? '$9.99' : '$1',
- priceLabel: usedIntroOffer ? 'Every four weeks' : 'Today for five days'
+ primaryLine: usedIntroOffer
+ ? 'Create 100 inboxes and send 15,000 emails for $9.99.'
+ : 'Create 100 inboxes and send 15,000 emails for just $1 today.',
+ terms: usedIntroOffer
+ ? ['$9.99 Every 4 Weeks', 'One-Click Cancel']
+ : ['5-Day Free Trial', '$9.99 Every 4 Weeks', 'One-Click Cancel']
  };
  }
 
@@ -37,7 +35,7 @@ function getBillingCopy(intent, billing) {
  return {
  kind: 'upgrade',
  headline: 'Upgrade To Access Advanced',
- subheadline: 'Unlimited parallel order processing.'
+ primaryLine: 'Unlimited parallel order processing.'
  };
  }
 
@@ -46,12 +44,12 @@ function getBillingCopy(intent, billing) {
  return {
  kind: 'initial',
  headline: 'No Active Subscription Found',
- subheadline: usedIntroOffer
- ? 'Create 100 inboxes and send 15,000 cold emails for $9.99.'
- : 'Create 100 inboxes and send 15,000 cold emails for just $1.',
- description: usedIntroOffer
- ? '$9.99 is billed every four weeks. Cancel anytime in one click.'
- : '$9.99 will be charged after the five-day free trial. Cancel anytime in one click.'
+ primaryLine: usedIntroOffer
+ ? 'Create 100 inboxes and send 15,000 emails for $9.99.'
+ : 'Create 100 inboxes and send 15,000 emails for just $1 today.',
+ terms: usedIntroOffer
+ ? ['$9.99 Every 4 Weeks', 'One-Click Cancel']
+ : ['5-Day Free Trial', '$9.99 Every 4 Weeks', 'One-Click Cancel']
  };
  }
 
@@ -59,7 +57,7 @@ function getBillingCopy(intent, billing) {
  return {
  kind: 'upgrade',
  headline: 'Add Multiple Order Processing',
- subheadline: 'Run multiple orders simultaneously for $29 per month.'
+ primaryLine: 'Run multiple orders simultaneously for $29 per month.'
  };
  }
 
@@ -67,17 +65,15 @@ function getBillingCopy(intent, billing) {
  return {
  kind: 'initial',
  headline: 'No Active Subscription Found',
- subheadline: 'Create 100 inboxes and send 15,000 cold emails for just $1.',
- description: '$9.99 will be charged after the five-day free trial. Cancel anytime in one click.',
- price: '$1',
- priceLabel: 'Today for five days'
+ primaryLine: 'Create 100 inboxes and send 15,000 emails for just $1 today.',
+ terms: ['5-Day Free Trial', '$9.99 Every 4 Weeks', 'One-Click Cancel']
  };
  }
 
  return {
  kind: 'upgrade',
  headline: 'Upgrade And Get Limitless Access',
- subheadline: ''
+ primaryLine: ''
  };
 }
 
@@ -150,40 +146,21 @@ export default function BillingCheckout() {
  return (
  <main className="billing-page">
  <div className={`billing-page-shell billing-page-shell--${copy.kind}`}>
- <section className="billing-offer-panel">
- <div className="billing-offer-eyebrow">
- <span aria-hidden="true" />
- {copy.kind === 'initial'
- ? 'Introductory Access'
- : copy.kind === 'overdue'
- ? 'Account Billing'
- : 'Unlimited Inboxes'}
- </div>
+ <header className="billing-page-header">
  <div className="billing-page-copy">
  <h1>{copy.headline}</h1>
- {copy.subheadline ? <p>{copy.subheadline}</p> : null}
+ {copy.primaryLine ? <p>{copy.primaryLine}</p> : null}
  </div>
 
- {copy.kind === 'initial' ? (
- <>
- <div className="billing-offer-price" aria-label={`${copy.price}, ${copy.priceLabel}`}>
- <strong>{copy.price}</strong>
- <span>{copy.priceLabel}</span>
+ {copy.terms?.length ? (
+ <div className="billing-page-terms" aria-label={copy.terms.join(', ')}>
+ {copy.terms.map((term) => <span key={term}>{term}</span>)}
  </div>
- <ul className="billing-offer-features">
- <li>100 Outlook Inboxes</li>
- <li>15,000 Cold Emails</li>
- <li>Cancel Anytime</li>
- </ul>
- {copy.description ? (
- <p className="billing-page-description">{copy.description}</p>
  ) : null}
- </>
- ) : null}
- </section>
+ </header>
 
  {loading || !billing ? (
- <section className="billing-checkout-card billing-page-loading">
+ <section className="billing-page-loading">
  <div className="spinner" />
  <p>Checking your billing status...</p>
  </section>
@@ -193,18 +170,7 @@ export default function BillingCheckout() {
  refreshBilling={refreshBilling}
  />
  ) : (
- <section className="billing-checkout-card">
- <header className="billing-checkout-heading">
- <div className="billing-security-mark" aria-hidden="true">
- <svg viewBox="0 0 24 24" fill="none">
- <path d="M7.5 10V7.75a4.5 4.5 0 0 1 9 0V10M6.75 10h10.5A1.75 1.75 0 0 1 19 11.75v7.5A1.75 1.75 0 0 1 17.25 21H6.75A1.75 1.75 0 0 1 5 19.25v-7.5A1.75 1.75 0 0 1 6.75 10Z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
- </svg>
- </div>
- <div>
- <h2>Secure Checkout</h2>
- <p>Complete your billing details to activate access.</p>
- </div>
- </header>
+ <section className="billing-checkout-surface">
  <BillingCheckoutEmbed
  billing={billing}
  intent={intent === 'standard' ? 'starter' : intent}

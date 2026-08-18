@@ -75,27 +75,14 @@ function parseNameLines(text) {
  .map(line => line.replace(/\s+/g, ' '));
 }
 
-function buildBillingRequiredNotice(billing, responseData = {}) {
+function getBillingRequiredIntent(billing, responseData = {}) {
  const blockingReason = responseData.blockingReason || billing?.blockingReason;
- const invoiceUrl = responseData.invoiceUrl || billing?.invoiceUrl;
 
  if (blockingReason === 'subscription_past_due' || responseData.code === 'PAYMENT_REQUIRED') {
- return {
- intent: 'retry',
- title: responseData.title || 'Subscription Past Due',
- subtitle: responseData.subtitle || responseData.error || 'Pay the open invoice to restore access.',
- action: 'Pay Invoice',
- invoiceUrl,
- };
+ return 'retry';
  }
 
- return {
- intent: 'starter',
- title: 'No Active Subscription Found',
- subtitle: '$1 today for 100 inboxes. After 7 days, your saved card is charged $49.99, then every 4 weeks until cancelled.',
- action: 'View $1 Offer',
- invoiceUrl: null,
- };
+ return 'starter';
 }
 
 export default function Orders() {
@@ -112,7 +99,6 @@ export default function Orders() {
  const [wizardBusy, setWizardBusy] = useState(false);
  const [upgradeNotice, setUpgradeNotice] = useState(false);
  const [processingLimitNotice, setProcessingLimitNotice] = useState(false);
- const [billingRequiredNotice, setBillingRequiredNotice] = useState(null);
 
  const [tenantEmail, setTenantEmail] = useState('');
  const [tenantPassword, setTenantPassword] = useState('');
@@ -175,7 +161,7 @@ export default function Orders() {
  );
 
  const handleBillingRequired = (responseData = {}) => {
- setBillingRequiredNotice(buildBillingRequiredNotice(billing, responseData));
+ openUpgrade(getBillingRequiredIntent(billing, responseData));
  };
 
  const fetchOrders = async () => {
@@ -520,7 +506,7 @@ export default function Orders() {
  className="btn primary"
  onClick={() => {
  if (!billing?.canAccessApp) {
- handleBillingRequired();
+ openUpgrade('starter');
  return;
  }
  if (completedOrderLimitReached) {
@@ -918,43 +904,6 @@ export default function Orders() {
  <button className="btn accent" onClick={() => void openUpgrade('starter')}>
  Upgrade
  </button>
- </div>
- </div>
- </div>
- )}
-
- {billingRequiredNotice && (
- <div className="modal-overlay" onClick={() => setBillingRequiredNotice(null)}>
- <div className="modal upgrade-modal" onClick={(e) => e.stopPropagation()}>
- <div className="wizard-header">
- <div>
- <h2>{billingRequiredNotice.title}</h2>
- </div>
- <button className="icon-btn" onClick={() => setBillingRequiredNotice(null)} title="Close">✕</button>
- </div>
- <p className="modal-subtitle">
- {billingRequiredNotice.subtitle}
- </p>
- <div className="modal-actions centered">
- {billingRequiredNotice.invoiceUrl ? (
- <a
- className="btn accent"
- href={billingRequiredNotice.invoiceUrl}
- target="_blank"
- rel="noopener noreferrer"
- style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
- >
- {billingRequiredNotice.action}
- <span style={{ fontSize: '0.85em' }}>↗</span>
- </a>
- ) : (
- <button
- className="btn accent"
- onClick={() => void openUpgrade(billingRequiredNotice.intent)}
- >
- {billingRequiredNotice.action}
- </button>
- )}
  </div>
  </div>
  </div>

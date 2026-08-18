@@ -188,12 +188,6 @@ export default function BillingCheckoutEmbed({ billing, intent = 'starter', onSy
 
   return (
     <div className="whop-checkout-layout">
-      <div className="checkout-email-row">
-        <span className="checkout-field-label">Email</span>
-        <span className="checkout-email-value">{user.email}</span>
-        <span className="checkout-verified-badge">Verified</span>
-      </div>
-
       {error ? <div className="alert error billing-page-alert">{error}</div> : null}
 
       <div className={`whop-checkout-frame ${submitting ? 'is-submitting' : ''}`}>
@@ -202,7 +196,7 @@ export default function BillingCheckoutEmbed({ billing, intent = 'starter', onSy
           sessionId={sessionId}
           stateId={getStateId()}
           theme="dark"
-          themeOptions={{ accentColor: '#86f7b8', backgroundColor: '#070908', borderRadius: 14 }}
+          themeOptions={{ accentColor: '#86f7b8', backgroundColor: '#090909', borderRadius: 8 }}
           styles={{ container: { paddingX: 0, paddingY: 0 } }}
           prefill={{ email: user.email, ...(savedAddress ? { address: savedAddress } : {}) }}
           hideEmail
@@ -237,9 +231,6 @@ export default function BillingCheckoutEmbed({ billing, intent = 'starter', onSy
       >
         {submitting ? 'Confirming...' : 'Get Access'}
       </button>
-      <p className="billing-checkout-disclaimer">
-        Secure checkout powered by Whop. Your payment method is saved for recurring billing.
-      </p>
     </div>
   );
 }
