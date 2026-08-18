@@ -79,6 +79,15 @@ db.exec(`
     xpay_checkout_id TEXT UNIQUE,
     xpay_charge_id TEXT UNIQUE,
     xpay_customer_id TEXT,
+    request_token TEXT,
+    unit_price_cents INTEGER,
+    subtotal_cents INTEGER,
+    discount_cents INTEGER DEFAULT 0,
+    promo_code_id TEXT,
+    promo_code TEXT,
+    whop_checkout_id TEXT,
+    whop_payment_id TEXT,
+    whop_plan_id TEXT,
     error_message TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -272,6 +281,26 @@ function ensureTenantPurchasesColumns() {
   ensureColumn('tenant_purchases', 'xpay_checkout_id', 'TEXT');
   ensureColumn('tenant_purchases', 'xpay_charge_id', 'TEXT');
   ensureColumn('tenant_purchases', 'xpay_customer_id', 'TEXT');
+  ensureColumn('tenant_purchases', 'request_token', 'TEXT');
+  ensureColumn('tenant_purchases', 'unit_price_cents', 'INTEGER');
+  ensureColumn('tenant_purchases', 'subtotal_cents', 'INTEGER');
+  ensureColumn('tenant_purchases', 'discount_cents', 'INTEGER DEFAULT 0');
+  ensureColumn('tenant_purchases', 'promo_code_id', 'TEXT');
+  ensureColumn('tenant_purchases', 'promo_code', 'TEXT');
+  ensureColumn('tenant_purchases', 'whop_checkout_id', 'TEXT');
+  ensureColumn('tenant_purchases', 'whop_payment_id', 'TEXT');
+  ensureColumn('tenant_purchases', 'whop_plan_id', 'TEXT');
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_purchases_request_token
+      ON tenant_purchases(user_id, request_token)
+      WHERE request_token IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_purchases_whop_checkout
+      ON tenant_purchases(whop_checkout_id)
+      WHERE whop_checkout_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_purchases_whop_payment
+      ON tenant_purchases(whop_payment_id)
+      WHERE whop_payment_id IS NOT NULL;
+  `);
 }
 
 function backfillLifetimeCompletedOrders() {
@@ -1026,6 +1055,15 @@ export function createTenantPurchaseRecord(record) {
       xpay_checkout_id,
       xpay_charge_id,
       xpay_customer_id,
+      request_token,
+      unit_price_cents,
+      subtotal_cents,
+      discount_cents,
+      promo_code_id,
+      promo_code,
+      whop_checkout_id,
+      whop_payment_id,
+      whop_plan_id,
       error_message
     )
     VALUES (
@@ -1038,6 +1076,15 @@ export function createTenantPurchaseRecord(record) {
       @xpay_checkout_id,
       @xpay_charge_id,
       @xpay_customer_id,
+      @request_token,
+      @unit_price_cents,
+      @subtotal_cents,
+      COALESCE(@discount_cents, 0),
+      @promo_code_id,
+      @promo_code,
+      @whop_checkout_id,
+      @whop_payment_id,
+      @whop_plan_id,
       @error_message
     )
   `);
@@ -1052,6 +1099,15 @@ export function createTenantPurchaseRecord(record) {
     xpay_checkout_id: record.xpay_checkout_id || null,
     xpay_charge_id: record.xpay_charge_id || null,
     xpay_customer_id: record.xpay_customer_id || null,
+    request_token: record.request_token || null,
+    unit_price_cents: record.unit_price_cents ?? null,
+    subtotal_cents: record.subtotal_cents ?? record.amount_cents,
+    discount_cents: record.discount_cents ?? 0,
+    promo_code_id: record.promo_code_id || null,
+    promo_code: record.promo_code || null,
+    whop_checkout_id: record.whop_checkout_id || null,
+    whop_payment_id: record.whop_payment_id || null,
+    whop_plan_id: record.whop_plan_id || null,
     error_message: record.error_message || null
   });
 }
@@ -1061,6 +1117,13 @@ const TENANT_PURCHASE_COLUMNS = new Set([
   'xpay_checkout_id',
   'xpay_charge_id',
   'xpay_customer_id',
+  'whop_checkout_id',
+  'whop_payment_id',
+  'whop_plan_id',
+  'amount_cents',
+  'discount_cents',
+  'promo_code_id',
+  'promo_code',
   'error_message'
 ]);
 
@@ -1099,6 +1162,26 @@ export function getTenantPurchaseByCheckoutSession(sessionId) {
 
 export function getTenantPurchaseByPaymentIntent(paymentIntentId) {
   return db.prepare('SELECT * FROM tenant_purchases WHERE xpay_charge_id = ?').get(paymentIntentId);
+}
+
+export function getTenantPurchaseByIdForUser(id, userId) {
+  return db.prepare('SELECT * FROM tenant_purchases WHERE id = ? AND user_id = ?').get(id, userId);
+}
+
+export function getTenantPurchaseByRequestToken(userId, requestToken) {
+  return db.prepare('SELECT * FROM tenant_purchases WHERE user_id = ? AND request_token = ?').get(userId, requestToken);
+}
+
+export function getTenantPurchaseByWhopPaymentId(paymentId) {
+  return db.prepare('SELECT * FROM tenant_purchases WHERE whop_payment_id = ?').get(paymentId);
+}
+
+export function getTenantPurchaseByWhopCheckoutId(checkoutId) {
+  return db.prepare('SELECT * FROM tenant_purchases WHERE whop_checkout_id = ?').get(checkoutId);
+}
+
+export function updateTenantPurchaseById(id, updates = {}) {
+  return updateTenantPurchase('id', id, updates);
 }
 
 export function validateApiKeyForUser(keyHash) {

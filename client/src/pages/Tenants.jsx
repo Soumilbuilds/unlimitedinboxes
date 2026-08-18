@@ -1,104 +1,251 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
+import api from '../lib/api';
 
-const LICENSE_OPTIONS = [
-  {
-    value: 'premium',
-    label: 'US IP',
-    unitPrice: 15
-  },
-  {
-    value: 'normal',
-    label: 'Asia IP',
-    unitPrice: 20
-  }
+const TENANT_OPTIONS = [
+  { value: 'us', licenseType: 'premium', label: 'US IP', unitPriceCents: 1649 },
+  { value: 'asia', licenseType: 'normal', label: 'Asian IP', unitPriceCents: 1349 }
 ];
+
+function newRequestToken() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `tenant-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+function money(cents) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format((Number(cents) || 0) / 100);
+}
 
 export default function Tenants() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [quantity, setQuantity] = useState(1);
-  const [licenseType, setLicenseType] = useState('');
+  const [tenantType, setTenantType] = useState('us');
+  const [coupon, setCoupon] = useState('');
+  const [promotion, setPromotion] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const requestToken = useRef(newRequestToken());
 
-  const handleSubmit = (event) => {
-    event.preventDefault();
+  const selectedOption = TENANT_OPTIONS.find((option) => option.value === tenantType) || TENANT_OPTIONS[0];
+  const subtotalCents = selectedOption.unitPriceCents * quantity;
+  const discountCents = Number(promotion?.discountCents ?? promotion?.savingsCents ?? 0);
+  const totalCents = Number(
+    promotion?.totalCents
+    ?? promotion?.priceCents
+    ?? Math.max(0, subtotalCents - discountCents)
+  );
 
-    if (!licenseType || quantity < 1) {
-      return;
+  useEffect(() => {
+    if (searchParams.get('tenant_purchase') === 'success') {
+      setNotice('Your Tenant Order Is Confirmed.');
+      const next = new URLSearchParams(searchParams);
+      next.delete('tenant_purchase');
+      setSearchParams(next, { replace: true });
     }
+  }, []);
 
+  const purchasePayload = useMemo(() => ({
+    quantity,
+    tenantType,
+    licenseType: selectedOption.licenseType,
+    couponCode: promotion?.code || ''
+  }), [promotion?.code, quantity, selectedOption.licenseType, tenantType]);
+
+  function resetPromotion() {
+    setPromotion(null);
+    setError('');
+    requestToken.current = newRequestToken();
+  }
+
+  function openCheckout(data) {
+    const purchaseId = data?.purchaseId || data?.tenantPurchaseId || data?.purchase?.id;
+    const sessionId = data?.sessionId || data?.checkoutSessionId || data?.checkout?.sessionId;
+    if (!purchaseId || !sessionId) return false;
     const params = new URLSearchParams({
-      quantity: String(quantity),
-      license: licenseType
+      purchase_id: String(purchaseId),
+      session_id: String(sessionId)
     });
+    if (data?.promoCode) params.set('promo_code', String(data.promoCode));
+    navigate(`/tenants/checkout?${params.toString()}`, {
+      state: { quantity, tenantType, unitPriceCents: selectedOption.unitPriceCents, totalCents }
+    });
+    return true;
+  }
 
-    navigate(`/tenants/checkout?${params.toString()}`);
-  };
+  async function confirmPendingPayment(purchaseId, paymentId) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const { data } = await api.post(`/tenants/purchase/${encodeURIComponent(purchaseId)}/confirm`, { paymentId });
+      if (data?.paid) return data;
+      if (data?.sessionId) return data;
+      await wait(1200);
+    }
+    throw new Error('Whop is still confirming your payment. Please refresh in a moment.');
+  }
+
+  async function applyCoupon() {
+    if (!coupon.trim()) return;
+    setBusy('coupon');
+    setError('');
+    setNotice('');
+    setPromotion(null);
+    try {
+      const { data } = await api.post('/tenants/coupon', {
+        ...purchasePayload,
+        couponCode: coupon.trim().toUpperCase(),
+        code: coupon.trim().toUpperCase()
+      });
+      const promo = data?.promo ? { ...data, ...data.promo } : data;
+      setPromotion(promo);
+      setCoupon(promo?.code || coupon.trim().toUpperCase());
+      requestToken.current = newRequestToken();
+      setNotice('Coupon Applied.');
+    } catch (requestError) {
+      setError(requestError?.response?.data?.error || 'This coupon could not be applied.');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function purchaseTenants() {
+    setBusy('purchase');
+    setError('');
+    setNotice('');
+    try {
+      const { data: initialData } = await api.post('/tenants/purchase-checkout', {
+        ...purchasePayload,
+        requestToken: requestToken.current
+      });
+      let data = initialData;
+      if (data?.paymentPending && data?.purchaseId && data?.paymentId) {
+        data = await confirmPendingPayment(data.purchaseId, data.paymentId);
+      }
+      if (data?.paid === true) {
+        setNotice('Your Tenant Order Is Confirmed.');
+        setCoupon('');
+        setPromotion(null);
+        requestToken.current = newRequestToken();
+        return;
+      }
+      if (!openCheckout(data)) {
+        throw new Error('Secure checkout could not be prepared.');
+      }
+    } catch (requestError) {
+      setError(requestError?.response?.data?.error || requestError.message || 'Could not start your tenant order.');
+    } finally {
+      setBusy('');
+    }
+  }
 
   return (
     <div className="app-layout">
       <Sidebar />
       <main className="main-content tenants-page">
-        <div className="tenant-order-layout">
-          <div className="tenant-order-intro">
-            <h1 className="tenant-order-title">Get Microsoft Tenants In Bulk</h1>
-          </div>
+        <div className="tenant-page-shell">
+          <header className="tenant-page-heading">
+            <h1>Get Tenants For Creating Inboxes</h1>
+          </header>
 
-          <div className="tenant-order-card">
-            <form className="form tenant-order-form" onSubmit={handleSubmit}>
-              <label className="tenant-field">
-                <span>Number Of Tenants Needed</span>
+          {notice && <div className="alert success tenant-page-message" role="status">{notice}</div>}
+          {error && <div className="alert error tenant-page-message" role="alert">{error}</div>}
+
+          <section className="tenant-order-card" aria-labelledby="tenant-order-heading">
+            <div className="tenant-card-heading">
+              <span>Purchase Tenants</span>
+              <h2 id="tenant-order-heading">Order Tenants From Us</h2>
+            </div>
+
+            <div className="tenant-license-grid" role="radiogroup" aria-label="Tenant IP Location">
+              {TENANT_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  className={`tenant-license-card ${tenantType === option.value ? 'active' : ''}`}
+                  type="button"
+                  role="radio"
+                  aria-checked={tenantType === option.value}
+                  onClick={() => {
+                    setTenantType(option.value);
+                    resetPromotion();
+                  }}
+                >
+                  <span>{option.label}</span>
+                  <strong>{money(option.unitPriceCents)}</strong>
+                  <small>Per Tenant</small>
+                </button>
+              ))}
+            </div>
+
+            <div className="tenant-purchase-fields">
+              <label className="tenant-field" htmlFor="tenant-quantity">
+                <span>Number Of Tenants</span>
                 <input
+                  id="tenant-quantity"
                   type="number"
                   min="1"
                   max="1000"
                   step="1"
+                  inputMode="numeric"
                   value={quantity}
                   onChange={(event) => {
-                    const nextValue = Number.parseInt(event.target.value, 10);
-                    setQuantity(Number.isInteger(nextValue) && nextValue > 0 ? nextValue : 1);
+                    const next = Number.parseInt(event.target.value, 10);
+                    setQuantity(Number.isInteger(next) ? Math.min(1000, Math.max(1, next)) : 1);
+                    resetPromotion();
                   }}
-                  required
                 />
               </label>
 
-              {quantity >= 1 && (
-                <div className="tenant-license-section">
-                  <div className="tenant-section-label">What Type Of Tenant Do You Want?</div>
-                  <div className="tenant-license-grid">
-                    {LICENSE_OPTIONS.map((option) => (
-                      <label
-                        key={option.value}
-                        className={`tenant-license-card ${licenseType === option.value ? 'active' : ''}`}
-                      >
-                        <input
-                          type="radio"
-                          name="licenseType"
-                          value={option.value}
-                          checked={licenseType === option.value}
-                          onChange={() => setLicenseType(option.value)}
-                        />
-                        <div className="tenant-license-copy">
-                          <strong>{option.label}</strong>
-                          <div className="helper-text">${option.unitPrice} + Processing Fee</div>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
+              <div className="tenant-coupon-field">
+                <label htmlFor="tenant-coupon">Coupon Code</label>
+                <div>
+                  <input
+                    id="tenant-coupon"
+                    value={coupon}
+                    placeholder="Enter Code"
+                    onChange={(event) => {
+                      setCoupon(event.target.value.toUpperCase());
+                      resetPromotion();
+                    }}
+                  />
+                  <button type="button" disabled={!coupon.trim() || Boolean(busy)} onClick={() => void applyCoupon()}>
+                    {busy === 'coupon' ? 'Applying...' : 'Apply'}
+                  </button>
                 </div>
-              )}
-
-              <div className="tenant-order-actions">
-                <button
-                  type="submit"
-                  className="btn accent tenant-submit-btn"
-                  disabled={!licenseType || quantity < 1}
-                >
-                  Get Tenants
-                </button>
               </div>
-            </form>
-          </div>
+            </div>
+
+            <dl className="tenant-order-summary">
+              <div><dt>Subtotal</dt><dd>{money(subtotalCents)}</dd></div>
+              <div><dt>Coupon Discount</dt><dd>{discountCents > 0 ? `−${money(discountCents)}` : '—'}</dd></div>
+              <div className="tenant-order-total"><dt>Total Amount</dt><dd>{money(totalCents)}</dd></div>
+            </dl>
+
+            <button
+              className="tenant-submit-btn"
+              type="button"
+              disabled={Boolean(busy)}
+              onClick={() => void purchaseTenants()}
+            >
+              {busy === 'purchase' ? 'Processing...' : 'Get Tenants'}
+            </button>
+          </section>
+
+          <section className="tenant-guide" aria-label="Tenant Guide">
+            <iframe
+              src="https://docs.google.com/document/d/e/2PACX-1vTKpnYIt3L2Nn0GHZGmGnlYEZ11ZEbH22M9h3szqaG9EPbOwAbm4hpk6nX3V3R8SjVzhORI1mOfcjJJ/pub?embedded=true"
+              title="Tenant Guide"
+              loading="lazy"
+              referrerPolicy="strict-origin-when-cross-origin"
+            />
+          </section>
         </div>
       </main>
     </div>

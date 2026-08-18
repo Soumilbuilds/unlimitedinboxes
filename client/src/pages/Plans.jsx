@@ -35,6 +35,15 @@ const PLAN_CATALOG = [
 
 const TIER_ORDER = Object.fromEntries(PLAN_CATALOG.map((plan, index) => [plan.id, index]));
 
+const PLAN_DISPLAY_PRICES = {
+  trial: '$0',
+  basic: '$9',
+  starter: '$39',
+  growth: '$99',
+  unlimited: '$199',
+  agency: '$299'
+};
+
 function money(cents) {
   return new Intl.NumberFormat('en-US', {
     style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 2
@@ -176,6 +185,20 @@ export default function Plans() {
     }
   }
 
+  function openCheckout(data) {
+    const checkoutSessionId = data?.sessionId || data?.checkoutSessionId || data?.checkout?.sessionId;
+    if (checkoutSessionId) {
+      setSessionId(checkoutSessionId);
+      setNotice(data?.message || 'Complete Secure Checkout Below.');
+      return true;
+    }
+    if (data?.checkoutUrl) {
+      window.location.assign(data.checkoutUrl);
+      return true;
+    }
+    return false;
+  }
+
   async function changePlan() {
     if (!selectedPlan) return;
     setBusy('change');
@@ -187,21 +210,12 @@ export default function Plans() {
         planId: selectedPlan.id,
         couponCode: promotion?.code || ''
       });
-      const checkoutSessionId = data?.sessionId || data?.checkoutSessionId || data?.checkout?.sessionId;
-      if (checkoutSessionId) {
-        setSessionId(checkoutSessionId);
-        setNotice(data?.message || 'Complete Secure Checkout Below.');
-        return;
-      }
-      if (data?.checkoutUrl) {
-        window.location.assign(data.checkoutUrl);
-        return;
-      }
+      if (openCheckout(data)) return;
       if (data?.paymentPending && data?.paymentId) {
         await confirmPlanChange(data.paymentId);
         return;
       }
-      if (data?.success || data?.paid || data?.current || data?.scheduled) {
+      if (data?.paid || data?.current || data?.scheduled) {
         await refreshBilling({ force: true, minIntervalMs: 0 });
         setServerState((current) => ({
           ...current,
@@ -215,6 +229,7 @@ export default function Plans() {
       }
       throw new Error('The billing provider did not confirm the plan change.');
     } catch (requestError) {
+      if (openCheckout(requestError?.response?.data)) return;
       setError(requestError?.response?.data?.error || requestError.message || 'Could not change your plan.');
     } finally {
       setBusy('');
@@ -237,7 +252,7 @@ export default function Plans() {
           receiptId: paymentId
         });
         if (data?.failed) throw new Error(data.error || 'Your payment could not be completed.');
-        if (data?.paid || data?.success || data?.current) {
+        if (data?.paid || data?.current) {
           await refreshBilling({ force: true, minIntervalMs: 0 });
           setServerState((current) => ({ ...current, ...(data.billing || data.account || {}), currentPlan: selectedPlan.id }));
           setSessionId('');
@@ -249,6 +264,7 @@ export default function Plans() {
       }
       throw new Error('Whop is still confirming your plan. Please refresh in a moment.');
     } catch (requestError) {
+      if (openCheckout(requestError?.response?.data)) return;
       setError(requestError?.response?.data?.error || 'Your payment is still being confirmed. Please refresh in a moment.');
     } finally {
       setBusy('');
@@ -263,12 +279,6 @@ export default function Plans() {
     <div className="app-layout">
       <Sidebar />
       <main className="main-content plans-page-main">
-        <header className="plans-page-heading">
-          <span>Choose Your Plan</span>
-          <h1>Plans Built To Match Your Volume</h1>
-          <p>Upgrade or downgrade without interrupting your inbox workflow.</p>
-        </header>
-
         {notice && <div className="alert success plans-page-message" role="status">{notice}</div>}
         {error && <div className="alert error plans-page-message" role="alert">{error}</div>}
 
@@ -283,19 +293,19 @@ export default function Plans() {
               : (isTrialConsumed ? 'Trial Consumed' : (isDowngrade ? 'Downgrade' : (plan.id === 'trial' ? 'Start Trial' : 'Upgrade')));
 
             return (
-              <article className={`plans-catalog-card ${isCurrent ? 'is-current' : ''}`} key={plan.id}>
+              <article className={`plans-catalog-card ${isCurrent ? 'is-current' : ''} ${selectedPlanId === plan.id ? 'is-selected' : ''}`} key={plan.id}>
                 <div className="plans-catalog-head">
                   <h2>{plan.name}</h2>
                   <div className="plans-catalog-price">
-                    <strong>{plan.id === 'trial' ? 'Free' : money(plan.priceCents)}</strong>
-                    {plan.id !== 'trial' && <span>/ 4 Weeks</span>}
+                    <strong>{PLAN_DISPLAY_PRICES[plan.id]}</strong>
+                    <span>/ Month</span>
                   </div>
                 </div>
                 <ul className="plans-feature-list">
                   <Feature>{plan.inboxes}</Feature>
                   <Feature>{plan.sends} / Month</Feature>
                   <Feature>{plan.concurrent}</Feature>
-                  <Feature available={plan.ai}>{plan.ai ? 'AI And MCP Access' : 'No AI Or MCP Access'}</Feature>
+                  <Feature available={plan.ai}>API And MCP Access</Feature>
                   <Feature>SPF, DKIM And DMARC Setup</Feature>
                   <Feature available={plan.redirects}>{plan.redirects ? 'Domain Redirect Setup' : 'No Domain Redirects'}</Feature>
                   <Feature available={plan.customNames}>{plan.customNames ? 'Custom Names Supported' : 'No Custom Names'}</Feature>
@@ -305,6 +315,8 @@ export default function Plans() {
                   type="button"
                   disabled={isCurrent || isTrialConsumed || Boolean(busy)}
                   onClick={() => choosePlan(plan)}
+                  aria-expanded={selectedPlanId === plan.id}
+                  aria-controls={plan.id !== 'trial' ? 'plan-change-review' : undefined}
                 >
                   {label}
                 </button>
@@ -314,7 +326,7 @@ export default function Plans() {
         </section>
 
         {selectedPlan && (
-          <section className="plans-change-panel">
+          <section className="plans-change-panel" id="plan-change-review">
             <div className="plans-change-heading">
               <div>
                 <span>{currentRank > TIER_ORDER[selectedPlan.id] ? 'Confirm Downgrade' : 'Confirm Upgrade'}</span>

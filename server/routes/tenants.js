@@ -1,12 +1,16 @@
 import express from 'express';
+import { randomUUID } from 'node:crypto';
 import { resolveNs } from 'node:dns/promises';
 import {
  createTenant,
  createTenantPurchaseRecord,
  getTenants,
  getTenantByIdForUser,
+ getTenantPurchaseByIdForUser,
+ getTenantPurchaseByRequestToken,
  getUserByEmail,
- getUserByXpayCustomerId,
+ updateTenantPurchaseById,
+ updateUserBillingById,
  updateTenantCloudflare,
  updateTenantStatus,
  updateTenantDetails,
@@ -20,7 +24,16 @@ import {
  retryEnableDkimSigning
 } from '../services/securityCenterDkim.js';
 import { isValidTotpSecret } from '../services/totp.js';
-import { xpay, PLANS } from '../services/xpay.js';
+import { whop, isWhopPaymentFailed, isWhopPaymentPaid, serializeBillingAddress } from '../services/whop.js';
+import {
+ TENANT_OFFERS,
+ createTenantCheckoutConfiguration,
+ createTenantSavedCardPayment,
+ normalizeTenantSelection,
+ tenantSubtotalCents,
+ validateTenantPaymentForPurchase,
+ validateTenantPromoCode,
+} from '../services/tenantBilling.js';
 
 const router = express.Router();
 const { MASTER_CLIENT_ID, MASTER_REDIRECT_URI } = process.env;
@@ -57,178 +70,205 @@ function getRequestBaseUrl(req) {
  return process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com';
 }
 
-function normalizeTenantPurchase(body = {}) {
- const quantity = Number.parseInt(body.quantity, 10);
- const licenseType = String(body.licenseType || '').trim().toLowerCase();
- const tenantType = licenseType === 'premium'
- ? 'usTenant'
- : (licenseType === 'normal' ? 'asiaTenant' : null);
+function requestToken(req) {
+ const value = String(req.get('idempotency-key') || req.body?.requestToken || randomUUID()).trim();
+ if (!/^[A-Za-z0-9._:-]{8,128}$/.test(value)) throw new Error('Invalid Purchase Request Token.');
+ return value;
+}
 
+function tenantPurchaseResponse(purchase, user = null) {
+ let billingAddress = null;
+ try { billingAddress = user?.whop_billing_address ? JSON.parse(user.whop_billing_address) : null; } catch { /* Ignore corrupt legacy data. */ }
  return {
- quantity,
- licenseType,
- tenantType,
+ success: purchase.status === 'paid',
+ confirmed: purchase.status === 'paid',
+ failed: purchase.status === 'failed',
+ status: purchase.status,
+ purchaseId: Number(purchase.id),
+ paid: purchase.status === 'paid',
+ paymentPending: purchase.status === 'pending' && Boolean(purchase.whop_payment_id),
+ paymentId: purchase.whop_payment_id || null,
+ sessionId: purchase.whop_checkout_id || null,
+ planId: purchase.whop_plan_id || null,
+ promoCode: purchase.promo_code || null,
+ amountCents: purchase.amount_cents,
+ email: user?.email || null,
+ billingAddress,
  };
 }
 
-function centsForTenantUnit(tenantType) {
- const PLAN_PRICES = {
- usTenant: 15,
- asiaTenant: 20,
- };
- const unit = PLAN_PRICES[tenantType];
- if (!unit) throw new Error(`Unknown tenant type: ${tenantType}`);
- return Math.round(unit * 100);
+async function ensureTenantFallback(user, purchase, selection, req) {
+ if (purchase.whop_checkout_id) return purchase;
+ const checkout = await createTenantCheckoutConfiguration(whop, {
+ user,
+ purchase,
+ selection,
+ promoCode: purchase.promo_code,
+ redirectUrl: `${getRequestBaseUrl(req)}/tenants/checkout?purchase_id=${purchase.id}`,
+ });
+ updateTenantPurchaseById(purchase.id, {
+ status: 'checkout_required',
+ whop_checkout_id: checkout.sessionId,
+ whop_plan_id: checkout.planId,
+ });
+ return getTenantPurchaseByIdForUser(purchase.id, user.id);
 }
 
-function centsForTenantPurchase(tenantType, quantity) {
- return centsForTenantUnit(tenantType) * quantity;
-}
+router.get('/offers', (_req, res) => res.json({
+ currency: 'USD',
+ offers: Object.values(TENANT_OFFERS).map((offer) => ({
+ licenseType: offer.licenseType,
+ tenantType: offer.tenantType,
+ label: offer.label,
+ unitPriceCents: offer.unitPriceCents,
+ })),
+}));
 
-function getTenantPurchaseAmountCents(tenantType, quantity) {
- return centsForTenantPurchase(tenantType, quantity);
-}
-
-async function chargeSavedPaymentMethodForTenantPurchase(user, tenantType, quantity) {
- if (!user?.xpay_customer_id || !user?.xpay_default_payment_method_id) {
- return { paid: false, reason: 'no_default_payment_method' };
- }
-
+router.post('/coupon', async (req, res) => {
+ if (!whop.configured) return res.status(503).json({ error: 'Whop Is Not Configured.' });
  try {
- const cents = centsForTenantPurchase(tenantType, quantity);
- const response = await xpay.request('POST', '/payments/charge-tokenised-pm', {
- customer_id: user.xpay_customer_id,
- pm_id: user.xpay_default_payment_method_id,
- amount: cents,
- currency: 'USD',
- description: `${quantity} ${tenantType === 'usTenant' ? 'US IP' : 'Asia IP'} tenant${quantity === 1 ? '' : 's'}`,
- metadata: {
- type: 'tenant_purchase',
- user_id: String(user.id),
- tenant_type: tenantType,
- quantity: String(quantity),
- },
+ const selection = normalizeTenantSelection(req.body);
+ const promo = await validateTenantPromoCode(whop, {
+ code: req.body?.code || req.body?.couponCode,
+ subtotalCents: tenantSubtotalCents(selection),
  });
-
- const charged = response?.data || response;
- const isPaid = String(charged?.status || '').toLowerCase() === 'succeeded'
- || String(charged?.payment_status || '').toLowerCase() === 'paid';
-
- return {
- paid: isPaid,
- chargeId: charged?.id || null,
- reason: charged?.status || charged?.payment_status || 'unknown',
- error: isPaid ? null : { message: charged?.message || charged?.error || 'Payment not confirmed' },
- };
+ return res.json({ success: true, promo });
  } catch (error) {
- return {
- paid: false,
- reason: error.code || error.type || 'payment_failed',
- error: { message: error.message },
- };
+ return res.status(400).json({ error: error.message || 'Coupon Could Not Be Applied.' });
  }
-}
-
-async function createTenantCheckoutSession(user, tenantType, quantity, opts = {}) {
- const baseUrl = getRequestBaseUrl(req);
- const cents = centsForTenantPurchase(tenantType, quantity);
-
- const response = await xpay.request('POST', '/billing/checkout', {
- customer_id: user.xpay_customer_id || undefined,
- amount: cents,
- currency: 'USD',
- type: 'one_time',
- description: `${quantity} ${tenantType === 'usTenant' ? 'US IP' : 'Asia IP'} tenant${quantity === 1 ? '' : 's'}`,
- metadata: {
- type: 'tenant_purchase',
- user_id: String(user.id),
- tenant_type: tenantType,
- quantity: String(quantity),
- fallback_reason: opts.metadata?.fallback_reason || 'checkout_required',
- },
- success_url: `${baseUrl}/tenants?tenant_purchase=success`,
- cancel_url: `${baseUrl}/tenants`,
- callback_url: `${baseUrl}/billing/webhook`,
- });
-
- const checkout = response?.data || response;
- const checkoutId = checkout?.id || checkout?.checkout_id || checkout?.session_id;
- const checkoutUrl = checkout?.url || checkout?.checkout_url || checkout?.redirect_url;
-
- if (!checkoutId) {
- throw new Error(checkout?.message || checkout?.error || 'Failed to create xPay checkout session.');
- }
-
- return {
- sessionId: String(checkoutId),
- url: checkoutUrl,
- customerId: user.xpay_customer_id || null,
- };
-}
+});
 
 router.post('/purchase-checkout', async (req, res) => {
- if (!xpay.configured) {
- return res.status(503).json({ error: 'xPay is not configured.' });
- }
+ if (!whop.configured) return res.status(503).json({ error: 'Whop Is Not Configured.' });
 
  const user = getUserByEmail(req.session.user.email);
  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
- const { quantity, tenantType } = normalizeTenantPurchase(req.body);
- if (!Number.isInteger(quantity) || quantity < 1 || quantity > 1000 || !tenantType) {
- return res.status(400).json({ error: 'Choose a valid tenant type and quantity.' });
+ try {
+ const selection = normalizeTenantSelection(req.body);
+ const token = requestToken(req);
+ const existing = getTenantPurchaseByRequestToken(user.id, token);
+ const subtotalCents = tenantSubtotalCents(selection);
+ if (existing && (
+ Number(existing.quantity) !== selection.quantity
+ || existing.tenant_type !== selection.tenantType
+ || Number(existing.subtotal_cents) !== subtotalCents
+ || String(existing.promo_code || '') !== String(req.body?.couponCode || '').trim().toUpperCase()
+ )) return res.status(409).json({ error: 'This Purchase Token Is Already Bound To A Different Order.' });
+ if (existing && (existing.whop_checkout_id || existing.status === 'paid'
+ || (existing.whop_payment_id && existing.status !== 'failed'))) {
+ return res.status(existing.status === 'pending' ? 202 : 200).json(tenantPurchaseResponse(existing, user));
  }
 
- const amountCents = getTenantPurchaseAmountCents(tenantType, quantity);
+ const promo = existing?.promo_code_id ? {
+ id: existing.promo_code_id,
+ code: existing.promo_code,
+ totalCents: existing.amount_cents,
+ discountCents: existing.discount_cents,
+ } : (req.body?.couponCode
+ ? await validateTenantPromoCode(whop, { code: req.body.couponCode, subtotalCents })
+ : null);
+ let purchase = existing;
+ if (!purchase) {
+ const result = createTenantPurchaseRecord({
+ user_id: user.id,
+ tenant_type: selection.tenantType,
+ quantity: selection.quantity,
+ amount_cents: promo?.totalCents ?? subtotalCents,
+ unit_price_cents: selection.unitPriceCents,
+ subtotal_cents: subtotalCents,
+ discount_cents: promo?.discountCents || 0,
+ promo_code_id: promo?.id || null,
+ promo_code: promo?.code || null,
+ request_token: token,
+ status: 'pending',
+ });
+ purchase = getTenantPurchaseByIdForUser(Number(result.lastInsertRowid), user.id);
+ }
+
+ if (user.whop_member_id && user.whop_payment_method_id) {
+ try {
+ const payment = await createTenantSavedCardPayment(whop, {
+ user, purchase, selection, promoCodeId: promo?.id || null,
+ });
+ updateTenantPurchaseById(purchase.id, {
+ whop_payment_id: String(payment.id),
+ whop_plan_id: payment.plan?.id || null,
+ status: isWhopPaymentPaid(payment) ? 'paid' : (isWhopPaymentFailed(payment) ? 'failed' : 'pending'),
+ error_message: payment.failure_message || null,
+ });
+ purchase = getTenantPurchaseByIdForUser(purchase.id, user.id);
+ if (purchase.status === 'paid') return res.json(tenantPurchaseResponse(purchase, user));
+ if (purchase.status === 'pending') return res.status(202).json(tenantPurchaseResponse(purchase, user));
+ } catch (error) {
+ // A transport error can occur after Whop accepted the idempotent charge.
+ // Keep the purchase retryable and never open a second checkout until Whop
+ // returns a definitive failed payment object or webhook.
+ updateTenantPurchaseById(purchase.id, { status: 'pending', error_message: error.message });
+ return res.status(503).json({
+ error: 'Whop Could Not Confirm The Saved-Card Attempt. Please Try Again.',
+ retryable: true,
+ purchaseId: Number(purchase.id),
+ });
+ }
+ }
+
+ purchase = await ensureTenantFallback(user, purchase, selection, req);
+ return res.json(tenantPurchaseResponse(purchase, user));
+ } catch (error) {
+ console.error('[tenants] Whop tenant purchase failed:', error);
+ const status = /valid|coupon|expired|usage|configured/i.test(error.message) ? 400 : 500;
+ return res.status(status).json({ error: error.message || 'Failed To Start Tenant Purchase.' });
+ }
+});
+
+router.get('/purchase/:id', (req, res) => {
+ const user = getUserByEmail(req.session.user.email);
+ const purchase = user && getTenantPurchaseByIdForUser(Number(req.params.id), user.id);
+ if (!purchase) return res.status(404).json({ error: 'Tenant Purchase Not Found.' });
+ return res.json(tenantPurchaseResponse(purchase, user));
+});
+
+router.post('/purchase/:id/confirm', async (req, res) => {
+ if (!whop.configured) return res.status(503).json({ error: 'Whop Is Not Configured.' });
+ const user = getUserByEmail(req.session.user.email);
+ const purchase = user && getTenantPurchaseByIdForUser(Number(req.params.id), user.id);
+ if (!purchase) return res.status(404).json({ error: 'Tenant Purchase Not Found.' });
+ if (purchase.status === 'paid') return res.json(tenantPurchaseResponse(purchase, user));
 
  try {
- const savedCardCharge = await chargeSavedPaymentMethodForTenantPurchase(user, tenantType, quantity);
- if (savedCardCharge.paid) {
- createTenantPurchaseRecord({
- user_id: user.id,
- tenant_type: tenantType,
- quantity,
- amount_cents: amountCents,
- status: 'paid',
- xpay_charge_id: savedCardCharge.chargeId,
- xpay_customer_id: user.xpay_customer_id,
+ const requestedPaymentId = String(req.body?.paymentId || req.body?.receiptId || purchase.whop_payment_id || '').trim();
+ if (requestedPaymentId) {
+ const payment = await whop.payments.retrieve(requestedPaymentId);
+ if (!validateTenantPaymentForPurchase(payment, purchase)) {
+ return res.status(400).json({ error: 'Payment Does Not Match This Tenant Purchase.' });
+ }
+ if (isWhopPaymentPaid(payment)) {
+ const updates = { status: 'paid', whop_payment_id: String(payment.id), error_message: null };
+ updateTenantPurchaseById(purchase.id, updates);
+ const address = serializeBillingAddress(payment.billing_address || req.body?.billingAddress);
+ updateUserBillingById(user.id, {
+ whop_member_id: payment.member?.id ? String(payment.member.id) : undefined,
+ whop_payment_method_id: payment.payment_method?.id ? String(payment.payment_method.id) : undefined,
+ whop_billing_address: address || undefined,
  });
-
- return res.json({
- success: true,
- paid: true,
- paymentIntentId: savedCardCharge.chargeId,
- });
+ return res.json(tenantPurchaseResponse(getTenantPurchaseByIdForUser(purchase.id, user.id), user));
+ }
+ if (isWhopPaymentFailed(payment)) {
+ updateTenantPurchaseById(purchase.id, { status: 'failed', error_message: payment.failure_message || 'Payment Failed.' });
+ }
  }
 
- const checkout = await createTenantCheckoutSession(user, tenantType, quantity, {
- appBaseUrl: getRequestBaseUrl(req),
- metadata: {
- fallback_reason: savedCardCharge.reason || 'checkout_required',
- },
+ const latest = getTenantPurchaseByIdForUser(purchase.id, user.id);
+ if (latest.status === 'pending') return res.status(202).json(tenantPurchaseResponse(latest, user));
+ const selection = normalizeTenantSelection({
+ licenseType: latest.tenant_type === 'usTenant' ? 'premium' : 'normal',
+ quantity: latest.quantity,
  });
-
- createTenantPurchaseRecord({
- user_id: user.id,
- tenant_type: tenantType,
- quantity,
- amount_cents: amountCents,
- status: 'pending',
- xpay_checkout_id: checkout.sessionId,
- xpay_customer_id: checkout.customerId || user.xpay_customer_id || null,
- error_message: savedCardCharge.error?.message || null,
- });
-
- return res.json({
- success: true,
- paid: false,
- sessionId: checkout.sessionId,
- purchaseUrl: checkout.url,
- checkoutUrl: checkout.url,
- });
+ return res.json(tenantPurchaseResponse(await ensureTenantFallback(user, latest, selection, req), user));
  } catch (error) {
- console.error('[tenants] xPay tenant purchase failed:', error);
- return res.status(500).json({ error: error.message || 'Failed to start tenant purchase.' });
+ console.error('[tenants] Whop tenant confirmation failed:', error);
+ return res.status(500).json({ error: error.message || 'Failed To Confirm Tenant Purchase.' });
  }
 });
 

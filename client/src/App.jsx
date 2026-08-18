@@ -11,6 +11,7 @@ import Redirects from './pages/Redirects';
 import BillingCheckout from './pages/BillingCheckout';
 import APIBilling from './pages/APIBilling';
 import Plans from './pages/Plans';
+import WhatsAppSupport from './components/WhatsAppSupport';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -113,6 +114,7 @@ export default function App() {
             <Route path="/" element={<Navigate to="/orders" replace />} />
             <Route path="*" element={<Navigate to="/orders" replace />} />
           </Routes>
+          <WhatsAppSupport />
         </BillingProvider>
       </BrowserRouter>
     </AuthProvider>

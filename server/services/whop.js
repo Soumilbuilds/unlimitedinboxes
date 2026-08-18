@@ -189,7 +189,8 @@ export async function validateWhopPromoCode(client, { code, planKey }) {
 }
 
 export function isWhopPaymentPaid(payment = {}) {
-  return getWhopStatus(payment.status) === 'paid' || getWhopStatus(payment.substatus) === 'succeeded';
+  return ['paid', 'succeeded'].includes(getWhopStatus(payment.status))
+    || getWhopStatus(payment.substatus) === 'succeeded';
 }
 
 export function isWhopPaymentFailed(payment = {}) {

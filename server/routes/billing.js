@@ -26,6 +26,8 @@ import {
  updateWhopPlanChange,
  bindWhopPlanChangePayment,
  claimWhopPlanChange,
+ getTenantPurchaseByIdForUser,
+ updateTenantPurchaseById,
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
 import {
@@ -62,6 +64,7 @@ import {
  unwrapWhopWebhook,
  validateWhopPromoCode,
 } from '../services/whop.js';
+import { isTenantPurchasePayment, validateTenantPaymentForPurchase } from '../services/tenantBilling.js';
 
 const router = Router();
 
@@ -152,6 +155,34 @@ function whopDataBelongsToUser(data, user) {
  if (data?.member?.id && String(data.member.id) === String(user.whop_member_id || '')) return true;
  const email = data?.user?.email || data?.member?.user?.email || metadata.email;
  return Boolean(email && String(email).trim().toLowerCase() === String(user.email).trim().toLowerCase());
+}
+
+function resolveTenantPurchasePayment(payment) {
+ const purchaseId = Number(payment?.metadata?.tenant_purchase_id);
+ const userId = Number(payment?.metadata?.user_id || payment?.metadata?.app_user_id);
+ if (!Number.isInteger(purchaseId) || !Number.isInteger(userId)) return null;
+ return getTenantPurchaseByIdForUser(purchaseId, userId) || null;
+}
+
+function persistTenantPurchasePayment(user, payment, succeeded) {
+ const purchase = resolveTenantPurchasePayment(payment);
+ if (!purchase || String(purchase.user_id) !== String(user?.id)
+ || !validateTenantPaymentForPurchase(payment, purchase)) return false;
+
+ if (purchase.status === 'paid' && !succeeded) return true;
+ updateTenantPurchaseById(purchase.id, {
+ status: succeeded ? 'paid' : 'failed',
+ whop_payment_id: String(payment.id),
+ whop_plan_id: payment.plan?.id || purchase.whop_plan_id || null,
+ error_message: succeeded ? null : (payment.failure_message || 'Whop Reported That The Payment Failed.'),
+ });
+ const address = serializeBillingAddress(payment.billing_address);
+ updateUserBillingById(user.id, {
+ whop_member_id: payment.member?.id ? String(payment.member.id) : undefined,
+ whop_payment_method_id: payment.payment_method?.id ? String(payment.payment_method.id) : undefined,
+ whop_billing_address: succeeded && address ? address : undefined,
+ });
+ return true;
 }
 
 async function persistWhopMembership(user, membership, { eventAt = null, force = false } = {}) {
@@ -718,13 +749,40 @@ router.post('/plans/change', async (req, res) => {
  return res.json(await createPlanFallbackCheckout(user, target, getRequestBaseUrl(req), promo, change));
  }
 
- const payment = await createWhopSavedCardPayment(whop, {
+ let payment;
+ try {
+ payment = await createWhopSavedCardPayment(whop, {
  user,
  planId: target.planId,
  promoCodeId: promo?.id,
  idempotencyKey: `ui.plan-change.${change.id}.payment`,
  planChangeId: change.id,
  });
+ } catch (paymentError) {
+ // A transport failure can happen after Whop accepted the idempotent charge.
+ // Keep this change bound to the same payment attempt and never open a second
+ // checkout until Whop returns a definitive payment result.
+ updateWhopPlanChange(change.id, {
+ status: 'pending_payment',
+ last_error: paymentError.message || 'Whop did not confirm the saved-card attempt.',
+ });
+ return res.status(503).json({
+ error: 'Whop could not confirm the saved-card attempt. Please try again.',
+ retryable: true,
+ planChangeId: change.id,
+ });
+ }
+ if (!payment?.id) {
+ updateWhopPlanChange(change.id, {
+ status: 'pending_payment',
+ last_error: 'Whop did not return a payment reference.',
+ });
+ return res.status(503).json({
+ error: 'Whop could not confirm the saved-card attempt. Please try again.',
+ retryable: true,
+ planChangeId: change.id,
+ });
+ }
  bindWhopPlanChangePayment(change.id, payment.id);
  updateWhopPlanChange(change.id, { status: 'pending_payment' });
  updateUserBillingById(user.id, {
@@ -1084,10 +1142,12 @@ async function handleWhopWebhook(req, res) {
  switch (event.type) {
  case 'membership.activated':
  case 'membership.cancel_at_period_end_changed':
+ if (isTenantPurchasePayment(data)) break;
  if (user) await persistWhopMembership(user, data, { eventAt });
  break;
 
  case 'membership.deactivated':
+ if (isTenantPurchasePayment(data)) break;
  if (user) {
  const latest = await persistWhopMembership(user, data, { eventAt });
  const change = getActiveWhopPlanChange(user.id);
@@ -1106,6 +1166,10 @@ async function handleWhopWebhook(req, res) {
 
  case 'payment.succeeded':
  if (user) {
+ if (isTenantPurchasePayment(data)) {
+ persistTenantPurchasePayment(user, data, true);
+ break;
+ }
  const targetPlanId = data.plan?.id || data.metadata?.plan_id;
  const latestUser = getUserById(user.id) || user;
  const change = resolvePaymentPlanChange(latestUser, data);
@@ -1120,6 +1184,10 @@ async function handleWhopWebhook(req, res) {
 
  case 'payment.failed':
  if (user) {
+ if (isTenantPurchasePayment(data)) {
+ persistTenantPurchasePayment(user, data, false);
+ break;
+ }
  if (['plan_change', 'plan_change_checkout'].includes(String(data.metadata?.purpose || ''))) {
  const change = resolvePaymentPlanChange(user, data);
  if (change && change.status !== 'completed') {
