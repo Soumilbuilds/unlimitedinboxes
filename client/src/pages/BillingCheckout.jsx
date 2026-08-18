@@ -23,7 +23,9 @@ function getBillingCopy(intent, billing) {
  kind: 'initial',
  headline: usedIntroOffer
  ? 'Create 100 Inboxes And Send 15,000 Emails For $9.99'
- : 'Create 100 Inboxes And Send 15,000 Emails For Free',
+ : 'Create 100 Inboxes',
+ headlineSecondLine: usedIntroOffer ? null : 'Send 15,000 Emails For Free',
+ showDisclaimerMark: !usedIntroOffer,
  primaryLine: 'No Active Subscription Found',
  terms: usedIntroOffer
  ? ['$9.99 Every 4 Weeks', '1 Click Cancel']
@@ -45,7 +47,9 @@ function getBillingCopy(intent, billing) {
  kind: 'initial',
  headline: usedIntroOffer
  ? 'Create 100 Inboxes And Send 15,000 Emails For $9.99'
- : 'Create 100 Inboxes And Send 15,000 Emails For Free',
+ : 'Create 100 Inboxes',
+ headlineSecondLine: usedIntroOffer ? null : 'Send 15,000 Emails For Free',
+ showDisclaimerMark: !usedIntroOffer,
  primaryLine: 'No Active Subscription Found',
  terms: usedIntroOffer
  ? ['$9.99 Every 4 Weeks', '1 Click Cancel']
@@ -64,7 +68,9 @@ function getBillingCopy(intent, billing) {
  if (billing?.blockingReason) {
  return {
  kind: 'initial',
- headline: 'Create 100 Inboxes And Send 15,000 Emails For Free',
+ headline: 'Create 100 Inboxes',
+ headlineSecondLine: 'Send 15,000 Emails For Free',
+ showDisclaimerMark: true,
  primaryLine: 'No Active Subscription Found',
  terms: ['5 Day Free Trial', '$1 Authorisation Amount (Refunded)', '$9/mo After Trial', '1 Click Cancel', 'No Charge During Trial']
  };
@@ -148,7 +154,15 @@ export default function BillingCheckout() {
  <div className={`billing-page-shell billing-page-shell--${copy.kind}`}>
  <header className="billing-page-header">
  <div className="billing-page-copy">
- <h1>{copy.headline}</h1>
+ <h1 className={copy.headlineSecondLine ? 'billing-offer-headline' : undefined}>
+ <span>{copy.headline}</span>
+ {copy.headlineSecondLine ? (
+ <span>
+ {copy.headlineSecondLine}
+ {copy.showDisclaimerMark ? <sup className="billing-offer-mark">*</sup> : null}
+ </span>
+ ) : null}
+ </h1>
  {copy.primaryLine ? <p>{copy.primaryLine}</p> : null}
  </div>
 

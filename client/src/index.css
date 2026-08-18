@@ -1085,7 +1085,7 @@ a {
 }
 
 .billing-page-shell {
-  width: min(760px, 100%);
+  width: min(940px, 100%);
   margin: 0 auto;
 }
 
@@ -1108,10 +1108,23 @@ a {
 
 .billing-page-copy h1 {
   margin: 0;
-  font-size: clamp(30px, 4vw, 40px);
+  font-size: clamp(40px, 5vw, 54px);
   font-weight: 600;
-  line-height: 1.08;
+  line-height: 1.1;
   letter-spacing: -0.04em;
+}
+
+.billing-offer-headline {
+  display: grid;
+  gap: 7px;
+}
+
+.billing-offer-mark {
+  margin-left: 3px;
+  color: rgba(245, 245, 245, 0.42);
+  font-size: 0.38em;
+  font-weight: 600;
+  vertical-align: super;
 }
 
 .billing-page-copy p {
@@ -1124,11 +1137,11 @@ a {
 
 .billing-page-terms {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: center;
   align-items: center;
   row-gap: 10px;
-  width: min(680px, 100%);
+  width: min(940px, 100%);
   margin: 0 auto;
   color: rgba(245, 245, 245, 0.48);
   font-size: 12px;
@@ -1137,7 +1150,8 @@ a {
 }
 
 .billing-page-terms span {
-  padding: 0 12px;
+  padding: 0 11px;
+  white-space: nowrap;
 }
 
 .billing-page-terms span + span {
@@ -1691,13 +1705,14 @@ a {
   }
 
   .billing-page-terms {
-    flex-wrap: wrap;
-    gap: 8px 0;
-    line-height: 1.35;
+    flex-wrap: nowrap;
+    gap: 0;
+    font-size: clamp(7px, 1.4vw, 10px);
+    line-height: 1;
   }
 
   .billing-page-terms span {
-    padding: 0 10px;
+    padding: 0 5px;
   }
 
   .checkout-modal-copy h2 {
