@@ -35,7 +35,7 @@ function serializeSessionUser(user) {
     id: user.id,
     email: user.email,
     plan: user.plan || 'free',
-    billingStatus: user.xpay_subscription_status || null
+    billingStatus: user.whop_membership_status || user.xpay_subscription_status || null
   };
 }
 

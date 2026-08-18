@@ -1,5 +1,4 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
 import api from '../lib/api';
 import { useAuth } from './AuthContext';
 
@@ -20,72 +19,13 @@ function redirectToBilling(intent, { replace = false } = {}) {
  return url;
 }
 
-function buildBlockingCheckout(billing) {
- if (!billing?.blockingReason) {
- return null;
- }
-
- if (billing.blockingReason === 'needs_payment_method' || billing.blockingReason === 'needs_intro_offer') {
- return {
- intent: 'starter',
- allowClose: false,
- headline: 'No Active Subscription Found',
- subheadline: 'Create The First 100 Inboxes For Just One Dollar.',
- description: null,
- showInvoice: false
- };
- }
-
- if (
- billing.blockingReason === 'subscription_past_due' ||
- billing.blockingReason === 'subscription_incomplete'
- ) {
- return {
- intent: 'retry',
- allowClose: false,
- headline: 'Payment Issue',
- subheadline: 'Your payment could not be processed. Please update your payment method to restore access.',
- description: null,
- showInvoice: true
- };
- }
-
- if (billing.blockingReason === 'subscription_cancelled') {
- return {
- intent: 'standard',
- allowClose: false,
- headline: 'Subscription Cancelled',
- subheadline: 'Your subscription has been cancelled. Renew to restore access.',
- description: null
- };
- }
-
- if (billing.blockingReason === 'inbox_limit_reached') {
- return {
- intent: 'standard',
- allowClose: false,
- headline: 'Inbox Limit Reached',
- subheadline: 'You have used all available inboxes. Upgrade to continue.',
- description: null
- };
- }
-
- return {
- intent: 'standard',
- allowClose: false,
- headline: 'No Active Subscription Found',
- subheadline: 'Upgrade To Continue',
- description: null
- };
-}
-
 function buildUpgradeCheckout(intent) {
  if (intent === 'trial' || intent === 'starter') {
  return {
  intent: 'starter',
  allowClose: true,
  headline: 'No Active Subscription Found',
- subheadline: 'Create The First 100 Inboxes For Just One Dollar.',
+ subheadline: 'Create 100 inboxes and send 15,000 cold emails for just $1.',
  description: null
  };
  }
@@ -131,7 +71,6 @@ function buildUpgradeCheckout(intent) {
 }
 
 export function BillingProvider({ children }) {
- const location = useLocation();
  const { user } = useAuth();
  const [billing, setBilling] = useState(null);
  const [loading, setLoading] = useState(true);
@@ -216,6 +155,19 @@ export function BillingProvider({ children }) {
  return;
  }
 
+ if (billing?.provider === 'whop' && billing?.membershipId) {
+ const accessEnd = billing.currentPeriodEnd;
+ const suffix = accessEnd
+ ? ` Access continues until ${new Date(accessEnd).toLocaleDateString()}.`
+ : '';
+ if (!window.confirm(`Cancel automatic renewal?${suffix}`)) {
+ return;
+ }
+ await api.post('/billing/cancel');
+ await refreshBilling({ force: true, minIntervalMs: 0 });
+ return;
+ }
+
  if (billing?.billingMode === 'managed' && billing?.recurringEnabled) {
  const accessEnd = billing.currentPeriodEnd || billing.trialEndsAt;
  const suffix = accessEnd
@@ -240,24 +192,6 @@ export function BillingProvider({ children }) {
  openUpgrade,
  openBillingPortal
  };
-
- const blockingCheckout = buildBlockingCheckout(billing);
-
- useEffect(() => {
- if (!user?.id || !blockingCheckout) {
- return;
- }
-
- if (location.pathname === '/billing') {
- return;
- }
-
- if (blockingCheckout.intent === 'retry') {
- return;
- }
-
- redirectToBilling(blockingCheckout.intent, { replace: true });
- }, [user?.id, billing?.isTrialing, billing?.plan, billing?.blockingReason, blockingCheckout?.intent, location.pathname]);
 
  return (
  <BillingContext.Provider value={value}>

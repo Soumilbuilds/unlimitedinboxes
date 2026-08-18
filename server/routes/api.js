@@ -24,7 +24,7 @@ async function refreshAccessState(req) {
     if (latest) {
       req.session.user.plan = latest.plan || 'free';
       req.session.user.id = latest.id;
-      req.session.user.billingStatus = latest.xpay_subscription_status || null;
+      req.session.user.billingStatus = latest.whop_membership_status || latest.xpay_subscription_status || null;
       req.accessState = getUserAccessState(latest);
     }
   }
@@ -127,7 +127,7 @@ router.get('/orders/by-domain/:domain/download', requireApiKey, async (req, res)
     }
 
     const accessState = req.accessState || getUserAccessState(req.session.user);
-    if (!accessState.canDownloadAll || accessState.downloadAllowance <= 0) {
+    if (accessState.downloadAllowance <= 0) {
       return res.status(403).json({
         code: 'API_DOWNLOAD_NOT_ALLOWED',
         error: 'Download is available on paid plans only.'
@@ -478,7 +478,7 @@ router.get('/orders/:id/download', requireApiKey, async (req, res) => {
     }
 
     const accessState = req.accessState || getUserAccessState(req.session.user);
-    if (!accessState.canDownloadAll || accessState.downloadAllowance <= 0) {
+    if (accessState.downloadAllowance <= 0) {
       return res.status(403).json({
         code: 'API_DOWNLOAD_NOT_ALLOWED',
         error: 'Download is available on paid plans only.'

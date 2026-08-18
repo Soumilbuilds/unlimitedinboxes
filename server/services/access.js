@@ -1,14 +1,26 @@
-import { isSubscriptionActive, isSubscriptionPastDue, TRIAL_DAYS } from '../services/xpay.js';
+import { isSubscriptionPastDue } from '../services/xpay.js';
+import { getWhopPlanDetails, getWhopStatus, isWhopMembershipActive } from './whop.js';
 
 const PLAN_LIMITS = {
  free: { inboxesLimit: 0, concurrentOrders: 0 },
  trial: { inboxesLimit: 100, concurrentOrders: 1 },
+ basic: { inboxesLimit: 100, concurrentOrders: 1 },
  starter: { inboxesLimit: 500, concurrentOrders: 1 },
  growth: { inboxesLimit: 1500, concurrentOrders: 1 },
  unlimited: { inboxesLimit: Infinity, concurrentOrders: 1 },
+ agency: { inboxesLimit: Infinity, concurrentOrders: Infinity },
 };
 
 function getPlanKey(user) {
+ const whopStatus = getWhopStatus(user?.whop_membership_status);
+ const whopDetails = getWhopPlanDetails(user?.whop_plan_id);
+ if (whopDetails && isWhopMembershipActive(whopStatus)) {
+  if (whopDetails.intro && (whopStatus === 'trialing' || (whopStatus === 'canceling' && user?.plan === 'trial'))) {
+   return 'trial';
+  }
+  return whopDetails.key;
+ }
+
  const status = (user?.xpay_subscription_status || '').toUpperCase();
  if (['TRIALING', 'TRIAL'].includes(status)) return 'trial';
 
@@ -27,6 +39,12 @@ function getPlanLimits(user) {
 }
 
 export function isOnTrial(user) {
+ const whopStatus = getWhopStatus(user?.whop_membership_status);
+ if (getWhopPlanDetails(user?.whop_plan_id)?.intro
+ && (whopStatus === 'trialing' || (whopStatus === 'canceling' && user?.plan === 'trial'))) {
+  const trialEnd = user?.whop_current_period_end ? new Date(user.whop_current_period_end) : null;
+  return !trialEnd || trialEnd > new Date();
+ }
  const status = (user?.xpay_subscription_status || '').toUpperCase();
  if (!['TRIALING', 'TRIAL'].includes(status)) return false;
 
@@ -36,9 +54,11 @@ export function isOnTrial(user) {
 
 export function getSubscriptionTier(user) {
  const planKey = getPlanKey(user);
+ if (planKey === 'agency') return 'agency';
  if (planKey === 'unlimited') return 'unlimited';
  if (planKey === 'growth') return 'growth';
  if (planKey === 'starter') return 'starter';
+ if (planKey === 'basic') return 'basic';
  if (isOnTrial(user)) return 'trial';
  return 'free';
 }
@@ -46,8 +66,9 @@ export function getSubscriptionTier(user) {
 export function hasUsedIntroOffer(user) {
  return Boolean(
  user?.xpay_intro_offer_used
+ || user?.whop_intro_offer_used
  || user?.xpay_subscription_id
- || ['trial', 'starter', 'growth', 'unlimited'].includes(user?.plan)
+ || ['trial', 'basic', 'starter', 'growth', 'unlimited', 'agency'].includes(user?.plan)
  );
 }
 
@@ -58,12 +79,24 @@ export function getUserAccessState(user) {
  const inboxesLimit = limits.inboxesLimit;
  const hasConcurrentOrders = Boolean(user?.has_concurrent_orders);
 
- const subscriptionStatus = (user?.xpay_subscription_status || '').toUpperCase();
- const isPastDue = isSubscriptionPastDue(subscriptionStatus);
+ const usesWhop = Boolean(user?.whop_membership_id || user?.whop_membership_status);
+ const whopStatus = getWhopStatus(user?.whop_membership_status);
+ const subscriptionStatus = usesWhop
+ ? whopStatus.toUpperCase()
+ : (user?.xpay_subscription_status || '').toUpperCase();
+ const isPastDue = usesWhop
+ ? ['past_due', 'unresolved'].includes(whopStatus)
+ : isSubscriptionPastDue(subscriptionStatus);
  const trialing = isOnTrial(user);
- const periodEnd = user?.xpay_current_period_end ? new Date(user.xpay_current_period_end) : null;
- const cancelledAtPeriodEnd = Boolean(user?.xpay_cancel_at_period_end);
- const paidPeriodActive = subscriptionStatus === 'ACTIVE'
+ const currentPeriodEnd = usesWhop ? user?.whop_current_period_end : user?.xpay_current_period_end;
+ const periodEnd = currentPeriodEnd ? new Date(currentPeriodEnd) : null;
+ const cancelledAtPeriodEnd = Boolean(usesWhop ? user?.whop_cancel_at_period_end : user?.xpay_cancel_at_period_end);
+ const whopPaidPeriodActive = whopStatus === 'active'
+ ? (!cancelledAtPeriodEnd || (periodEnd && periodEnd > new Date()))
+ : (whopStatus === 'canceling' && (!periodEnd || periodEnd > new Date()) && !trialing);
+ const paidPeriodActive = usesWhop
+ ? whopPaidPeriodActive
+ : subscriptionStatus === 'ACTIVE'
  && (!cancelledAtPeriodEnd || (periodEnd && periodEnd > new Date()));
  const isActive = paidPeriodActive || trialing;
 
@@ -99,29 +132,29 @@ export function getUserAccessState(user) {
  isActive,
  isTrialing: trialing,
  isPastDue,
- subscriptionStatus: user?.xpay_subscription_status || null,
+ subscriptionStatus: usesWhop ? (user?.whop_membership_status || null) : (user?.xpay_subscription_status || null),
  subscriptionTier: getSubscriptionTier(user),
  trialActive: trialing,
- trialEndsAt: user?.xpay_trial_ends_at || null,
+ trialEndsAt: usesWhop ? (trialing ? user?.whop_current_period_end || null : null) : (user?.xpay_trial_ends_at || null),
  introOfferUsed: usedIntroOffer,
  needsIntroOffer,
  needsPaidSubscription,
  needsPaymentMethodUpdate: isPastDue,
  blockingReason,
  recommendedCheckoutIntent,
- isFullyPaid: ['starter', 'growth', 'unlimited'].includes(planKey) && isActive,
- hasBillingPortal: Boolean(user?.xpay_customer_id),
+ isFullyPaid: ['basic', 'starter', 'growth', 'unlimited', 'agency'].includes(planKey) && isActive && !trialing,
+ hasBillingPortal: Boolean(user?.whop_membership_id || user?.xpay_customer_id),
  cleanupDueAt: null,
  hasBillingIssue: isPastDue,
  cancelAtPeriodEnd: cancelledAtPeriodEnd,
- currentPeriodEnd: user?.xpay_current_period_end || null,
+ currentPeriodEnd: currentPeriodEnd || null,
  canAccessApp,
- canAccessApi: ['growth', 'unlimited'].includes(planKey),
- hasUnlimitedOrders: planKey === 'unlimited',
- canDownloadAll: canAccessApp,
- canCreateMoreThanOneCompletedOrder: ['starter', 'growth', 'unlimited'].includes(planKey),
- canUseCustomNames: ['growth', 'unlimited'].includes(planKey),
- downloadAllowance: planKey === 'free' ? 0 : (planKey === 'trial' ? inboxesLimit : Infinity),
+ canAccessApi: ['growth', 'unlimited', 'agency'].includes(planKey),
+ hasUnlimitedOrders: ['unlimited', 'agency'].includes(planKey),
+ canDownloadAll: canAccessApp && !trialing,
+ canCreateMoreThanOneCompletedOrder: ['basic', 'starter', 'growth', 'unlimited', 'agency'].includes(planKey),
+ canUseCustomNames: ['growth', 'unlimited', 'agency'].includes(planKey),
+ downloadAllowance: !canAccessApp ? 0 : (trialing ? 10 : Infinity),
  canOpenInboxesPage: canAccessApp,
  lifetimeCompletedOrders: 0,
  completedOrderQuotaReached: false,

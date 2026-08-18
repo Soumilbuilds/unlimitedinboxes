@@ -21,9 +21,15 @@ function getBillingCopy(intent, billing) {
  }
 
  if (intent === 'trial' || intent === 'starter') {
+ const usedIntroOffer = billing?.introOfferUsed || billing?.needsPaidSubscription;
  return {
- headline: '100 inboxes for $1 today',
- subheadline: 'One secure checkout. Your saved card is charged $49.99 after 7 days, then every 4 weeks until cancelled.'
+ headline: 'No Active Subscription Found',
+ subheadline: usedIntroOffer
+ ? 'Create 100 inboxes and send 15,000 cold emails for $9.99.'
+ : 'Create 100 inboxes and send 15,000 cold emails for just $1.',
+ description: usedIntroOffer
+ ? '$9.99 is billed every four weeks. Cancel anytime in one click.'
+ : '$9.99 will be charged after the five-day free trial. Cancel anytime in one click.'
  };
  }
 
@@ -119,6 +125,7 @@ export default function BillingCheckout() {
  <div className="billing-page-copy">
  <h1>{copy.headline}</h1>
  {copy.subheadline ? <p>{copy.subheadline}</p> : null}
+ {copy.description ? <p className="billing-page-description">{copy.description}</p> : null}
  </div>
 
  {loading || !billing ? (
@@ -133,6 +140,7 @@ export default function BillingCheckout() {
  />
  ) : (
  <BillingCheckoutEmbed
+ billing={billing}
  intent={intent}
  onSynced={() => {
  redirectToOrders();

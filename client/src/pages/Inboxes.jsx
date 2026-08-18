@@ -121,16 +121,20 @@ export default function Inboxes() {
       {downloadNotice && (
         <div className="modal-overlay" onClick={() => setDownloadNotice(false)}>
           <div className="modal wide upgrade-modal" onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title">10 Inboxes Downloaded</h2>
-            <p className="modal-subtitle">
-              To Download All, Upgrade Or Leave A Review
+            <div className="trial-limit-mark" aria-hidden="true">10%</div>
+            <h2 className="modal-title">90% Inboxes Hidden</h2>
+            <p className="modal-subtitle trial-limit-copy">
+              To prevent free trial abuse, we only allow the first 10 inboxes to be downloaded.
+              <br />
+              <br />
+              To download all 100 inboxes, either upgrade or share an honest video testimonial.
             </p>
             <div className="modal-actions centered">
-              <button className="btn accent" onClick={() => void openUpgrade('standard')}>
+              <button className="btn accent" onClick={() => void openUpgrade('starter')}>
                 Upgrade
               </button>
-              <a className="btn ghost" href={reviewUrl} target="_blank" rel="noreferrer">
-                Leave A Video Review
+              <a className="btn ghost" href={reviewUrl} target="_blank" rel="noopener noreferrer">
+                Leave Testimonial
               </a>
             </div>
           </div>

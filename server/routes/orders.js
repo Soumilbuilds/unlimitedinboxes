@@ -76,7 +76,7 @@ router.use(async (req, _res, next) => {
  if (latest) {
  req.session.user.plan = latest.plan || 'free';
  req.session.user.id = latest.id;
- req.session.user.billingStatus = latest.xpay_subscription_status || null;
+ req.session.user.billingStatus = latest.whop_membership_status || latest.xpay_subscription_status || null;
  req.accessState = getUserAccessState(latest);
  }
  } else if (req.session.user?.id) {
@@ -243,11 +243,14 @@ function maybeMaskOrder(order, accessState) {
  };
  }
  const created = Array.isArray(order.created_mailboxes) ? order.created_mailboxes : [];
+ const visibleCount = Number.isFinite(accessState?.downloadAllowance)
+ ? Math.max(0, Number(accessState.downloadAllowance))
+ : created.length;
  return {
  ...order,
  error_message: maskSensitiveText(order.error_message),
  created_mailboxes: created.map((m, idx) => {
- if (accessState?.canDownloadAll) {
+ if (idx < visibleCount) {
  return m;
  }
  return {

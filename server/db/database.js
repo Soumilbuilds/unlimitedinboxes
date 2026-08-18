@@ -125,6 +125,12 @@ db.exec(`
     event_type TEXT,
     processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS whop_webhook_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT,
+    processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 function tableColumns(tableName) {
@@ -218,6 +224,14 @@ function ensureUserBillingColumns() {
   ensureColumn('users', 'whop_membership_id', 'TEXT');
   ensureColumn('users', 'whop_membership_status', 'TEXT');
   ensureColumn('users', 'whop_plan_id', 'TEXT');
+  ensureColumn('users', 'whop_checkout_session_id', 'TEXT');
+  ensureColumn('users', 'whop_member_id', 'TEXT');
+  ensureColumn('users', 'whop_payment_method_id', 'TEXT');
+  ensureColumn('users', 'whop_billing_address', 'TEXT');
+  ensureColumn('users', 'whop_current_period_end', 'TEXT');
+  ensureColumn('users', 'whop_cancel_at_period_end', 'INTEGER DEFAULT 0');
+  ensureColumn('users', 'whop_intro_offer_used', 'INTEGER DEFAULT 0');
+  ensureColumn('users', 'whop_last_payment_status', 'TEXT');
 
   ensureColumn('users', 'inboxes_used', 'INTEGER DEFAULT 0');
   ensureColumn('users', 'inboxes_limit', 'INTEGER DEFAULT 0');
@@ -302,6 +316,18 @@ export function getUserByXpayCheckoutId(checkoutId) {
   return db.prepare('SELECT * FROM users WHERE xpay_checkout_id = ?').get(checkoutId);
 }
 
+export function getUserByWhopMembershipId(membershipId) {
+  return db.prepare('SELECT * FROM users WHERE whop_membership_id = ?').get(membershipId);
+}
+
+export function getUserByWhopMemberId(memberId) {
+  return db.prepare('SELECT * FROM users WHERE whop_member_id = ?').get(memberId);
+}
+
+export function getUserByWhopCheckoutSessionId(sessionId) {
+  return db.prepare('SELECT * FROM users WHERE whop_checkout_session_id = ?').get(sessionId);
+}
+
 const USER_BILLING_COLUMNS = new Set([
   'plan',
   'lifetime_completed_orders',
@@ -335,6 +361,14 @@ const USER_BILLING_COLUMNS = new Set([
   'whop_membership_id',
   'whop_membership_status',
   'whop_plan_id',
+  'whop_checkout_session_id',
+  'whop_member_id',
+  'whop_payment_method_id',
+  'whop_billing_address',
+  'whop_current_period_end',
+  'whop_cancel_at_period_end',
+  'whop_intro_offer_used',
+  'whop_last_payment_status',
   'inboxes_used',
   'inboxes_limit',
   'has_concurrent_orders'
@@ -621,6 +655,20 @@ export function recordXpayWebhookEvent(eventId, eventType) {
 export function forgetXpayWebhookEvent(eventId) {
   if (!eventId) return;
   db.prepare('DELETE FROM xpay_webhook_events WHERE event_id = ?').run(String(eventId));
+}
+
+export function recordWhopWebhookEvent(eventId, eventType) {
+  if (!eventId) return true;
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO whop_webhook_events (event_id, event_type)
+    VALUES (?, ?)
+  `).run(String(eventId), String(eventType || ''));
+  return result.changes > 0;
+}
+
+export function forgetWhopWebhookEvent(eventId) {
+  if (!eventId) return;
+  db.prepare('DELETE FROM whop_webhook_events WHERE event_id = ?').run(String(eventId));
 }
 
 // --- TENANTS ---

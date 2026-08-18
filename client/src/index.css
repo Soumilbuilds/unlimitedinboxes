@@ -751,27 +751,35 @@ a {
 
 .billing-page {
   min-height: 100vh;
-  background: #000;
+  background:
+    radial-gradient(circle at 50% -10%, rgba(35, 211, 145, 0.13), transparent 38%),
+    radial-gradient(circle at 100% 70%, rgba(28, 137, 255, 0.08), transparent 32%),
+    #000;
   display: grid;
   place-items: center;
   padding: 52px 24px 64px;
 }
 
 .billing-page-shell {
-  width: min(760px, 100%);
+  width: min(720px, 100%);
   display: grid;
-  gap: 18px;
+  gap: 24px;
+  padding: 36px;
+  border: 1px solid rgba(134, 247, 184, 0.17);
+  border-radius: 24px;
+  background: linear-gradient(155deg, rgba(15, 17, 16, 0.96), rgba(4, 5, 5, 0.98));
+  box-shadow: 0 34px 100px rgba(0, 0, 0, 0.64), 0 0 0 1px rgba(255,255,255,0.025) inset;
 }
 
 .billing-page-copy {
   display: grid;
-  gap: 6px;
+  gap: 10px;
   text-align: center;
 }
 
 .billing-page-copy h1 {
   margin: 0;
-  font-size: 34px;
+  font-size: clamp(32px, 5vw, 46px);
   line-height: 1.04;
   letter-spacing: -0.04em;
 }
@@ -780,8 +788,14 @@ a {
   margin: 0;
   font-size: 16px;
   line-height: 1.4;
-  color: rgba(245, 245, 245, 0.7);
+  color: rgba(245, 245, 245, 0.78);
   font-weight: 600;
+}
+
+.billing-page-copy .billing-page-description {
+  color: rgba(245, 245, 245, 0.53);
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .billing-page-loading {
@@ -790,6 +804,16 @@ a {
   place-items: center;
   gap: 14px;
   text-align: center;
+}
+
+.billing-page-loading.compact {
+  min-height: 260px;
+}
+
+.billing-page-loading.compact p {
+  margin: 0;
+  color: rgba(245, 245, 245, 0.62);
+  font-size: 13px;
 }
 
 .billing-page-empty {
@@ -852,6 +876,110 @@ a {
   font-size: 12px;
   color: rgba(245, 245, 245, 0.4);
   margin: 0;
+}
+
+.whop-checkout-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.checkout-email-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 0 16px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.checkout-field-label {
+  color: rgba(245, 245, 245, 0.43);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.checkout-email-value {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(245, 245, 245, 0.9);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.checkout-verified-badge {
+  padding: 5px 8px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid rgba(134, 247, 184, 0.23);
+  border-radius: 999px;
+  background: rgba(134, 247, 184, 0.07);
+}
+
+.whop-checkout-frame {
+  min-height: 320px;
+  overflow: hidden;
+  border-radius: 16px;
+  transition: opacity 180ms ease;
+}
+
+.whop-checkout-frame.is-submitting {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.checkout-get-access {
+  width: 100%;
+  min-height: 54px;
+  border: 0;
+  border-radius: 12px;
+  background: linear-gradient(110deg, #8af6ba, #5ae8cf 55%, #70d8ff);
+  color: #03110b;
+  font-size: 15px;
+  font-weight: 800;
+  box-shadow: 0 14px 34px rgba(80, 233, 183, 0.18);
+}
+
+.checkout-get-access:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+  box-shadow: 0 18px 42px rgba(80, 233, 183, 0.25);
+}
+
+.checkout-get-access:disabled {
+  cursor: wait;
+  filter: saturate(0.4);
+  opacity: 0.55;
+}
+
+.trial-limit-mark {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 20px;
+  place-items: center;
+  color: var(--accent);
+  font-size: 17px;
+  font-weight: 800;
+  border: 1px solid rgba(134, 247, 184, 0.3);
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(134, 247, 184, 0.13), rgba(112, 216, 255, 0.05));
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.32);
+}
+
+.modal.upgrade-modal .trial-limit-copy {
+  max-width: 500px;
+  margin-right: auto;
+  margin-left: auto;
+  color: rgba(245, 245, 245, 0.7);
 }
 
 .billing-overdue-panel {
@@ -1230,6 +1358,11 @@ a {
 
   .billing-page {
     padding: 28px 14px 40px;
+  }
+
+  .billing-page-shell {
+    padding: 26px 18px;
+    border-radius: 20px;
   }
 
   .billing-page-copy h1 {

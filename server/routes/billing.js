@@ -13,6 +13,11 @@ import {
  recordXpayWebhookEvent,
  forgetXpayWebhookEvent,
  updateUserBillingById,
+ getUserByWhopMembershipId,
+ getUserByWhopMemberId,
+ getUserByWhopCheckoutSessionId,
+ recordWhopWebhookEvent,
+ forgetWhopWebhookEvent,
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
 import {
@@ -27,6 +32,19 @@ import {
  isSubscriptionActive,
 } from '../services/xpay.js';
 import { MANAGED_BILLING_INTERVAL_DAYS } from '../services/recurringBilling.js';
+import {
+ whop,
+ WHOP_COMPANY_ID,
+ WHOP_PLAN_IDS,
+ buildWhopMembershipUpdates,
+ createWhopCheckout,
+ getWhopPlanDetails,
+ getWhopStatus,
+ isWhopMembershipActive,
+ selectInitialWhopPlan,
+ serializeBillingAddress,
+ unwrapWhopWebhook,
+} from '../services/whop.js';
 
 const router = Router();
 
@@ -35,7 +53,7 @@ function serializeSessionUser(user) {
  id: user.id,
  email: user.email,
  plan: user.plan || 'free',
- billingStatus: user.xpay_subscription_status || null,
+ billingStatus: user.whop_membership_status || user.xpay_subscription_status || null,
  };
 }
 
@@ -61,6 +79,111 @@ function getRequestBaseUrl(req) {
  }
 
  return process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com';
+}
+
+function parseStoredAddress(value) {
+ if (!value) return null;
+ try {
+ return typeof value === 'string' ? JSON.parse(value) : value;
+ } catch {
+ return null;
+ }
+}
+
+function resolveWhopUser(data = {}) {
+ const metadata = data.metadata || {};
+ const metadataUserId = metadata.user_id || metadata.app_user_id;
+ if (metadataUserId) {
+ const user = getUserById(Number(metadataUserId));
+ if (user) return user;
+ }
+
+ const checkoutId = data.checkout_configuration_id || data.checkout_configuration?.id;
+ if (checkoutId) {
+ const user = getUserByWhopCheckoutSessionId(String(checkoutId));
+ if (user) return user;
+ }
+ if (data.id && String(data.id).startsWith('mem_')) {
+ const user = getUserByWhopMembershipId(String(data.id));
+ if (user) return user;
+ }
+ if (data.membership?.id) {
+ const user = getUserByWhopMembershipId(String(data.membership.id));
+ if (user) return user;
+ }
+ if (data.member?.id) {
+ const user = getUserByWhopMemberId(String(data.member.id));
+ if (user) return user;
+ }
+
+ const email = data.user?.email || data.member?.user?.email || metadata.email;
+ return email ? getUserByEmail(String(email).trim().toLowerCase()) : null;
+}
+
+function whopCompanyMatches(data = {}) {
+ const companyId = data.company?.id || data.company_id;
+ return !companyId || String(companyId) === WHOP_COMPANY_ID;
+}
+
+function whopDataBelongsToUser(data, user) {
+ const metadata = data?.metadata || {};
+ const metadataUserId = metadata.user_id || metadata.app_user_id;
+ if (metadataUserId) return String(metadataUserId) === String(user.id);
+ const checkoutId = data?.checkout_configuration_id || data?.checkout_configuration?.id;
+ if (checkoutId && String(checkoutId) === String(user.whop_checkout_session_id || '')) return true;
+ if (data?.membership?.id && String(data.membership.id) === String(user.whop_membership_id || '')) return true;
+ if (data?.member?.id && String(data.member.id) === String(user.whop_member_id || '')) return true;
+ const email = data?.user?.email || data?.member?.user?.email || metadata.email;
+ return Boolean(email && String(email).trim().toLowerCase() === String(user.email).trim().toLowerCase());
+}
+
+async function persistWhopMembership(user, membership) {
+ if (!user || !membership || !whopCompanyMatches(membership)) return null;
+ const metadataUserId = membership.metadata?.user_id || membership.metadata?.app_user_id;
+ if (metadataUserId && String(metadataUserId) !== String(user.id)) return null;
+ const updates = buildWhopMembershipUpdates(membership);
+ if (getWhopStatus(membership.status) === 'canceling' && ['trial', 'basic', 'starter', 'growth', 'unlimited', 'agency'].includes(user.plan)) {
+ updates.plan = user.plan;
+ }
+ updateUserBillingById(user.id, updates);
+ return getUserById(user.id) || user;
+}
+
+async function persistWhopPayment(user, payment, { succeeded = false } = {}) {
+ if (!user || !payment || !whopCompanyMatches(payment)) return null;
+ const metadataUserId = payment.metadata?.user_id || payment.metadata?.app_user_id;
+ if (metadataUserId && String(metadataUserId) !== String(user.id)) return null;
+
+ const planId = payment.plan?.id || payment.metadata?.plan_id;
+ const details = getWhopPlanDetails(planId);
+ if (!details) return null;
+
+ let membership = null;
+ if (payment.membership?.id) {
+ try {
+ membership = await whop.memberships.retrieve(String(payment.membership.id));
+ } catch (error) {
+ console.warn('[whop] Could not retrieve payment membership:', error.message);
+ }
+ }
+
+ const status = getWhopStatus(membership?.status || payment.membership?.status);
+ const updates = membership
+ ? buildWhopMembershipUpdates(membership)
+ : buildWhopMembershipUpdates({
+ id: payment.membership?.id,
+ status: status || (succeeded ? 'active' : 'past_due'),
+ plan: { id: planId },
+ member: payment.member,
+ });
+ updates.whop_last_payment_status = succeeded ? 'paid' : 'failed';
+ if (payment.payment_method?.id) updates.whop_payment_method_id = String(payment.payment_method.id);
+ const address = serializeBillingAddress(payment.billing_address);
+ if (address) updates.whop_billing_address = address;
+ if (details.intro && succeeded) updates.whop_intro_offer_used = 1;
+
+ updateUserBillingById(user.id, updates);
+ return getUserById(user.id) || user;
 }
 
 function isSuccessfulIntroIntent(intent, user, intentId) {
@@ -170,79 +293,45 @@ router.post('/checkout', async (req, res) => {
  const user = getCurrentUser(req);
  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
- if (!xpay.configured) {
- return res.status(503).json({ error: 'xPay is not configured.' });
+ if (!whop.configured) {
+ return res.status(503).json({ error: 'Whop is not configured.' });
  }
 
  const currentAccess = getUserAccessState(user);
- if (currentAccess.canAccessApp || user.xpay_intro_offer_used) {
+ if (currentAccess.canAccessApp) {
  return res.status(409).json({
- error: 'The $1 intro offer has already been paid for this account. Please do not pay again.',
- billing: serializeXpayBillingState(user),
+ error: 'This account already has active billing access.',
+ billing: serializeBillingState(user),
  });
  }
 
  try {
  const baseUrl = getRequestBaseUrl(req);
- const customerId = await ensureXpayCustomer(user, baseUrl);
-
- if (user.xpay_checkout_id && user.xpay_checkout_url) {
- try {
- const storedResponse = await xpay.request(
- 'GET',
- `/payments/v2/get-intent/${encodeURIComponent(user.xpay_checkout_id)}`
- );
- const storedIntent = storedResponse?.data || storedResponse;
- const storedStatus = String(storedIntent?.status || '').toUpperCase();
- if (storedStatus === 'SUCCESS' && isSuccessfulIntroIntent(storedIntent, user, user.xpay_checkout_id)) {
- const refreshed = activateIntroOffer(user, paymentCompletedAt(storedIntent));
- await recoverLivePaymentMethod(refreshed);
- return res.status(409).json({
- error: 'The $1 payment is already complete. Please do not pay again.',
- billing: serializeXpayBillingState(getUserById(user.id) || refreshed),
- });
- }
- if (['CREATED', 'CHECKOUT_OPENED', 'PENDING', 'PROCESSING'].includes(storedStatus)) {
- return res.json({
- redirectUrl: user.xpay_checkout_url,
- sessionId: user.xpay_checkout_id,
- provider: 'xpay',
- reused: true,
- });
- }
- } catch (error) {
- console.warn('[billing] Could not resume the stored intro checkout:', error.message);
- }
- }
-
- const receiptId = `trial_auth_u${user.id}`;
- const checkout = await createOneTimeCheckout(xpay, {
+ const planId = selectInitialWhopPlan(user);
+ const checkout = await createWhopCheckout(whop, {
  user,
- customerId,
- amount: TRIAL_AUTH_CHARGE_CENTS,
- description: '$1 today for 100 inboxes; $49.99 in 7 days and every 4 weeks until cancelled.',
- receiptId,
- metadata: {
- purpose: 'trial_auth',
- user_id: String(user.id),
- },
- callbackUrl: `${baseUrl}/billing?billing=success&intent=starter`,
- cancelUrl: `${baseUrl}/billing?intent=starter`,
+ planId,
+ redirectUrl: `${baseUrl}/billing?billing=success&provider=whop`,
+ sourceUrl: `${baseUrl}/billing`,
  });
 
  updateUserBillingById(user.id, {
- xpay_checkout_id: checkout.intentId,
- xpay_checkout_url: checkout.redirectUrl,
- xpay_subscription_plan: 'trial',
+ whop_checkout_session_id: checkout.sessionId,
  });
 
  return res.json({
- redirectUrl: checkout.redirectUrl,
- sessionId: checkout.intentId,
- provider: 'xpay',
+ redirectUrl: checkout.purchaseUrl,
+ purchaseUrl: checkout.purchaseUrl,
+ sessionId: checkout.sessionId,
+ checkoutConfigId: checkout.sessionId,
+ planId,
+ offerType: planId === WHOP_PLAN_IDS.intro ? 'intro' : 'standard',
+ email: user.email,
+ billingAddress: parseStoredAddress(user.whop_billing_address),
+ provider: 'whop',
  });
  } catch (error) {
- console.error('[billing] xPay checkout failed:', error);
+ console.error('[billing] Whop checkout failed:', error);
  return res.status(500).json({ error: error.message || 'Failed to create payment session.' });
  }
 });
@@ -253,7 +342,7 @@ router.post('/subscribe', async (req, res) => {
  }
 
  return res.status(410).json({
- error: 'A second subscription checkout is no longer required. The saved card from the $1 checkout is billed automatically after 7 days.',
+ error: 'A second subscription checkout is not required. Whop bills the saved card after the five-day trial.',
  });
 });
 
@@ -265,7 +354,7 @@ router.get('/status', async (req, res) => {
  const user = getCurrentUser(req);
  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
- const billingStatus = serializeXpayBillingState(user);
+ const billingStatus = serializeBillingState(user);
 
  req.session.user = serializeSessionUser(user);
  return res.json(billingStatus);
@@ -278,6 +367,25 @@ router.post('/cancel', async (req, res) => {
 
  const user = getCurrentUser(req);
  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+ if (user.whop_membership_id) {
+ try {
+ const membership = await whop.memberships.cancel(user.whop_membership_id, {
+ cancellation_mode: 'at_period_end',
+ });
+ const latest = await persistWhopMembership(user, membership) || getUserById(user.id) || user;
+ req.session.user = serializeSessionUser(latest);
+ return res.json({
+ success: true,
+ provider: 'whop',
+ message: 'Automatic renewal is cancelled. Access continues until the end of the billing period.',
+ accessUntil: latest.whop_current_period_end || null,
+ });
+ } catch (error) {
+ console.error('[billing] Whop cancel failed:', error);
+ return res.status(500).json({ error: error.message || 'Failed to cancel subscription.' });
+ }
+ }
 
  if (user.xpay_billing_mode === 'managed' || user.xpay_recurring_enabled) {
  const latest = cancelManagedRecurringBilling(user.id);
@@ -324,6 +432,42 @@ router.post('/return', async (req, res) => {
 
  const user = getCurrentUser(req);
  if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+ const whopPaymentId = req.body?.paymentId
+ || req.body?.receiptId
+ || req.query?.payment_id
+ || req.query?.receipt_id
+ || null;
+ if (whopPaymentId && String(whopPaymentId).startsWith('pay_')) {
+ try {
+ const payment = await whop.payments.retrieve(String(whopPaymentId));
+ if (!whopCompanyMatches(payment)
+ || !getWhopPlanDetails(payment?.plan?.id || payment?.metadata?.plan_id)
+ || !whopDataBelongsToUser(payment, user)) {
+ return res.status(400).json({ error: 'Payment does not match this account.' });
+ }
+ if (getWhopStatus(payment?.status) !== 'paid') {
+ return res.status(409).json({ error: 'Payment is not complete yet.' });
+ }
+ const refreshed = await persistWhopPayment(user, payment, { succeeded: true });
+ if (!refreshed) return res.status(400).json({ error: 'Payment could not be linked to this account.' });
+ const suppliedAddress = serializeBillingAddress(req.body?.billingAddress);
+ if (suppliedAddress && !refreshed.whop_billing_address) {
+ updateUserBillingById(user.id, { whop_billing_address: suppliedAddress });
+ }
+ const latest = getUserById(user.id) || refreshed;
+ req.session.user = serializeSessionUser(latest);
+ return res.json({
+ success: true,
+ paymentId: String(whopPaymentId),
+ provider: 'whop',
+ billing: serializeBillingState(latest),
+ });
+ } catch (error) {
+ console.error('[billing] Whop return failed:', error);
+ return res.status(500).json({ error: error.message || 'Failed to verify payment.' });
+ }
+ }
 
  const requestedSessionId = req.body?.sessionId
  || req.body?.setupId
@@ -384,11 +528,11 @@ router.get('/quota', async (req, res) => {
  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
  return res.json({
- plan: user.xpay_subscription_plan || user.plan || 'free',
+ plan: getUserAccessState(user).effectivePlan,
  inboxesUsed: user.inboxes_used || 0,
  inboxesLimit: user.inboxes_limit || 0,
  hasConcurrentOrders: Boolean(user.has_concurrent_orders),
- subscriptionStatus: user.xpay_subscription_status || null,
+ subscriptionStatus: user.whop_membership_status || user.xpay_subscription_status || null,
  });
 });
 
@@ -432,6 +576,74 @@ router.post('/auto-charge-quota', async (req, res) => {
  return res.status(500).json({ error: error.message || 'Payment processing failed.' });
  }
 });
+
+async function handleWhopWebhook(req, res) {
+ if (!whop.configured || !whop.webhookConfigured) {
+ return res.status(503).json({ error: 'Whop webhook verification is not configured.' });
+ }
+
+ let event;
+ try {
+ const headers = Object.fromEntries(
+ Object.entries(req.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(',') : String(value || '')])
+ );
+ event = unwrapWhopWebhook(whop, req.rawBody, headers);
+ } catch (error) {
+ console.error('[whop-webhook] Signature verification failed:', error.message);
+ return res.status(400).json({ error: 'Invalid signature.' });
+ }
+
+ if (event.company_id && String(event.company_id) !== WHOP_COMPANY_ID) {
+ return res.status(400).json({ error: 'Webhook company does not match.' });
+ }
+
+ if (!recordWhopWebhookEvent(event.id, event.type)) {
+ return res.json({ received: true, duplicate: true, event_type: event.type });
+ }
+
+ try {
+ const data = event.data || {};
+ const user = resolveWhopUser(data);
+
+ switch (event.type) {
+ case 'membership.activated':
+ case 'membership.deactivated':
+ case 'membership.cancel_at_period_end_changed':
+ if (user) await persistWhopMembership(user, data);
+ break;
+
+ case 'payment.succeeded':
+ if (user) await persistWhopPayment(user, data, { succeeded: true });
+ break;
+
+ case 'payment.failed':
+ if (user) await persistWhopPayment(user, data, { succeeded: false });
+ break;
+
+ case 'setup_intent.succeeded':
+ if (user) {
+ updateUserBillingById(user.id, {
+ whop_member_id: data.member?.id ? String(data.member.id) : undefined,
+ whop_payment_method_id: data.payment_method?.id ? String(data.payment_method.id) : undefined,
+ whop_last_payment_status: 'active',
+ });
+ }
+ break;
+
+ default:
+ break;
+ }
+
+ return res.json({ received: true, event_type: event.type });
+ } catch (error) {
+ forgetWhopWebhookEvent(event.id);
+ console.error('[whop-webhook] Handler error:', error);
+ return res.status(500).json({ error: 'Webhook handler failed.' });
+ }
+}
+
+router.post('/webhook/whop', handleWhopWebhook);
+router.post('/whop-webhook', handleWhopWebhook);
 
 router.post('/webhook', async (req, res) => {
  if (!xpay.configured) {
@@ -723,46 +935,75 @@ router.post('/webhook', async (req, res) => {
  }
 });
 
-export function serializeXpayBillingState(user) {
+export function serializeBillingState(user) {
  const access = getUserAccessState(user);
- const status = user.xpay_subscription_status
- ? String(user.xpay_subscription_status).toUpperCase()
- : null;
+ const hasLegacyXpay = Boolean(
+ user.xpay_customer_id
+ || user.xpay_subscription_id
+ || user.xpay_subscription_status
+ || user.xpay_checkout_id
+ || user.xpay_intro_offer_used
+ || user.xpay_billing_mode
+ );
+ const usesWhop = Boolean(
+ user.whop_membership_id
+ || user.whop_membership_status
+ || user.whop_checkout_session_id
+ || !hasLegacyXpay
+ );
+ const status = usesWhop
+ ? (user.whop_membership_status ? String(user.whop_membership_status).toUpperCase() : null)
+ : (user.xpay_subscription_status ? String(user.xpay_subscription_status).toUpperCase() : null);
  const plan = access.effectivePlan;
 
  const isActive = access.isActive;
- const isPastDue = ['UNPAID', 'PAST_DUE'].includes(status);
+ const isPastDue = ['UNPAID', 'PAST_DUE', 'UNRESOLVED'].includes(status);
 
- const trialEnd = user.xpay_trial_ends_at ? new Date(user.xpay_trial_ends_at) : null;
- const isTrialing = trialEnd && trialEnd > new Date() && status === 'TRIALING';
+ const trialEndsAt = usesWhop ? user.whop_current_period_end : user.xpay_trial_ends_at;
+ const isTrialing = access.isTrialing;
+ const nextChargeAmounts = {
+ [WHOP_PLAN_IDS.intro]: 999,
+ [WHOP_PLAN_IDS.basic]: 999,
+ [WHOP_PLAN_IDS.starter]: 3999,
+ [WHOP_PLAN_IDS.growth]: 9999,
+ [WHOP_PLAN_IDS.unlimited]: 19999,
+ [WHOP_PLAN_IDS.agency]: 29999,
+ };
 
  return {
  ...access,
- provider: 'xpay',
+ provider: usesWhop ? 'whop' : 'xpay',
  plan,
  status,
  isActive,
  isTrialing,
  isPastDue,
- trialEndsAt: user.xpay_trial_ends_at || null,
- customerId: user.xpay_customer_id || null,
- subscriptionId: user.xpay_subscription_id || null,
- billingMode: user.xpay_billing_mode || (user.xpay_subscription_id ? 'native' : null),
+ trialEndsAt: trialEndsAt || null,
+ customerId: usesWhop ? user.whop_member_id : user.xpay_customer_id || null,
+ memberId: usesWhop ? user.whop_member_id || null : null,
+ subscriptionId: usesWhop ? user.whop_membership_id || null : user.xpay_subscription_id || null,
+ membershipId: usesWhop ? user.whop_membership_id || null : null,
+ planId: usesWhop ? user.whop_plan_id || null : user.xpay_plan_id || null,
+ checkoutSessionId: usesWhop ? user.whop_checkout_session_id || null : user.xpay_checkout_id || null,
+ billingMode: usesWhop ? 'native' : (user.xpay_billing_mode || (user.xpay_subscription_id ? 'native' : null)),
  lifecycle: isPastDue
  ? 'past_due'
  : (access.isTrialing
  ? 'trialing'
  : (status === 'ACTIVE' && access.canAccessApp
  ? 'active'
- : (user.xpay_cancel_at_period_end ? 'cancelled' : (user.xpay_checkout_id ? 'intro_pending' : 'fresh')))),
- recurringEnabled: Boolean(user.xpay_recurring_enabled),
- cancelAtPeriodEnd: Boolean(user.xpay_cancel_at_period_end),
- paymentMethodOnFile: Boolean(user.xpay_default_payment_method_id),
- nextChargeAt: user.xpay_next_charge_at || null,
- nextChargeAmount: PLANS.starter.amountCents,
- billingIntervalDays: MANAGED_BILLING_INTERVAL_DAYS,
- paymentMethodStatus: user.xpay_last_payment_status || null,
- lastPaymentStatus: user.xpay_last_payment_status || null,
+ : ((usesWhop ? user.whop_cancel_at_period_end : user.xpay_cancel_at_period_end)
+ ? 'cancelled'
+ : ((usesWhop ? user.whop_checkout_session_id : user.xpay_checkout_id) ? 'intro_pending' : 'fresh')))),
+ recurringEnabled: usesWhop ? Boolean(user.whop_membership_id) : Boolean(user.xpay_recurring_enabled),
+ cancelAtPeriodEnd: Boolean(usesWhop ? user.whop_cancel_at_period_end : user.xpay_cancel_at_period_end),
+ paymentMethodOnFile: Boolean(usesWhop ? user.whop_payment_method_id : user.xpay_default_payment_method_id),
+ billingAddress: usesWhop ? parseStoredAddress(user.whop_billing_address) : null,
+ nextChargeAt: usesWhop ? user.whop_current_period_end || null : user.xpay_next_charge_at || null,
+ nextChargeAmount: usesWhop ? (nextChargeAmounts[user.whop_plan_id] || null) : PLANS.starter.amountCents,
+ billingIntervalDays: 28,
+ paymentMethodStatus: usesWhop ? user.whop_last_payment_status || null : user.xpay_last_payment_status || null,
+ lastPaymentStatus: usesWhop ? user.whop_last_payment_status || null : user.xpay_last_payment_status || null,
  invoiceId: user.xpay_last_invoice_id || null,
  invoiceStatus: user.xpay_last_invoice_status || null,
  invoiceUrl: user.xpay_last_invoice_url || null,
@@ -771,6 +1012,9 @@ export function serializeXpayBillingState(user) {
  hasConcurrentOrders: Boolean(user.has_concurrent_orders),
  };
 }
+
+// Kept for callers and tests written against the legacy export name.
+export const serializeXpayBillingState = serializeBillingState;
 
 export { autoSetupBilling };
 export default router;

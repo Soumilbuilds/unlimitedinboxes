@@ -169,23 +169,24 @@ fuser -k 3000/tcp
 
 Those bypass or fight systemd and can leave production running stale code.
 
-## Stripe Checkout Flow
+## Whop Checkout Flow
 
-Billing uses Stripe-hosted Checkout, not embedded Elements.
+Whop is the active processor for new subscriptions. Stripe and xPay remain legacy compatibility code only.
 
-- Backend creates hosted Checkout Sessions with `success_url` and `cancel_url`.
-- User email is prefilled through the Checkout Session customer/customer email params.
-- Frontend posts to `/api/billing/checkout` and immediately redirects to Stripe's hosted `url`.
-- Stripe returns users to `/billing?billing=success&session_id=...&intent=...`.
-- The return page calls `/api/billing/return`, refreshes billing status, then sends the user to `/orders`.
-
-Do not reintroduce `@stripe/react-stripe-js`, `@stripe/stripe-js`, `CheckoutElementsProvider`, `PaymentElement`, `ui_mode: elements`, or embedded checkout unless the whole product decision changes.
+- Backend creates a Whop Checkout Configuration with account-bound metadata.
+- Frontend renders that configuration through `@whop/checkout/react`.
+- The authenticated email is prefilled and hidden inside the embed.
+- A complete stored billing address is prefilled and hidden; otherwise the address form remains visible.
+- Checkout uses `setupFutureUsage="off_session"` so Whop saves the payment method for future authorized charges.
+- The browser sends Whop's receipt ID to `/api/billing/return`; the server retrieves and verifies the payment before granting access.
+- Whop webhooks at `/api/billing/webhook/whop` are signature-verified and idempotent.
 
 ## Billing Access Rules
 
-- Active trial (`trialing`) can access the app, create one completed order, and download 10 inboxes.
-- Active Standard subscription can access the app, create more than one completed order, download all inboxes, and process one order at a time.
-- Active Advanced subscription can access the app, download all inboxes, use custom mailbox names, and process multiple orders at once.
+- The introductory Whop plan charges $1, includes a five-day trial, and renews at $9.99 every 28 days.
+- Active trial (`trialing`) can create up to 100 inboxes, but only the first 10 credentials are visible/downloadable.
+- Active paid Basic can create and download 100 inboxes.
+- The configured future tiers are 500 inboxes at $39.99, 1,500 at $99.99, unlimited sequential processing at $199.99, and unlimited parallel processing at $299.99 per 28 days.
 - Missing trial/subscription is a soft gate: let the user enter the app, but when they click New Order or try to process an order, show the trial/upgrade prompt and send them to hosted Checkout.
 - Overdue billing (`past_due`, `unpaid`, or `incomplete`) is a hard gate: redirect to `/billing?intent=retry` and show the open Stripe invoice or billing portal.
 - Completed trial order usage is tracked on the user record so deleting an old completed order does not reset the one-order trial limit.
