@@ -57,3 +57,20 @@ test('an expired cancelled trial cannot retain access forever', () => {
  assert.equal(status.isTrialing, false);
  assert.equal(status.blockingReason, 'subscription_cancelled');
 });
+
+test('an active legacy xPay customer keeps access after the Whop migration', () => {
+ const status = serializeXpayBillingState({
+  id: 7,
+  email: 'legacy@example.com',
+  plan: 'starter',
+  xpay_customer_id: 'cus_legacy',
+  xpay_subscription_id: 'sub_legacy',
+  xpay_subscription_plan: 'starter',
+  xpay_subscription_status: 'ACTIVE',
+  inboxes_used: 12,
+ });
+
+ assert.equal(status.provider, 'xpay');
+ assert.equal(status.canAccessApp, true);
+ assert.equal(status.inboxesLimit, 500);
+});

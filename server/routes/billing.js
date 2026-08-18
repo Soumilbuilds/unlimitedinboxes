@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { randomUUID } from 'node:crypto';
 import {
  getUserByEmail,
  getUserById,
@@ -18,6 +19,13 @@ import {
  getUserByWhopCheckoutSessionId,
  recordWhopWebhookEvent,
  forgetWhopWebhookEvent,
+ createWhopPlanChange,
+ getWhopPlanChangeById,
+ getActiveWhopPlanChange,
+ getWhopPlanChangeByPaymentId,
+ updateWhopPlanChange,
+ bindWhopPlanChangePayment,
+ claimWhopPlanChange,
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
 import {
@@ -36,14 +44,23 @@ import {
  whop,
  WHOP_COMPANY_ID,
  WHOP_PLAN_IDS,
+ WHOP_PLAN_CATALOG,
  buildWhopMembershipUpdates,
+ createWhopSavedCardPayment,
  createWhopCheckout,
+ getWhopCatalogPlan,
  getWhopPlanDetails,
  getWhopStatus,
+ getWhopEventTime,
+ isWhopEventNewer,
+ isWhopPaymentFailed,
+ isWhopPaymentPaid,
  isWhopMembershipActive,
  selectInitialWhopPlan,
+ serializeWhopPlanCatalog,
  serializeBillingAddress,
  unwrapWhopWebhook,
+ validateWhopPromoCode,
 } from '../services/whop.js';
 
 const router = Router();
@@ -137,11 +154,22 @@ function whopDataBelongsToUser(data, user) {
  return Boolean(email && String(email).trim().toLowerCase() === String(user.email).trim().toLowerCase());
 }
 
-async function persistWhopMembership(user, membership) {
+async function persistWhopMembership(user, membership, { eventAt = null, force = false } = {}) {
  if (!user || !membership || !whopCompanyMatches(membership)) return null;
  const metadataUserId = membership.metadata?.user_id || membership.metadata?.app_user_id;
  if (metadataUserId && String(metadataUserId) !== String(user.id)) return null;
+ const incomingId = membership.id ? String(membership.id) : '';
+ const incomingEventAt = getWhopEventTime(eventAt || membership.updated_at || membership.created_at)
+ || (force ? new Date().toISOString() : null);
+ if (!force && !isWhopEventNewer(incomingEventAt, user.whop_membership_event_at)) return user;
+ const incomingActive = isWhopMembershipActive(membership.status);
+ const existingActive = isWhopMembershipActive(user.whop_membership_status);
+ if (user.whop_membership_id && incomingId && incomingId !== String(user.whop_membership_id)
+ && (existingActive || !incomingActive)) {
+ return user;
+ }
  const updates = buildWhopMembershipUpdates(membership);
+ if (incomingEventAt) updates.whop_membership_event_at = incomingEventAt;
  if (getWhopStatus(membership.status) === 'canceling' && ['trial', 'basic', 'starter', 'growth', 'unlimited', 'agency'].includes(user.plan)) {
  updates.plan = user.plan;
  }
@@ -149,7 +177,7 @@ async function persistWhopMembership(user, membership) {
  return getUserById(user.id) || user;
 }
 
-async function persistWhopPayment(user, payment, { succeeded = false } = {}) {
+async function persistWhopPayment(user, payment, { succeeded = false, eventAt = null, force = false } = {}) {
  if (!user || !payment || !whopCompanyMatches(payment)) return null;
  const metadataUserId = payment.metadata?.user_id || payment.metadata?.app_user_id;
  if (metadataUserId && String(metadataUserId) !== String(user.id)) return null;
@@ -157,6 +185,9 @@ async function persistWhopPayment(user, payment, { succeeded = false } = {}) {
  const planId = payment.plan?.id || payment.metadata?.plan_id;
  const details = getWhopPlanDetails(planId);
  if (!details) return null;
+ const incomingEventAt = getWhopEventTime(eventAt || payment.updated_at || payment.created_at)
+ || (force ? new Date().toISOString() : null);
+ if (!force && !isWhopEventNewer(incomingEventAt, user.whop_payment_event_at)) return user;
 
  let membership = null;
  if (payment.membership?.id) {
@@ -177,6 +208,7 @@ async function persistWhopPayment(user, payment, { succeeded = false } = {}) {
  member: payment.member,
  });
  updates.whop_last_payment_status = succeeded ? 'paid' : 'failed';
+ if (incomingEventAt) updates.whop_payment_event_at = incomingEventAt;
  if (payment.payment_method?.id) updates.whop_payment_method_id = String(payment.payment_method.id);
  const address = serializeBillingAddress(payment.billing_address);
  if (address) updates.whop_billing_address = address;
@@ -285,6 +317,208 @@ async function autoSetupBilling(user, baseUrl) {
  };
 }
 
+function startPlanChange(user, target, promo = null) {
+ const active = getActiveWhopPlanChange(user.id);
+ if (active) {
+ const sameTarget = String(active.target_plan_id) === String(target.planId);
+ const samePromo = String(active.promo_code_id || '') === String(promo?.id || '');
+ if (sameTarget && samePromo) return { ...active, reused: true };
+ const error = new Error('Another plan change is already being processed. Please wait for it to finish before selecting a different plan.');
+ error.code = 'PLAN_CHANGE_IN_PROGRESS';
+ throw error;
+ }
+ const change = createWhopPlanChange({
+ id: randomUUID(),
+ userId: user.id,
+ targetPlanId: target.planId,
+ sourceMembershipId: user.whop_membership_id || null,
+ promoCodeId: promo?.id || null,
+ });
+ updateUserBillingById(user.id, {
+ whop_pending_plan_id: target.planId,
+ whop_pending_promo_code_id: promo?.id || null,
+ whop_pending_payment_id: null,
+ whop_plan_change_requested_at: change.requested_at,
+ });
+ return change;
+}
+
+function getPlanRank(planKeyOrId) {
+ return WHOP_PLAN_CATALOG.findIndex((plan) => plan.key === planKeyOrId || plan.planId === planKeyOrId);
+}
+
+function serializePlansForUser(user) {
+ const access = getUserAccessState(user);
+ const currentPlanKey = access.canAccessApp ? (access.isTrialing ? 'trial' : access.effectivePlan) : 'free';
+ const currentRank = getPlanRank(currentPlanKey);
+ const pendingPlan = getWhopCatalogPlan(user.whop_pending_plan_id);
+ return serializeWhopPlanCatalog().map((plan) => ({
+ ...plan,
+ current: plan.key === currentPlanKey,
+ action: plan.trial
+ ? (access.introOfferUsed ? (access.isTrialing ? 'current' : 'trial_consumed') : 'start_trial')
+ : (plan.rank === currentRank ? 'current' : (plan.rank > currentRank ? 'upgrade' : 'downgrade')),
+ disabled: plan.trial && access.introOfferUsed && !access.isTrialing,
+ pending: pendingPlan?.key === plan.key,
+ }));
+}
+
+async function createPlanFallbackCheckout(user, target, baseUrl, promo = null, existingChange = null) {
+ const change = existingChange || startPlanChange(user, target, promo);
+ const checkout = await createWhopCheckout(whop, {
+ user,
+ planId: target.planId,
+ redirectUrl: `${baseUrl}/plans?billing=success&provider=whop`,
+ purpose: 'plan_change_checkout',
+ idempotencyKey: `ui.plan-change.${change.id}.checkout`,
+ planChangeId: change.id,
+ });
+ updateWhopPlanChange(change.id, {
+ status: 'awaiting_checkout',
+ checkout_id: checkout.sessionId,
+ checkout_url: checkout.purchaseUrl,
+ });
+ updateUserBillingById(user.id, {
+ whop_checkout_session_id: checkout.sessionId,
+ whop_pending_plan_id: target.planId,
+ whop_pending_promo_code_id: promo?.id || null,
+ whop_plan_change_requested_at: new Date().toISOString(),
+ });
+ return {
+ checkoutRequired: true,
+ sessionId: checkout.sessionId,
+ purchaseUrl: checkout.purchaseUrl,
+ planId: target.planId,
+ promoCode: promo?.code || null,
+ email: user.email,
+ billingAddress: parseStoredAddress(user.whop_billing_address),
+ checkout: {
+ sessionId: checkout.sessionId, purchaseUrl: checkout.purchaseUrl, planId: target.planId,
+ promoCode: promo?.code || null,
+ },
+ planChangeId: change.id,
+ };
+}
+
+async function retrievePendingPromo(user) {
+ if (!user?.whop_pending_promo_code_id) return null;
+ try {
+ const promo = await whop.promoCodes.retrieve(String(user.whop_pending_promo_code_id));
+ return promo?.id ? { id: String(promo.id), code: String(promo.code || '') } : null;
+ } catch {
+ return null;
+ }
+}
+
+function resolvePaymentPlanChange(user, payment) {
+ const paymentId = payment?.id ? String(payment.id) : '';
+ const metadataChangeId = payment?.metadata?.plan_change_id;
+ const change = (metadataChangeId && getWhopPlanChangeById(metadataChangeId))
+ || getWhopPlanChangeByPaymentId(paymentId);
+ if (!change || String(change.user_id) !== String(user.id)) return null;
+ return change;
+}
+
+async function applyVerifiedPlanPayment(user, payment, expectedChange = null) {
+ if (!whopCompanyMatches(payment) || !whopDataBelongsToUser(payment, user)) {
+ throw new Error('The plan payment does not match this account.');
+ }
+ const change = expectedChange || resolvePaymentPlanChange(user, payment);
+ if (!change) throw new Error('The plan payment is not bound to an active plan change.');
+ if (change.status === 'completed') return getUserById(user.id) || user;
+ if (['failed', 'superseded'].includes(change.status)) throw new Error('This plan change is no longer active.');
+ const metadataChangeId = payment.metadata?.plan_change_id;
+ if (!['plan_change', 'plan_change_checkout'].includes(String(payment.metadata?.purpose || ''))) {
+ throw new Error('The payment was not created for a plan change.');
+ }
+ if (metadataChangeId && String(metadataChangeId) !== String(change.id)) {
+ throw new Error('The plan payment does not match this plan change.');
+ }
+ const paymentCheckoutId = payment.checkout_configuration_id || payment.checkout_configuration?.id;
+ if (change.checkout_id && paymentCheckoutId
+ && String(paymentCheckoutId) !== String(change.checkout_id)) {
+ throw new Error('The payment does not match the secure checkout for this plan change.');
+ }
+ const paymentId = String(payment.id || '');
+ if (!paymentId || (change.payment_id && paymentId !== String(change.payment_id))) {
+ throw new Error('The plan payment reference does not match this plan change.');
+ }
+ if (change.status === 'cleanup_pending') {
+ const currentUser = getUserById(user.id) || user;
+ const oldMembershipId = change.source_membership_id;
+ if (oldMembershipId && oldMembershipId !== currentUser.whop_membership_id) {
+ await whop.memberships.cancel(oldMembershipId, { cancellation_mode: 'immediate' });
+ }
+ updateWhopPlanChange(change.id, { status: 'completed', completed_at: new Date().toISOString(), last_error: null });
+ updateUserBillingById(user.id, {
+ whop_pending_plan_id: null,
+ whop_pending_promo_code_id: null,
+ whop_pending_payment_id: null,
+ whop_plan_change_requested_at: null,
+ });
+ return getUserById(user.id) || currentUser;
+ }
+ if (!bindWhopPlanChangePayment(change.id, paymentId)) throw new Error('The plan payment could not be bound to this plan change.');
+ const targetPlanId = change.target_plan_id;
+ const paidPlanId = payment.plan?.id || payment.metadata?.plan_id;
+ if (String(paidPlanId || '') !== String(targetPlanId)) throw new Error('The plan payment does not match the selected plan.');
+ if (!isWhopPaymentPaid(payment)) return null;
+
+ const claimed = claimWhopPlanChange(change.id, paymentId);
+ if (!claimed) {
+ const current = getWhopPlanChangeById(change.id);
+ if (current?.status === 'completed') return getUserById(user.id) || user;
+ return null;
+ }
+
+ const oldMembershipId = claimed.source_membership_id;
+ const newMembershipId = payment.membership?.id ? String(payment.membership.id) : '';
+ if (!newMembershipId) throw new Error('Whop confirmed payment but has not attached the new membership yet.');
+ const latest = await persistWhopPayment(user, payment, { succeeded: true, force: true });
+ if (!latest) throw new Error('Whop confirmed payment but did not attach a valid membership.');
+ if (oldMembershipId && oldMembershipId !== newMembershipId) {
+ try {
+ await whop.memberships.cancel(oldMembershipId, { cancellation_mode: 'immediate' });
+ } catch (error) {
+ updateWhopPlanChange(change.id, { status: 'cleanup_pending', last_error: error.message || 'Old membership cleanup failed.' });
+ throw error;
+ }
+ }
+ updateWhopPlanChange(change.id, { status: 'completed', completed_at: new Date().toISOString(), last_error: null });
+ updateUserBillingById(user.id, {
+ whop_pending_plan_id: null,
+ whop_pending_promo_code_id: null,
+ whop_pending_payment_id: null,
+ whop_plan_change_requested_at: null,
+ });
+ return getUserById(user.id) || latest;
+}
+
+async function chargePendingDowngrade(user, existingChange = null, baseUrl = process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com') {
+ const change = existingChange || getActiveWhopPlanChange(user?.id);
+ const target = getWhopCatalogPlan(change?.target_plan_id);
+ if (!change || change.status !== 'scheduled' || !target || target.trial) return null;
+ if (!user.whop_member_id || !user.whop_payment_method_id) {
+ return createPlanFallbackCheckout(user, target, baseUrl, null, change);
+ }
+ const payment = await createWhopSavedCardPayment(whop, {
+ user,
+ planId: target.planId,
+ promoCodeId: change.promo_code_id || null,
+ idempotencyKey: `ui.plan-change.${change.id}.payment`,
+ planChangeId: change.id,
+ });
+ bindWhopPlanChangePayment(change.id, payment.id);
+ updateWhopPlanChange(change.id, { status: 'pending_payment' });
+ updateUserBillingById(user.id, { whop_pending_payment_id: payment.id ? String(payment.id) : null });
+ if (isWhopPaymentPaid(payment)) return applyVerifiedPlanPayment(user, payment, change);
+ if (isWhopPaymentFailed(payment)) {
+ updateUserBillingById(user.id, { whop_last_payment_status: 'failed' });
+ return createPlanFallbackCheckout(user, target, baseUrl, null, change);
+ }
+ return null;
+}
+
 router.post('/checkout', async (req, res) => {
  if (!req.session.authenticated || !req.session.user?.id) {
  return res.status(401).json({ error: 'Unauthorized' });
@@ -313,6 +547,7 @@ router.post('/checkout', async (req, res) => {
  planId,
  redirectUrl: `${baseUrl}/billing?billing=success&provider=whop`,
  sourceUrl: `${baseUrl}/billing`,
+ idempotencyKey: `ui.initial-checkout.${user.id}.${planId}`,
  });
 
  updateUserBillingById(user.id, {
@@ -358,6 +593,239 @@ router.get('/status', async (req, res) => {
 
  req.session.user = serializeSessionUser(user);
  return res.json(billingStatus);
+});
+
+router.get('/plans', (req, res) => {
+ if (!req.session.authenticated || !req.session.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+ const user = getCurrentUser(req);
+ if (!user) return res.status(401).json({ error: 'Unauthorized' });
+ const access = getUserAccessState(user);
+ const pendingChange = getActiveWhopPlanChange(user.id);
+ return res.json({
+ plans: serializePlansForUser(user),
+ currentPlan: access.canAccessApp ? (access.isTrialing ? 'trial' : access.effectivePlan) : 'free',
+ pendingPlan: getWhopCatalogPlan(user.whop_pending_plan_id)?.key || null,
+ trialConsumed: access.introOfferUsed,
+ paymentMethodOnFile: Boolean(user.whop_member_id && user.whop_payment_method_id),
+ billingAddressOnFile: Boolean(parseStoredAddress(user.whop_billing_address)),
+ currentPeriodEnd: user.whop_current_period_end || null,
+ cancelAtPeriodEnd: Boolean(user.whop_cancel_at_period_end),
+ legacyBilling: Boolean(access.canAccessApp && !user.whop_membership_id && user.xpay_subscription_id),
+ pendingCheckout: pendingChange?.status === 'awaiting_checkout' ? {
+ sessionId: pendingChange.checkout_id,
+ purchaseUrl: pendingChange.checkout_url,
+ planChangeId: pendingChange.id,
+ } : null,
+ });
+});
+
+router.post('/plans/coupon', async (req, res) => {
+ if (!req.session.authenticated || !req.session.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+ const user = getCurrentUser(req);
+ if (!user) return res.status(401).json({ error: 'Unauthorized' });
+ if (!whop.configured) return res.status(503).json({ error: 'Whop is not configured.' });
+ try {
+ const promo = await validateWhopPromoCode(whop, {
+ code: req.body?.code,
+ planKey: req.body?.planKey || req.body?.plan || req.body?.planId,
+ });
+ return res.json({ promo });
+ } catch (error) {
+ return res.status(400).json({ error: error.message || 'Coupon validation failed.' });
+ }
+});
+
+router.post('/plans/change', async (req, res) => {
+ if (!req.session.authenticated || !req.session.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+ let user = getCurrentUser(req);
+ if (!user) return res.status(401).json({ error: 'Unauthorized' });
+ if (!whop.configured) return res.status(503).json({ error: 'Whop is not configured.' });
+
+ const target = getWhopCatalogPlan(req.body?.planKey || req.body?.plan || req.body?.planId);
+ if (!target || target.trial) return res.status(400).json({ error: 'Select a paid plan.' });
+ const access = getUserAccessState(user);
+ if (access.canAccessApp && !user.whop_membership_id && user.xpay_subscription_id) {
+ return res.status(409).json({
+ error: 'This legacy subscription must be migrated before changing plans. Contact support so you are not billed twice.',
+ code: 'LEGACY_SUBSCRIPTION_MIGRATION_REQUIRED',
+ });
+ }
+ const currentKey = access.isTrialing ? 'trial' : access.effectivePlan;
+ const currentRank = getPlanRank(currentKey);
+ const targetRank = getPlanRank(target.key);
+ if (access.canAccessApp && currentKey === target.key) return res.status(409).json({ error: 'This is already your current plan.' });
+
+ let promo = null;
+ if (String(req.body?.couponCode || '').trim()) {
+ try {
+ promo = await validateWhopPromoCode(whop, { code: req.body.couponCode, planKey: target.key });
+ } catch (error) {
+ return res.status(400).json({ error: error.message || 'Coupon validation failed.' });
+ }
+ }
+ try {
+ const change = startPlanChange(user, target, promo);
+ if (change.reused && change.status === 'awaiting_checkout') {
+ return res.json({
+ checkoutRequired: true,
+ sessionId: change.checkout_id,
+ purchaseUrl: change.checkout_url,
+ planId: target.planId,
+ promoCode: promo?.code || null,
+ email: user.email,
+ billingAddress: parseStoredAddress(user.whop_billing_address),
+ planChangeId: change.id,
+ });
+ }
+ if (change.reused && ['pending_payment', 'applying'].includes(change.status)) {
+ return res.status(202).json({
+ success: true,
+ paymentPending: true,
+ paymentId: change.payment_id,
+ targetPlan: target.key,
+ });
+ }
+ if (change.reused && change.status === 'scheduled') {
+ return res.json({
+ scheduled: true,
+ effectiveAt: change.effective_at || user.whop_current_period_end || null,
+ currentPlan: currentKey,
+ pendingPlan: target.key,
+ message: `Your ${target.name} plan will begin after the current billing period ends.`,
+ });
+ }
+ if (targetRank < currentRank && access.canAccessApp && user.whop_membership_id) {
+ if (!user.whop_member_id || !user.whop_payment_method_id) {
+ return res.status(402).json(await createPlanFallbackCheckout(user, target, getRequestBaseUrl(req), promo, change));
+ }
+ const membership = await whop.memberships.cancel(user.whop_membership_id, { cancellation_mode: 'at_period_end' });
+ updateWhopPlanChange(change.id, {
+ status: 'scheduled',
+ effective_at: getWhopEventTime(membership.renewal_period_end) || user.whop_current_period_end || null,
+ });
+ await persistWhopMembership(user, membership, { force: true });
+ user = getUserById(user.id) || user;
+ return res.json({
+ scheduled: true,
+ effectiveAt: user.whop_current_period_end || null,
+ currentPlan: currentKey,
+ pendingPlan: target.key,
+ message: `Your ${target.name} plan will begin after the current billing period ends.`,
+ });
+ }
+
+ if (!user.whop_member_id || !user.whop_payment_method_id) {
+ return res.json(await createPlanFallbackCheckout(user, target, getRequestBaseUrl(req), promo, change));
+ }
+
+ const payment = await createWhopSavedCardPayment(whop, {
+ user,
+ planId: target.planId,
+ promoCodeId: promo?.id,
+ idempotencyKey: `ui.plan-change.${change.id}.payment`,
+ planChangeId: change.id,
+ });
+ bindWhopPlanChangePayment(change.id, payment.id);
+ updateWhopPlanChange(change.id, { status: 'pending_payment' });
+ updateUserBillingById(user.id, {
+ whop_pending_plan_id: target.planId,
+ whop_pending_promo_code_id: promo?.id || null,
+ whop_pending_payment_id: payment.id ? String(payment.id) : null,
+ whop_plan_change_requested_at: new Date().toISOString(),
+ });
+
+ if (isWhopPaymentPaid(payment)) {
+ const latest = await applyVerifiedPlanPayment(user, payment, change);
+ req.session.user = serializeSessionUser(latest);
+ return res.json({ success: true, paid: true, billing: serializeBillingState(latest) });
+ }
+ if (isWhopPaymentFailed(payment)) {
+ updateUserBillingById(user.id, { whop_last_payment_status: 'failed' });
+ return res.status(402).json(await createPlanFallbackCheckout(user, target, getRequestBaseUrl(req), promo, change));
+ }
+ return res.status(202).json({ success: true, paymentPending: true, paymentId: payment.id, targetPlan: target.key });
+ } catch (error) {
+ console.error('[billing] Whop plan change failed:', error);
+ const failedChange = getActiveWhopPlanChange(user.id);
+ if (failedChange?.status === 'created') updateWhopPlanChange(failedChange.id, { status: 'failed', last_error: error.message });
+ if (targetRank < currentRank && access.canAccessApp) {
+ return res.status(500).json({ error: error.message || 'Could not schedule the downgrade.' });
+ }
+ if (user.whop_member_id && user.whop_payment_method_id) {
+ try {
+ return res.status(402).json(await createPlanFallbackCheckout(user, target, getRequestBaseUrl(req), promo));
+ } catch (checkoutError) {
+ console.error('[billing] Whop plan fallback failed:', checkoutError);
+ }
+ }
+ return res.status(400).json({ error: error.message || 'Plan change failed.' });
+ }
+});
+
+router.post('/plans/change/confirm', async (req, res) => {
+ if (!req.session.authenticated || !req.session.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+ const user = getCurrentUser(req);
+ if (!user) return res.status(401).json({ error: 'Unauthorized' });
+ const paymentId = String(req.body?.paymentId || '');
+ const change = getWhopPlanChangeByPaymentId(paymentId) || getActiveWhopPlanChange(user.id);
+ if (!/^pay_[A-Za-z0-9_-]+$/.test(paymentId)
+ || !change || String(change.user_id) !== String(user.id)
+ || paymentId !== String(change.payment_id || '')) {
+ return res.status(400).json({ error: 'The plan payment reference is invalid.' });
+ }
+ try {
+ const payment = await whop.payments.retrieve(paymentId);
+ const target = getWhopCatalogPlan(change.target_plan_id);
+ if (!target || target.trial) return res.status(409).json({ error: 'No plan change is pending.' });
+ if (isWhopPaymentPaid(payment)) {
+ const latest = await applyVerifiedPlanPayment(user, payment, change);
+ if (!latest) return res.status(202).json({ success: true, paymentPending: true, paymentId });
+ req.session.user = serializeSessionUser(latest);
+ return res.json({ success: true, paid: true, billing: serializeBillingState(latest) });
+ }
+ if (isWhopPaymentFailed(payment)) {
+ const promo = await retrievePendingPromo(user);
+ updateWhopPlanChange(change.id, { status: 'failed', last_error: 'Saved payment method charge failed.' });
+ return res.status(402).json(await createPlanFallbackCheckout(user, target, getRequestBaseUrl(req), promo));
+ }
+ return res.status(202).json({ success: true, paymentPending: true, paymentId });
+ } catch (error) {
+ return res.status(500).json({ error: error.message || 'Failed to verify plan payment.' });
+ }
+});
+
+router.post('/plans/confirm', async (req, res) => {
+ if (!req.session.authenticated || !req.session.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+ const user = getCurrentUser(req);
+ if (!user) return res.status(401).json({ error: 'Unauthorized' });
+ const paymentId = String(req.body?.paymentId || req.body?.receiptId || '');
+ if (!/^pay_[A-Za-z0-9_-]+$/.test(paymentId)) return res.status(400).json({ error: 'The plan payment reference is invalid.' });
+ try {
+ const payment = await whop.payments.retrieve(paymentId);
+ const change = resolvePaymentPlanChange(user, payment);
+ if (!change || (change.payment_id && String(change.payment_id) !== paymentId)) {
+ return res.status(400).json({ error: 'The plan payment does not match this plan change.' });
+ }
+ const target = getWhopCatalogPlan(change.target_plan_id);
+ if (!target || target.trial) return res.status(409).json({ error: 'No plan change is pending.' });
+ if (!whopCompanyMatches(payment) || !whopDataBelongsToUser(payment, user)) {
+ return res.status(400).json({ error: 'The plan payment does not match this account.' });
+ }
+ if (isWhopPaymentPaid(payment)) {
+ const latest = await applyVerifiedPlanPayment(user, payment, change);
+ if (!latest) return res.status(202).json({ success: true, paymentPending: true, paymentId });
+ req.session.user = serializeSessionUser(latest);
+ return res.json({ success: true, paid: true, billing: serializeBillingState(latest) });
+ }
+ if (isWhopPaymentFailed(payment)) {
+ const promo = await retrievePendingPromo(user);
+ updateWhopPlanChange(change.id, { status: 'failed', last_error: 'Checkout payment failed.' });
+ return res.status(402).json(await createPlanFallbackCheckout(user, target, getRequestBaseUrl(req), promo));
+ }
+ return res.status(202).json({ success: true, paymentPending: true, paymentId });
+ } catch (error) {
+ return res.status(500).json({ error: error.message || 'Failed to verify plan payment.' });
+ }
 });
 
 router.post('/cancel', async (req, res) => {
@@ -449,7 +917,13 @@ router.post('/return', async (req, res) => {
  if (getWhopStatus(payment?.status) !== 'paid') {
  return res.status(409).json({ error: 'Payment is not complete yet.' });
  }
- const refreshed = await persistWhopPayment(user, payment, { succeeded: true });
+ const targetPlanId = payment.plan?.id || payment.metadata?.plan_id;
+ const planChange = resolvePaymentPlanChange(user, payment);
+ const isPlanChange = ['plan_change', 'plan_change_checkout'].includes(String(payment.metadata?.purpose || ''))
+ && planChange && String(planChange.target_plan_id) === String(targetPlanId || '');
+ const refreshed = isPlanChange
+ ? await applyVerifiedPlanPayment(user, payment, planChange)
+ : await persistWhopPayment(user, payment, { succeeded: true, force: true });
  if (!refreshed) return res.status(400).json({ error: 'Payment could not be linked to this account.' });
  const suppliedAddress = serializeBillingAddress(req.body?.billingAddress);
  if (suppliedAddress && !refreshed.whop_billing_address) {
@@ -527,11 +1001,12 @@ router.get('/quota', async (req, res) => {
  const user = getCurrentUser(req);
  if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
+ const access = getUserAccessState(user);
  return res.json({
- plan: getUserAccessState(user).effectivePlan,
+ plan: access.effectivePlan,
  inboxesUsed: user.inboxes_used || 0,
  inboxesLimit: user.inboxes_limit || 0,
- hasConcurrentOrders: Boolean(user.has_concurrent_orders),
+ hasConcurrentOrders: access.hasConcurrentOrders,
  subscriptionStatus: user.whop_membership_status || user.xpay_subscription_status || null,
  });
 });
@@ -604,28 +1079,71 @@ async function handleWhopWebhook(req, res) {
  try {
  const data = event.data || {};
  const user = resolveWhopUser(data);
+ const eventAt = event.created_at || event.occurred_at || data.updated_at || data.created_at || null;
 
  switch (event.type) {
  case 'membership.activated':
- case 'membership.deactivated':
  case 'membership.cancel_at_period_end_changed':
- if (user) await persistWhopMembership(user, data);
+ if (user) await persistWhopMembership(user, data, { eventAt });
+ break;
+
+ case 'membership.deactivated':
+ if (user) {
+ const latest = await persistWhopMembership(user, data, { eventAt });
+ const change = getActiveWhopPlanChange(user.id);
+ if (change?.status === 'scheduled'
+ && String(change.source_membership_id || '') === String(data.id || '')
+ && String(data.id || '') === String(user.whop_membership_id || '')) {
+ try {
+ await chargePendingDowngrade(getUserById(user.id) || latest, change);
+ } catch (error) {
+ updateUserBillingById(user.id, { whop_last_payment_status: 'failed' });
+ console.error('[whop-webhook] Scheduled downgrade charge failed:', error.message);
+ }
+ }
+ }
  break;
 
  case 'payment.succeeded':
- if (user) await persistWhopPayment(user, data, { succeeded: true });
+ if (user) {
+ const targetPlanId = data.plan?.id || data.metadata?.plan_id;
+ const latestUser = getUserById(user.id) || user;
+ const change = resolvePaymentPlanChange(latestUser, data);
+ if (change && String(change.target_plan_id) === String(targetPlanId || '')
+ && ['plan_change', 'plan_change_checkout'].includes(String(data.metadata?.purpose || ''))) {
+ await applyVerifiedPlanPayment(latestUser, data, change);
+ } else {
+ await persistWhopPayment(latestUser, data, { succeeded: true, eventAt });
+ }
+ }
  break;
 
  case 'payment.failed':
- if (user) await persistWhopPayment(user, data, { succeeded: false });
+ if (user) {
+ if (['plan_change', 'plan_change_checkout'].includes(String(data.metadata?.purpose || ''))) {
+ const change = resolvePaymentPlanChange(user, data);
+ if (change && change.status !== 'completed') {
+ bindWhopPlanChangePayment(change.id, data.id);
+ updateWhopPlanChange(change.id, { status: 'failed', last_error: 'Whop reported that the plan payment failed.' });
+ const target = getWhopCatalogPlan(change.target_plan_id);
+ if (target) await createPlanFallbackCheckout(getUserById(user.id) || user, target,
+ process.env.APP_BASE_URL || 'https://app.unlimitedinboxes.com', null, change);
+ }
+ updateUserBillingById(user.id, { whop_last_payment_status: 'failed' });
+ } else {
+ await persistWhopPayment(user, data, { succeeded: false, eventAt });
+ }
+ }
  break;
 
  case 'setup_intent.succeeded':
  if (user) {
+ if (!isWhopEventNewer(eventAt, user.whop_payment_event_at)) break;
  updateUserBillingById(user.id, {
  whop_member_id: data.member?.id ? String(data.member.id) : undefined,
  whop_payment_method_id: data.payment_method?.id ? String(data.payment_method.id) : undefined,
  whop_last_payment_status: 'active',
+ whop_payment_event_at: getWhopEventTime(eventAt) || undefined,
  });
  }
  break;
@@ -1009,7 +1527,11 @@ export function serializeBillingState(user) {
  invoiceUrl: user.xpay_last_invoice_url || null,
  inboxesUsed: access.inboxesUsed,
  inboxesLimit: access.inboxesLimit,
- hasConcurrentOrders: Boolean(user.has_concurrent_orders),
+ hasConcurrentOrders: access.hasConcurrentOrders,
+ plans: serializePlansForUser(user),
+ currentPlan: access.canAccessApp ? (access.isTrialing ? 'trial' : access.effectivePlan) : 'free',
+ pendingPlan: getWhopCatalogPlan(user.whop_pending_plan_id)?.key || null,
+ trialConsumed: access.introOfferUsed,
  };
 }
 

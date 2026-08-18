@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import {
   getRedirectableDomains,
+  getUserById,
   getTenantByIdForUser,
   updateTenantCloudflare,
   updateTenantRedirect
 } from '../db/database.js';
 import { createZone, getZoneStatus, upsertZoneRedirect } from '../services/cloudflare.js';
+import { getUserAccessState } from '../services/access.js';
 
 const router = Router();
 
@@ -61,6 +63,10 @@ router.get('/', (req, res) => {
 
 router.put('/:tenantId', async (req, res) => {
   try {
+    const access = getUserAccessState(getUserById(req.session.user.id));
+    if (!access.canUseDomainRedirects) {
+      return res.status(403).json({ error: 'Domain redirects require a paid plan.' });
+    }
     const tenantId = parseInt(req.params.tenantId, 10);
     const tenant = getTenantByIdForUser(tenantId, req.session.user.id);
     if (!tenant) {

@@ -21,13 +21,13 @@ function getBillingCopy(intent, billing) {
  const usedIntroOffer = billing?.introOfferUsed || billing?.needsPaidSubscription;
  return {
  kind: 'initial',
- headline: 'No Active Subscription Found',
- primaryLine: usedIntroOffer
- ? 'Create 100 inboxes and send 15,000 emails for $9.99.'
- : 'Create 100 inboxes and send 15,000 emails for just $1 today.',
+ headline: usedIntroOffer
+ ? 'Create 100 Inboxes And Send 15,000 Emails For $9.99'
+ : 'Create 100 Inboxes And Send 15,000 Emails For Free',
+ primaryLine: 'No Active Subscription Found',
  terms: usedIntroOffer
- ? ['$9.99 Every 4 Weeks', 'One-Click Cancel']
- : ['5-Day Free Trial', '$9.99 Every 4 Weeks', 'One-Click Cancel']
+ ? ['$9.99 Every 4 Weeks', '1 Click Cancel']
+ : ['5 Day Free Trial', '$1 Authorisation Amount (Refunded)', '$9/mo After Trial', '1 Click Cancel', 'No Charge During Trial']
  };
  }
 
@@ -43,13 +43,13 @@ function getBillingCopy(intent, billing) {
  const usedIntroOffer = billing?.introOfferUsed || billing?.needsPaidSubscription;
  return {
  kind: 'initial',
- headline: 'No Active Subscription Found',
- primaryLine: usedIntroOffer
- ? 'Create 100 inboxes and send 15,000 emails for $9.99.'
- : 'Create 100 inboxes and send 15,000 emails for just $1 today.',
+ headline: usedIntroOffer
+ ? 'Create 100 Inboxes And Send 15,000 Emails For $9.99'
+ : 'Create 100 Inboxes And Send 15,000 Emails For Free',
+ primaryLine: 'No Active Subscription Found',
  terms: usedIntroOffer
- ? ['$9.99 Every 4 Weeks', 'One-Click Cancel']
- : ['5-Day Free Trial', '$9.99 Every 4 Weeks', 'One-Click Cancel']
+ ? ['$9.99 Every 4 Weeks', '1 Click Cancel']
+ : ['5 Day Free Trial', '$1 Authorisation Amount (Refunded)', '$9/mo After Trial', '1 Click Cancel', 'No Charge During Trial']
  };
  }
 
@@ -64,9 +64,9 @@ function getBillingCopy(intent, billing) {
  if (billing?.blockingReason) {
  return {
  kind: 'initial',
- headline: 'No Active Subscription Found',
- primaryLine: 'Create 100 inboxes and send 15,000 emails for just $1 today.',
- terms: ['5-Day Free Trial', '$9.99 Every 4 Weeks', 'One-Click Cancel']
+ headline: 'Create 100 Inboxes And Send 15,000 Emails For Free',
+ primaryLine: 'No Active Subscription Found',
+ terms: ['5 Day Free Trial', '$1 Authorisation Amount (Refunded)', '$9/mo After Trial', '1 Click Cancel', 'No Charge During Trial']
  };
  }
 

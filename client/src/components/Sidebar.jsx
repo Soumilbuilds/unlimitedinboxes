@@ -7,6 +7,7 @@ export default function Sidebar() {
   const { logout, user } = useAuth();
   const { billing, openUpgrade, openBillingPortal, reviewUrl } = useBilling();
   const canAccessApi = billing?.canAccessApi ?? false;
+  const canUseDomainRedirects = billing?.canUseDomainRedirects ?? !billing?.isTrialing;
   const navigate = useNavigate();
   const settingsRef = useRef(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -61,8 +62,13 @@ export default function Sidebar() {
         <NavLink to="/tenants" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
           Tenants
         </NavLink>
-        <NavLink to="/redirects" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
-          Redirects
+        {canUseDomainRedirects && (
+          <NavLink to="/redirects" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
+            Redirects
+          </NavLink>
+        )}
+        <NavLink to="/plans" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
+          Plans
         </NavLink>
         {(billing?.canOpenInboxesPage ?? user?.plan === 'paid') && (
           <NavLink to="/inboxes" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>

@@ -131,6 +131,30 @@ db.exec(`
     event_type TEXT,
     processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS whop_plan_changes (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    target_plan_id TEXT NOT NULL,
+    source_membership_id TEXT,
+    promo_code_id TEXT,
+    payment_id TEXT UNIQUE,
+    checkout_id TEXT UNIQUE,
+    checkout_url TEXT,
+    status TEXT NOT NULL,
+    effective_at TEXT,
+    requested_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    last_error TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_whop_plan_changes_user
+    ON whop_plan_changes(user_id, requested_at DESC);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_whop_plan_changes_active_user
+    ON whop_plan_changes(user_id)
+    WHERE status IN ('created', 'pending_payment', 'awaiting_checkout', 'scheduled', 'applying', 'cleanup_pending');
 `);
 
 function tableColumns(tableName) {
@@ -232,6 +256,12 @@ function ensureUserBillingColumns() {
   ensureColumn('users', 'whop_cancel_at_period_end', 'INTEGER DEFAULT 0');
   ensureColumn('users', 'whop_intro_offer_used', 'INTEGER DEFAULT 0');
   ensureColumn('users', 'whop_last_payment_status', 'TEXT');
+  ensureColumn('users', 'whop_pending_plan_id', 'TEXT');
+  ensureColumn('users', 'whop_pending_promo_code_id', 'TEXT');
+  ensureColumn('users', 'whop_pending_payment_id', 'TEXT');
+  ensureColumn('users', 'whop_plan_change_requested_at', 'TEXT');
+  ensureColumn('users', 'whop_membership_event_at', 'TEXT');
+  ensureColumn('users', 'whop_payment_event_at', 'TEXT');
 
   ensureColumn('users', 'inboxes_used', 'INTEGER DEFAULT 0');
   ensureColumn('users', 'inboxes_limit', 'INTEGER DEFAULT 0');
@@ -369,6 +399,12 @@ const USER_BILLING_COLUMNS = new Set([
   'whop_cancel_at_period_end',
   'whop_intro_offer_used',
   'whop_last_payment_status',
+  'whop_pending_plan_id',
+  'whop_pending_promo_code_id',
+  'whop_pending_payment_id',
+  'whop_plan_change_requested_at',
+  'whop_membership_event_at',
+  'whop_payment_event_at',
   'inboxes_used',
   'inboxes_limit',
   'has_concurrent_orders'
@@ -393,6 +429,76 @@ export function updateUserBillingById(id, updates = {}) {
     WHERE id = @id
   `);
   return stmt.run(values);
+}
+
+const ACTIVE_PLAN_CHANGE_STATUSES = ['created', 'pending_payment', 'awaiting_checkout', 'scheduled', 'applying', 'cleanup_pending'];
+const PLAN_CHANGE_COLUMNS = new Set([
+  'target_plan_id', 'source_membership_id', 'promo_code_id', 'payment_id',
+  'checkout_id', 'checkout_url', 'status', 'effective_at', 'completed_at', 'last_error',
+]);
+
+export function createWhopPlanChange({ id, userId, targetPlanId, sourceMembershipId = null, promoCodeId = null }) {
+  const now = new Date().toISOString();
+  return db.transaction(() => {
+    db.prepare(`
+      INSERT INTO whop_plan_changes (
+        id, user_id, target_plan_id, source_membership_id, promo_code_id,
+        status, requested_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'created', ?, ?)
+    `).run(String(id), userId, String(targetPlanId), sourceMembershipId, promoCodeId, now, now);
+    return getWhopPlanChangeById(id);
+  })();
+}
+
+export function getWhopPlanChangeById(id) {
+  return id ? db.prepare('SELECT * FROM whop_plan_changes WHERE id = ?').get(String(id)) : null;
+}
+
+export function getActiveWhopPlanChange(userId) {
+  return db.prepare(`
+    SELECT * FROM whop_plan_changes
+    WHERE user_id = ? AND status IN (${ACTIVE_PLAN_CHANGE_STATUSES.map(() => '?').join(', ')})
+    ORDER BY requested_at DESC LIMIT 1
+  `).get(userId, ...ACTIVE_PLAN_CHANGE_STATUSES);
+}
+
+export function getWhopPlanChangeByPaymentId(paymentId) {
+  return paymentId ? db.prepare('SELECT * FROM whop_plan_changes WHERE payment_id = ?').get(String(paymentId)) : null;
+}
+
+export function updateWhopPlanChange(id, updates = {}) {
+  const entries = Object.entries(updates).filter(([key, value]) => PLAN_CHANGE_COLUMNS.has(key) && value !== undefined);
+  if (!entries.length) return getWhopPlanChangeById(id);
+  const values = Object.fromEntries(entries);
+  values.id = String(id);
+  values.updated_at = new Date().toISOString();
+  db.prepare(`
+    UPDATE whop_plan_changes
+    SET ${entries.map(([key]) => `${key} = @${key}`).join(', ')}, updated_at = @updated_at
+    WHERE id = @id
+  `).run(values);
+  return getWhopPlanChangeById(id);
+}
+
+export function bindWhopPlanChangePayment(id, paymentId) {
+  const result = db.prepare(`
+    UPDATE whop_plan_changes
+    SET payment_id = ?, updated_at = ?
+    WHERE id = ? AND (payment_id IS NULL OR payment_id = ?)
+      AND status IN ('created', 'pending_payment', 'awaiting_checkout', 'scheduled', 'applying')
+  `).run(String(paymentId), new Date().toISOString(), String(id), String(paymentId));
+  return result.changes ? getWhopPlanChangeById(id) : null;
+}
+
+export function claimWhopPlanChange(id, paymentId) {
+  const now = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE whop_plan_changes
+    SET payment_id = ?, status = 'applying', updated_at = ?
+    WHERE id = ? AND (payment_id IS NULL OR payment_id = ?)
+      AND status IN ('created', 'pending_payment', 'awaiting_checkout', 'scheduled')
+  `).run(String(paymentId), now, String(id), String(paymentId));
+  return result.changes ? getWhopPlanChangeById(id) : null;
 }
 
 // --- APP-MANAGED RECURRING BILLING ---

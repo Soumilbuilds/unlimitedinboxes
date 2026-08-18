@@ -4,7 +4,7 @@
 
 - Preserve the existing black interface with restrained green-to-blue accents.
 - Keep layouts symmetrical, spacious, responsive, and visually polished. Prefer quiet depth, crisp borders, and clear hierarchy over decorative clutter.
-- Use Title Case for customer-facing headings, button labels, short labels, and feature names. Use normal sentence case for explanatory paragraphs, with every sentence properly capitalized and punctuated.
+- Always Use Title Case For Customer-Facing Headings, Button Labels, Short Labels, Feature Names, And Compact Billing Terms. Capitalize The First Letter Of Every Word In These Elements. Use normal sentence case only for longer explanatory paragraphs, with every sentence properly capitalized and punctuated.
 - Keep billing and upgrade experiences inside dedicated, polished application surfaces. Payment details must remain inside the payment processor's hosted or embedded secure checkout.
 
 ## Billing

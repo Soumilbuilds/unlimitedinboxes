@@ -20,6 +20,63 @@ export const WHOP_PLAN_DETAILS = Object.freeze({
   [WHOP_PLAN_IDS.agency]: { key: 'agency', inboxesLimit: Infinity, concurrentOrders: Infinity },
 });
 
+const SENDS_PER_INBOX = 150;
+
+export const WHOP_PLAN_CATALOG = Object.freeze([
+  {
+    key: 'trial', name: 'Free Trial', planId: WHOP_PLAN_IDS.intro, priceCents: 0,
+    inboxesLimit: 10, monthlySends: 10 * SENDS_PER_INBOX, concurrentOrders: 1,
+    apiAndMcp: false, domainRedirects: false, customNames: false, trial: true,
+  },
+  {
+    key: 'basic', name: 'Tester', planId: WHOP_PLAN_IDS.basic, priceCents: 999,
+    inboxesLimit: 100, monthlySends: 100 * SENDS_PER_INBOX, concurrentOrders: 1,
+    apiAndMcp: true, domainRedirects: true, customNames: true,
+  },
+  {
+    key: 'starter', name: 'Growth', planId: WHOP_PLAN_IDS.starter, priceCents: 3999,
+    inboxesLimit: 500, monthlySends: 500 * SENDS_PER_INBOX, concurrentOrders: 1,
+    apiAndMcp: true, domainRedirects: true, customNames: true,
+  },
+  {
+    key: 'growth', name: 'Pro', planId: WHOP_PLAN_IDS.growth, priceCents: 9999,
+    inboxesLimit: 1500, monthlySends: 1500 * SENDS_PER_INBOX, concurrentOrders: 1,
+    apiAndMcp: true, domainRedirects: true, customNames: true,
+  },
+  {
+    key: 'unlimited', name: 'Scale', planId: WHOP_PLAN_IDS.unlimited, priceCents: 19999,
+    inboxesLimit: Infinity, monthlySends: Infinity, concurrentOrders: 1,
+    apiAndMcp: true, domainRedirects: true, customNames: true,
+  },
+  {
+    key: 'agency', name: 'Reseller', planId: WHOP_PLAN_IDS.agency, priceCents: 29999,
+    inboxesLimit: Infinity, monthlySends: Infinity, concurrentOrders: Infinity,
+    apiAndMcp: true, domainRedirects: true, customNames: true,
+  },
+]);
+
+export const WHOP_PAID_PLAN_CATALOG = Object.freeze(WHOP_PLAN_CATALOG.filter((plan) => !plan.trial));
+
+export function getWhopCatalogPlan(planKeyOrId) {
+  const wanted = String(planKeyOrId || '').trim().toLowerCase();
+  return WHOP_PLAN_CATALOG.find((plan) => plan.key === wanted || plan.planId.toLowerCase() === wanted) || null;
+}
+
+export function serializeWhopPlanCatalog() {
+  return WHOP_PLAN_CATALOG.map((plan, index) => ({
+    ...plan,
+    inboxesLimit: plan.inboxesLimit === Infinity ? null : plan.inboxesLimit,
+    monthlySends: plan.monthlySends === Infinity ? null : plan.monthlySends,
+    concurrentOrders: plan.concurrentOrders === Infinity ? null : plan.concurrentOrders,
+    unlimitedInboxes: plan.inboxesLimit === Infinity,
+    unlimitedSends: plan.monthlySends === Infinity,
+    unlimitedConcurrentOrders: plan.concurrentOrders === Infinity,
+    rank: index,
+    currency: 'USD',
+    billingIntervalDays: plan.trial ? null : 28,
+  }));
+}
+
 function sdkOptions() {
   const options = { apiKey: process.env.WHOP_API_KEY || 'not-configured' };
   if (process.env.WHOP_WEBHOOK_SECRET) {
@@ -51,6 +108,9 @@ export async function createWhopCheckout(client, {
   planId,
   redirectUrl,
   sourceUrl: _sourceUrl,
+  purpose,
+  idempotencyKey,
+  planChangeId,
 }) {
   if (!user?.id || !user?.email) throw new Error('A signed-in user is required.');
   if (!getWhopPlanDetails(planId)) throw new Error('Unknown Whop plan.');
@@ -62,10 +122,11 @@ export async function createWhopCheckout(client, {
       user_id: String(user.id),
       app_user_id: String(user.id),
       email: String(user.email).trim().toLowerCase(),
-      purpose: planId === WHOP_PLAN_IDS.intro ? 'intro_subscription' : 'subscription',
+      purpose: purpose || (planId === WHOP_PLAN_IDS.intro ? 'intro_subscription' : 'subscription'),
       plan_id: planId,
+      ...(planChangeId ? { plan_change_id: String(planChangeId) } : {}),
     },
-  });
+  }, idempotencyKey ? { idempotencyKey } : undefined);
 
   if (!checkout?.id || !checkout?.purchase_url) {
     throw new Error('Whop did not return a valid checkout configuration.');
@@ -76,6 +137,86 @@ export async function createWhopCheckout(client, {
     purchaseUrl: checkout.purchase_url,
     planId: checkout.plan?.id || planId,
   };
+}
+
+export async function listWhopPromoCodes(client, planId) {
+  const promos = [];
+  for await (const promo of client.promoCodes.list({
+    company_id: WHOP_COMPANY_ID,
+    status: 'active',
+    ...(planId ? { plan_ids: [planId] } : {}),
+    first: 100,
+  })) promos.push(promo);
+  return promos;
+}
+
+export async function validateWhopPromoCode(client, { code, planKey }) {
+  const wanted = String(code || '').trim().toUpperCase();
+  if (!/^[A-Z0-9_-]{2,64}$/.test(wanted)) throw new Error('Enter a valid coupon code.');
+  const target = getWhopCatalogPlan(planKey);
+  if (!target || target.trial) throw new Error('Select a paid plan before applying a coupon.');
+
+  const [targetPromos, companyPromos] = await Promise.all([
+    listWhopPromoCodes(client, target.planId),
+    listWhopPromoCodes(client),
+  ]);
+  const eligibleIds = new Set(targetPromos.map((promo) => String(promo.id || '')));
+  const promo = companyPromos.find((item) => {
+    if (String(item.code || '').trim().toUpperCase() !== wanted) return false;
+    return eligibleIds.has(String(item.id || '')) || !item.product;
+  });
+  if (!promo) throw new Error(`This coupon code is invalid or is not available for ${target.name}.`);
+  if (promo.expires_at && new Date(promo.expires_at).getTime() <= Date.now()) throw new Error('This coupon code has expired.');
+  if (!promo.unlimited_stock && Number(promo.uses || 0) >= Number(promo.stock || 0)) {
+    throw new Error('This coupon code has reached its usage limit.');
+  }
+
+  const promoType = promo.promo_type === 'flat_amount' ? 'flat_amount' : 'percentage';
+  const rawAmountOff = Math.max(0, Number(promo.amount_off || 0));
+  const amountOff = promoType === 'percentage' && rawAmountOff <= 1 ? rawAmountOff * 100 : rawAmountOff;
+  const savingsCents = Math.min(target.priceCents, promoType === 'percentage'
+    ? Math.round(target.priceCents * amountOff / 100)
+    : Math.round(amountOff * 100));
+  const durationMonths = Math.max(0, Math.floor(Number(promo.promo_duration_months || 0)));
+  const duration = promo.duration === 'forever' ? 'forever' : (promo.duration === 'repeating' || durationMonths > 1 ? 'repeating' : 'once');
+
+  return {
+    id: String(promo.id), code: wanted, promoType, amountOff,
+    savingsCents, priceCents: Math.max(0, target.priceCents - savingsCents),
+    duration, durationMonths,
+    durationLabel: duration === 'forever' ? 'Every billing period' : (duration === 'repeating' ? `${durationMonths} billing periods` : 'First billing period'),
+  };
+}
+
+export function isWhopPaymentPaid(payment = {}) {
+  return getWhopStatus(payment.status) === 'paid' || getWhopStatus(payment.substatus) === 'succeeded';
+}
+
+export function isWhopPaymentFailed(payment = {}) {
+  return ['uncollectible', 'unresolved', 'void', 'failed', 'past_due', 'canceled']
+    .includes(getWhopStatus(payment.substatus || payment.status));
+}
+
+export async function createWhopSavedCardPayment(client, {
+  user, planId, promoCodeId, idempotencyKey, planChangeId,
+}) {
+  if (!user?.whop_member_id || !user?.whop_payment_method_id) {
+    throw new Error('A saved Whop payment method is required.');
+  }
+  if (!getWhopPlanDetails(planId) || planId === WHOP_PLAN_IDS.intro) throw new Error('Unknown paid Whop plan.');
+  return client.payments.create({
+    company_id: WHOP_COMPANY_ID,
+    member_id: String(user.whop_member_id),
+    payment_method_id: String(user.whop_payment_method_id),
+    plan_id: planId,
+    ...(promoCodeId ? { promo_code_id: promoCodeId } : {}),
+    metadata: {
+      user_id: String(user.id), app_user_id: String(user.id),
+      email: String(user.email).trim().toLowerCase(),
+      purpose: 'plan_change', plan_id: planId,
+      ...(planChangeId ? { plan_change_id: String(planChangeId) } : {}),
+    },
+  }, { idempotencyKey });
 }
 
 export function unwrapWhopWebhook(client, rawBody, headers) {
@@ -120,6 +261,18 @@ export function getWhopStatus(status) {
 
 export function isWhopMembershipActive(status) {
   return ['trialing', 'active', 'canceling'].includes(getWhopStatus(status));
+}
+
+export function getWhopEventTime(value) {
+  return normalizeWhopDate(value?.created_at || value?.updated_at || value?.occurred_at || value);
+}
+
+export function isWhopEventNewer(incoming, stored) {
+  const incomingTime = getWhopEventTime(incoming);
+  const storedTime = normalizeWhopDate(stored);
+  if (!storedTime) return true;
+  if (!incomingTime) return false;
+  return new Date(incomingTime).getTime() >= new Date(storedTime).getTime();
 }
 
 export function buildWhopMembershipUpdates(membership = {}) {

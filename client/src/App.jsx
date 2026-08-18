@@ -10,6 +10,7 @@ import TenantCheckout from './pages/TenantCheckout';
 import Redirects from './pages/Redirects';
 import BillingCheckout from './pages/BillingCheckout';
 import APIBilling from './pages/APIBilling';
+import Plans from './pages/Plans';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -50,6 +51,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <APIBilling />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/plans"
+              element={
+                <ProtectedRoute>
+                  <Plans />
                 </ProtectedRoute>
               }
             />

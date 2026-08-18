@@ -77,7 +77,9 @@ export function getUserAccessState(user) {
  const limits = getPlanLimits(user);
  const inboxesUsed = user?.inboxes_used || 0;
  const inboxesLimit = limits.inboxesLimit;
- const hasConcurrentOrders = Boolean(user?.has_concurrent_orders);
+ // Unlimited simultaneous orders are a Reseller entitlement. Deriving this from
+ // the active plan prevents a stale flag from leaking the entitlement to Scale.
+ const hasConcurrentOrders = planKey === 'agency';
 
  const usesWhop = Boolean(user?.whop_membership_id || user?.whop_membership_status);
  const whopStatus = getWhopStatus(user?.whop_membership_status);
@@ -149,11 +151,13 @@ export function getUserAccessState(user) {
  cancelAtPeriodEnd: cancelledAtPeriodEnd,
  currentPeriodEnd: currentPeriodEnd || null,
  canAccessApp,
- canAccessApi: ['growth', 'unlimited', 'agency'].includes(planKey),
- hasUnlimitedOrders: ['unlimited', 'agency'].includes(planKey),
+ canAccessApi: ['basic', 'starter', 'growth', 'unlimited', 'agency'].includes(planKey),
+ canAccessMcp: ['basic', 'starter', 'growth', 'unlimited', 'agency'].includes(planKey),
+ hasUnlimitedOrders: planKey === 'agency',
  canDownloadAll: canAccessApp && !trialing,
  canCreateMoreThanOneCompletedOrder: ['basic', 'starter', 'growth', 'unlimited', 'agency'].includes(planKey),
- canUseCustomNames: ['growth', 'unlimited', 'agency'].includes(planKey),
+ canUseCustomNames: ['basic', 'starter', 'growth', 'unlimited', 'agency'].includes(planKey),
+ canUseDomainRedirects: ['basic', 'starter', 'growth', 'unlimited', 'agency'].includes(planKey),
  downloadAllowance: !canAccessApp ? 0 : (trialing ? 10 : Infinity),
  canOpenInboxesPage: canAccessApp,
  lifetimeCompletedOrders: 0,

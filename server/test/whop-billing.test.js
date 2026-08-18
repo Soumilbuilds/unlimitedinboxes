@@ -4,10 +4,14 @@ import test from 'node:test';
 import { getUserAccessState } from '../services/access.js';
 import {
   WHOP_PLAN_IDS,
+  createWhopSavedCardPayment,
   buildWhopMembershipUpdates,
   createWhopCheckout,
+  serializeWhopPlanCatalog,
   selectInitialWhopPlan,
   serializeBillingAddress,
+  isWhopEventNewer,
+  validateWhopPromoCode,
 } from '../services/whop.js';
 
 const user = { id: 42, email: 'Customer@Example.com', plan: 'free' };
@@ -144,4 +148,124 @@ test('billing address persistence keeps only checkout address fields', () => {
     country: 'US',
     secret: 'ignored',
   }), JSON.stringify({ name: 'Test User', line1: '1 Main St', city: 'Austin', country: 'US' }));
+});
+
+test('serializes the six plan cards with provider-verified prices and feature limits', () => {
+  const plans = serializeWhopPlanCatalog();
+  assert.equal(plans.length, 6);
+  assert.deepEqual(plans.map((plan) => [plan.name, plan.priceCents]), [
+    ['Free Trial', 0], ['Tester', 999], ['Growth', 3999],
+    ['Pro', 9999], ['Scale', 19999], ['Reseller', 29999],
+  ]);
+  assert.equal(plans[0].inboxesLimit, 10);
+  assert.equal(plans[0].monthlySends, 1500);
+  assert.equal(plans[4].unlimitedInboxes, true);
+  assert.equal(plans[5].unlimitedConcurrentOrders, true);
+});
+
+test('all paid plans grant API, MCP, custom-name, and domain-redirect entitlements', () => {
+  const paid = getUserAccessState({
+    ...user,
+    whop_membership_id: 'mem_paid',
+    whop_membership_status: 'active',
+    whop_plan_id: WHOP_PLAN_IDS.basic,
+  });
+  assert.equal(paid.canAccessApi, true);
+  assert.equal(paid.canAccessMcp, true);
+  assert.equal(paid.canUseCustomNames, true);
+  assert.equal(paid.canUseDomainRedirects, true);
+
+  const trial = getUserAccessState({
+    ...user,
+    whop_membership_id: 'mem_trial',
+    whop_membership_status: 'trialing',
+    whop_plan_id: WHOP_PLAN_IDS.intro,
+    whop_current_period_end: new Date(Date.now() + 86400000).toISOString(),
+  });
+  assert.equal(trial.canAccessApi, false);
+  assert.equal(trial.canAccessMcp, false);
+  assert.equal(trial.canUseCustomNames, false);
+  assert.equal(trial.canUseDomainRedirects, false);
+  assert.equal(trial.inboxesLimit, 100);
+  assert.equal(trial.downloadAllowance, 10);
+});
+
+test('validates and previews a Whop coupon against the target plan', async () => {
+  const promo = {
+    id: 'promo_20', code: 'SAVE20', status: 'active', promo_type: 'percentage',
+    amount_off: 20, unlimited_stock: true, uses: 0, stock: 0, duration: 'once', product: { id: 'prod_test' },
+  };
+  const client = {
+    promoCodes: {
+      list(params) {
+        return (async function* list() {
+          if (!params.plan_ids || params.plan_ids[0] === WHOP_PLAN_IDS.starter) yield promo;
+        }());
+      },
+    },
+  };
+  const result = await validateWhopPromoCode(client, { code: 'save20', planKey: 'starter' });
+  assert.equal(result.id, 'promo_20');
+  assert.equal(result.savingsCents, 800);
+  assert.equal(result.priceCents, 3199);
+});
+
+test('saved-card plan payments use account-bound metadata and a stable idempotency key', async () => {
+  let body;
+  let options;
+  const client = {
+    payments: {
+      async create(input, requestOptions) {
+        body = input;
+        options = requestOptions;
+        return { id: 'pay_test', status: 'pending' };
+      },
+    },
+  };
+  await createWhopSavedCardPayment(client, {
+    user: { ...user, whop_member_id: 'mber_test', whop_payment_method_id: 'pmt_test' },
+    planId: WHOP_PLAN_IDS.growth,
+    promoCodeId: 'promo_test',
+    idempotencyKey: 'stable-plan-change-key',
+    planChangeId: 'change_test',
+  });
+  assert.equal(body.company_id, 'biz_D0LbQ5wpeG8tff');
+  assert.equal(body.member_id, 'mber_test');
+  assert.equal(body.payment_method_id, 'pmt_test');
+  assert.equal(body.plan_id, WHOP_PLAN_IDS.growth);
+  assert.equal(body.promo_code_id, 'promo_test');
+  assert.equal(body.metadata.user_id, '42');
+  assert.equal(body.metadata.purpose, 'plan_change');
+  assert.equal(body.metadata.plan_change_id, 'change_test');
+  assert.equal(options.idempotencyKey, 'stable-plan-change-key');
+});
+
+test('Whop event ordering rejects stale and timestamp-free updates after a stored event', () => {
+  assert.equal(isWhopEventNewer('2026-08-18T10:00:01.000Z', '2026-08-18T10:00:00.000Z'), true);
+  assert.equal(isWhopEventNewer('2026-08-18T09:59:59.000Z', '2026-08-18T10:00:00.000Z'), false);
+  assert.equal(isWhopEventNewer(null, '2026-08-18T10:00:00.000Z'), false);
+});
+
+test('only Reseller receives unlimited simultaneous orders', () => {
+  const scale = getUserAccessState({
+    ...user,
+    plan: 'unlimited',
+    whop_membership_id: 'mem_scale',
+    whop_membership_status: 'active',
+    whop_plan_id: WHOP_PLAN_IDS.unlimited,
+    has_concurrent_orders: 1,
+  });
+  const reseller = getUserAccessState({
+    ...user,
+    plan: 'agency',
+    whop_membership_id: 'mem_reseller',
+    whop_membership_status: 'active',
+    whop_plan_id: WHOP_PLAN_IDS.agency,
+  });
+  assert.equal(scale.hasConcurrentOrders, false);
+  assert.equal(scale.hasUnlimitedOrders, false);
+  assert.equal(scale.maxConcurrentOrders, 1);
+  assert.equal(reseller.hasConcurrentOrders, true);
+  assert.equal(reseller.hasUnlimitedOrders, true);
+  assert.equal(reseller.maxConcurrentOrders, Infinity);
 });
