@@ -62,11 +62,11 @@ function buildUpgradeCheckout(intent) {
  }
 
  return {
- intent: 'standard',
+ intent: 'starter',
  allowClose: true,
- headline: 'Upgrade And Get Limitless Access',
- subheadline: 'Unlock Full Downloads And Paid Access',
- description: null
+ headline: 'No Active Subscription Found',
+ subheadline: 'Create 100 inboxes and send 15,000 cold emails for just $1.',
+ description: '$9.99 will be charged after the five-day free trial. Cancel anytime in one click.'
  };
 }
 

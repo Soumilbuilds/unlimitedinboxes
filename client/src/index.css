@@ -752,56 +752,199 @@ a {
 .billing-page {
   min-height: 100vh;
   background:
-    radial-gradient(circle at 50% -10%, rgba(35, 211, 145, 0.13), transparent 38%),
-    radial-gradient(circle at 100% 70%, rgba(28, 137, 255, 0.08), transparent 32%),
+    radial-gradient(circle at 12% 6%, rgba(35, 211, 145, 0.1), transparent 30%),
+    radial-gradient(circle at 92% 92%, rgba(28, 137, 255, 0.07), transparent 34%),
     #000;
   display: grid;
   place-items: center;
-  padding: 52px 24px 64px;
+  padding: 48px 28px;
 }
 
 .billing-page-shell {
-  width: min(720px, 100%);
+  width: min(1080px, 100%);
   display: grid;
+  grid-template-columns: minmax(300px, 0.82fr) minmax(460px, 1.18fr);
+  align-items: start;
+  gap: clamp(42px, 7vw, 88px);
+}
+
+.billing-page-shell--overdue {
+  width: min(760px, 100%);
+  grid-template-columns: 1fr;
+  gap: 28px;
+}
+
+.billing-offer-panel {
+  position: sticky;
+  top: 48px;
+  display: grid;
+  align-content: start;
   gap: 24px;
-  padding: 36px;
-  border: 1px solid rgba(134, 247, 184, 0.17);
-  border-radius: 24px;
-  background: linear-gradient(155deg, rgba(15, 17, 16, 0.96), rgba(4, 5, 5, 0.98));
-  box-shadow: 0 34px 100px rgba(0, 0, 0, 0.64), 0 0 0 1px rgba(255,255,255,0.025) inset;
+  padding: 38px 0;
+}
+
+.billing-offer-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: rgba(245, 245, 245, 0.55);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.billing-offer-eyebrow span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #83efb4;
+  box-shadow: 0 0 0 4px rgba(131, 239, 180, 0.09), 0 0 18px rgba(131, 239, 180, 0.5);
 }
 
 .billing-page-copy {
   display: grid;
-  gap: 10px;
-  text-align: center;
+  gap: 14px;
+  text-align: left;
 }
 
 .billing-page-copy h1 {
   margin: 0;
-  font-size: clamp(32px, 5vw, 46px);
-  line-height: 1.04;
-  letter-spacing: -0.04em;
+  max-width: 470px;
+  font-size: clamp(38px, 4.2vw, 58px);
+  line-height: 0.98;
+  letter-spacing: -0.052em;
 }
 
 .billing-page-copy p {
   margin: 0;
-  font-size: 16px;
-  line-height: 1.4;
-  color: rgba(245, 245, 245, 0.78);
-  font-weight: 600;
+  max-width: 450px;
+  font-size: 17px;
+  line-height: 1.55;
+  color: rgba(245, 245, 245, 0.68);
+  font-weight: 520;
 }
 
-.billing-page-copy .billing-page-description {
-  color: rgba(245, 245, 245, 0.53);
+.billing-page-description {
+  max-width: 440px;
+  margin: 0;
+  padding-top: 18px;
+  color: rgba(245, 245, 245, 0.57);
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 520;
+  line-height: 1.55;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.billing-offer-price {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.billing-offer-price strong {
+  color: #f8fffb;
+  font-size: 44px;
+  font-weight: 760;
+  line-height: 1;
+  letter-spacing: -0.055em;
+}
+
+.billing-offer-price span {
+  max-width: 100px;
+  color: rgba(245, 245, 245, 0.48);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.billing-offer-features {
+  display: grid;
+  gap: 11px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.billing-offer-features li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: rgba(245, 245, 245, 0.79);
+  font-size: 13px;
+  font-weight: 610;
+}
+
+.billing-offer-features li::before {
+  content: '\2713';
+  display: grid;
+  width: 19px;
+  height: 19px;
+  flex: 0 0 19px;
+  place-items: center;
+  color: #8af6ba;
+  font-size: 10px;
+  font-weight: 900;
+  border: 1px solid rgba(138, 246, 186, 0.22);
+  border-radius: 50%;
+  background: rgba(138, 246, 186, 0.07);
+}
+
+.billing-checkout-card {
+  width: 100%;
+  min-width: 0;
+  padding: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 22px;
+  background: linear-gradient(150deg, rgba(14, 17, 16, 0.97), rgba(5, 6, 6, 0.99));
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.035) inset;
+}
+
+.billing-checkout-heading {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  margin-bottom: 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.075);
+}
+
+.billing-security-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  color: #8af6ba;
+  border: 1px solid rgba(138, 246, 186, 0.18);
+  border-radius: 11px;
+  background: rgba(138, 246, 186, 0.065);
+}
+
+.billing-security-mark svg {
+  width: 18px;
+  height: 18px;
+}
+
+.billing-checkout-heading h2 {
+  margin: 0 0 3px;
+  font-size: 16px;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+.billing-checkout-heading p {
+  margin: 0;
+  color: rgba(245, 245, 245, 0.44);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .billing-page-loading {
-  min-height: 540px;
+  min-height: 520px;
   display: grid;
   place-items: center;
+  align-content: center;
   gap: 14px;
   text-align: center;
 }
@@ -880,7 +1023,7 @@ a {
 
 .whop-checkout-layout {
   display: grid;
-  gap: 16px;
+  gap: 14px;
 }
 
 .checkout-email-row {
@@ -888,11 +1031,11 @@ a {
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 12px;
-  min-height: 54px;
-  padding: 0 16px;
+  min-height: 48px;
+  padding: 0 14px;
   border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 13px;
-  background: rgba(255, 255, 255, 0.025);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.022);
 }
 
 .checkout-field-label {
@@ -925,9 +1068,9 @@ a {
 }
 
 .whop-checkout-frame {
-  min-height: 320px;
+  min-height: 300px;
   overflow: hidden;
-  border-radius: 16px;
+  border-radius: 13px;
   transition: opacity 180ms ease;
 }
 
@@ -940,8 +1083,8 @@ a {
   width: 100%;
   min-height: 54px;
   border: 0;
-  border-radius: 12px;
-  background: linear-gradient(110deg, #8af6ba, #5ae8cf 55%, #70d8ff);
+  border-radius: 11px;
+  background: linear-gradient(105deg, #8af6ba, #62e7cf 60%, #70d8ff);
   color: #03110b;
   font-size: 15px;
   font-weight: 800;
@@ -988,6 +1131,10 @@ a {
   place-items: center;
   align-content: center;
   gap: 18px;
+  padding: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 22px;
+  background: rgba(10, 12, 11, 0.96);
 }
 
 .billing-overdue-actions {
@@ -995,6 +1142,23 @@ a {
   flex-wrap: wrap;
   justify-content: center;
   gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .billing-page {
+    place-items: start center;
+  }
+
+  .billing-page-shell {
+    width: min(620px, 100%);
+    grid-template-columns: 1fr;
+    gap: 34px;
+  }
+
+  .billing-offer-panel {
+    position: static;
+    padding-bottom: 0;
+  }
 }
 
 .checkout-modal {
@@ -1357,20 +1521,37 @@ a {
   }
 
   .billing-page {
-    padding: 28px 14px 40px;
+    display: block;
+    padding: 28px 16px 36px;
   }
 
   .billing-page-shell {
-    padding: 26px 18px;
-    border-radius: 20px;
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
+  .billing-offer-panel {
+    position: static;
+    gap: 19px;
+    padding: 8px 2px 0;
   }
 
   .billing-page-copy h1 {
-    font-size: 28px;
+    max-width: 360px;
+    font-size: 39px;
   }
 
   .billing-page-copy p {
-    font-size: 16px;
+    font-size: 15px;
+  }
+
+  .billing-offer-price strong {
+    font-size: 38px;
+  }
+
+  .billing-checkout-card {
+    padding: 20px 16px;
+    border-radius: 18px;
   }
 
   .billing-page-embed {
