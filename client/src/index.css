@@ -1535,6 +1535,8 @@ a {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
+  width: min(760px, 100%);
+  margin: 0 auto;
 }
 
 .tenant-license-card {
@@ -1728,7 +1730,7 @@ a {
 }
 
 .tenant-guide {
-  width: min(860px, 100%);
+  width: 100%;
   margin: 4px auto 0;
   display: grid;
   gap: 18px;
