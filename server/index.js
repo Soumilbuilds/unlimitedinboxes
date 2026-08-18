@@ -14,6 +14,8 @@ import apiRoutes from './routes/api.js';
 import apiKeyRoutes from './routes/apiKeys.js';
 import { resumeInterruptedOrders } from './services/orderProcessor.js';
 import { createManagedBillingWorker } from './services/recurringBilling.js';
+import db from './db/database.js';
+import { createSessionStore } from './services/sessionStore.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,6 +47,7 @@ app.use(express.json({
   }
 }));
 app.use(session({
+  store: createSessionStore(db),
   secret: process.env.SESSION_SECRET || 'development-only-session-secret',
   resave: false,
   saveUninitialized: false,
