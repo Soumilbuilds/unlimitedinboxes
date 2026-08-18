@@ -8,6 +8,11 @@ const TENANT_OPTIONS = [
   { value: 'asia', licenseType: 'normal', label: 'Asian IP', unitPriceCents: 1349 }
 ];
 
+const TENANT_GUIDE_PAGES = Array.from(
+  { length: 7 },
+  (_, index) => `/tenant-guide/page-${index + 1}.webp`
+);
+
 function newRequestToken() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return `tenant-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -108,7 +113,6 @@ export default function Tenants() {
       setPromotion(promo);
       setCoupon(promo?.code || coupon.trim().toUpperCase());
       requestToken.current = newRequestToken();
-      setNotice('Coupon Applied.');
     } catch (requestError) {
       setError(requestError?.response?.data?.error || 'This coupon could not be applied.');
     } finally {
@@ -160,7 +164,6 @@ export default function Tenants() {
 
           <section className="tenant-order-card" aria-labelledby="tenant-order-heading">
             <div className="tenant-card-heading">
-              <span>Purchase Tenants</span>
               <h2 id="tenant-order-heading">Order Tenants From Us</h2>
             </div>
 
@@ -178,8 +181,10 @@ export default function Tenants() {
                   }}
                 >
                   <span>{option.label}</span>
-                  <strong>{money(option.unitPriceCents)}</strong>
-                  <small>Per Tenant</small>
+                  <div>
+                    <strong>{money(option.unitPriceCents)}</strong>
+                    <small>Per Tenant</small>
+                  </div>
                 </button>
               ))}
             </div>
@@ -239,12 +244,15 @@ export default function Tenants() {
           </section>
 
           <section className="tenant-guide" aria-label="Tenant Guide">
-            <iframe
-              src="https://docs.google.com/document/d/e/2PACX-1vTKpnYIt3L2Nn0GHZGmGnlYEZ11ZEbH22M9h3szqaG9EPbOwAbm4hpk6nX3V3R8SjVzhORI1mOfcjJJ/pub?embedded=true"
-              title="Tenant Guide"
-              loading="lazy"
-              referrerPolicy="strict-origin-when-cross-origin"
-            />
+            {TENANT_GUIDE_PAGES.map((source, index) => (
+              <img
+                key={source}
+                src={source}
+                alt={`Microsoft Tenants Guide Page ${index + 1}`}
+                loading={index === 0 ? 'eager' : 'lazy'}
+                decoding="async"
+              />
+            ))}
           </section>
         </div>
       </main>

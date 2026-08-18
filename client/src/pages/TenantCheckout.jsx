@@ -189,7 +189,7 @@ export default function TenantCheckout() {
             ref={controls}
             sessionId={sessionId}
             theme="dark"
-            themeOptions={{ accentColor: '#f59e5b', backgroundColor: '#090909', borderRadius: 8 }}
+            themeOptions={{ accentColor: '#86f7b8', backgroundColor: '#090909', borderRadius: 8 }}
             styles={{ container: { paddingX: 0, paddingY: 0 } }}
             prefill={{ email: user?.email, ...(completeAddress ? { address: savedAddress } : {}) }}
             hideEmail
