@@ -52,8 +52,15 @@ function Ensure-DelegatedMailbox {
   $mailbox = Get-EXOMailbox -Identity $smtp -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,EmailAddresses,Alias,DisplayName,RecipientTypeDetails -ErrorAction SilentlyContinue
   $created = $false
   if (-not $mailbox) {
+    if ([string]::IsNullOrWhiteSpace([string]$Request.password)) {
+      throw "A mailbox password is required for initial recipient creation"
+    }
+    $securePassword = ConvertTo-SecureString ([string]$Request.password) -AsPlainText -Force
     try {
-      New-Mailbox -Shared -Name $Request.exchangeAlias -DisplayName $Request.displayName -Alias $Request.exchangeAlias -PrimarySmtpAddress $smtp -ErrorAction Stop | Out-Null
+      # Supplying the complete member identity avoids an Exchange Online
+      # backend defect where the abbreviated Shared parameter set creates the
+      # directory member but omits ExternalDirectoryObjectId in its response.
+      New-Mailbox -Shared -Name $Request.exchangeAlias -DisplayName $Request.displayName -Alias $Request.exchangeAlias -UserPrincipalName $smtp -Password $securePassword -PrimarySmtpAddress $smtp -ErrorAction Stop | Out-Null
       $created = $true
     } catch {
       $creationError = [string]$_.Exception.Message
@@ -318,8 +325,9 @@ export async function createDelegatedExchangeSession({
         displayName: String(mailbox?.displayName || '').trim(),
         alias: String(mailbox?.alias || '').trim(),
         exchangeAlias: buildExchangeAlias(mailbox?.alias, domain),
+        password: String(mailbox?.password || ''),
       }));
-      if (prepared.some(item => !item.displayName || !item.alias)) {
+      if (prepared.some(item => !item.displayName || !item.alias || !item.password)) {
         throw new Error('Delegated Exchange batch contains an invalid mailbox');
       }
       const data = await send('ensureMailboxes', { domain: String(domain), mailboxes: prepared });

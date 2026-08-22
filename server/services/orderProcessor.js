@@ -573,11 +573,11 @@ function parseRequestedMailboxNames(order, total) {
  });
 }
 
-async function createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain, delegatedExchangeSession = null) {
+async function createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain, mailboxPassword, delegatedExchangeSession = null) {
  if (delegatedExchangeSession) {
  const [result] = await delegatedExchangeSession.ensureSharedMailboxes({
  domain,
- mailboxes: [{ displayName: fullName, alias }]
+ mailboxes: [{ displayName: fullName, alias, password: mailboxPassword }]
  });
  if (!result?.success) {
  throw new Error(result?.error || `Mailbox creation failed for ${alias}@${domain}`);
@@ -590,7 +590,8 @@ async function createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, 
  orgDomain: exchangeOrgDomain,
  displayName: fullName,
  alias,
- domain
+ domain,
+ password: mailboxPassword
  });
  logMessage(
  orderId,
@@ -624,7 +625,7 @@ async function runCreateMailboxes(
  const { fullName, alias } = identities?.[i] || generateMailboxName();
  logMessage(orderId, `[${i + 1}/${totalMailboxes}] Creating mailbox: ${fullName} (${alias}@${domain})`);
 
- const result = await createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain, delegatedExchangeSession);
+ const result = await createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain, mailboxPassword, delegatedExchangeSession);
  if (result.success) {
  const email = result.email;
  createdMailboxes.push({
@@ -701,7 +702,8 @@ async function runReconcileExchangeMailboxes(orderId, createdMailboxes, domain, 
  const batch = createdMailboxes.slice(start, start + batchSize);
  const mailboxRequests = batch.map(mailbox => ({
  displayName: mailbox.name,
- alias: String(mailbox.email || '').split('@')[0]
+ alias: String(mailbox.email || '').split('@')[0],
+ password: mailbox.password
  }));
  const results = delegatedExchangeSession
  ? await delegatedExchangeSession.ensureSharedMailboxes({ domain, mailboxes: mailboxRequests })
@@ -1266,7 +1268,8 @@ export async function processOrder(orderId) {
 
  const mailboxRequests = batch.map(item => ({
  displayName: item.fullName,
- alias: item.alias
+ alias: item.alias,
+ password: mailboxPassword
  }));
  const results = delegatedExchangeSession
  ? await delegatedExchangeSession.ensureSharedMailboxes({ domain, mailboxes: mailboxRequests })
@@ -1316,7 +1319,7 @@ export async function processOrder(orderId) {
  const { fullName, alias } = identityForIndex(i);
  logMessage(orderId, `[${i + 1}/${total}] Creating mailbox: ${fullName} (${alias}@${domain})`);
 
- const result = await createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain, delegatedExchangeSession);
+ const result = await createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain, mailboxPassword, delegatedExchangeSession);
  if (result.success) {
  const email = result.email;
  createdMailboxes.push({

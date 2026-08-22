@@ -26,8 +26,8 @@ test('mailbox batches reject duplicate SMTP recipients before connecting to Exch
       orgDomain: 'tenant.onmicrosoft.com',
       domain: 'example.com',
       mailboxes: [
-        { alias: 'sales', displayName: 'Sales One' },
-        { alias: 'SALES', displayName: 'Sales Two' },
+        { alias: 'sales', displayName: 'Sales One', password: 'Example!12345' },
+        { alias: 'SALES', displayName: 'Sales Two', password: 'Example!12345' },
       ],
     }),
     /duplicate recipient addresses/i,

@@ -188,12 +188,14 @@ function New-SharedMailboxResilient {
   param(
     [string]$DisplayName,
     [string]$ExchangeAlias,
-    [string]$RequestedSmtp
+    [string]$RequestedSmtp,
+    [string]$Password
   )
   $initialSmtp = "$ExchangeAlias@$($env:EXO_ORG)"
+  $securePassword = ConvertTo-SecureString $Password -AsPlainText -Force
   $firstCreateError = $null
   try {
-    New-Mailbox -Shared -Name $ExchangeAlias -DisplayName $DisplayName -Alias $ExchangeAlias -PrimarySmtpAddress $RequestedSmtp -ErrorAction Stop | Out-Null
+    New-Mailbox -Shared -Name $ExchangeAlias -DisplayName $DisplayName -Alias $ExchangeAlias -UserPrincipalName $RequestedSmtp -Password $securePassword -PrimarySmtpAddress $RequestedSmtp -ErrorAction Stop | Out-Null
   } catch {
     $createError = [string]$_.Exception.Message
     $firstCreateError = $createError
@@ -208,7 +210,7 @@ function New-SharedMailboxResilient {
       )
       if (-not $isRetriableCreationError) { throw }
       try {
-        New-Mailbox -Shared -Name $ExchangeAlias -DisplayName $DisplayName -Alias $ExchangeAlias -ErrorAction Stop | Out-Null
+        New-Mailbox -Shared -Name $ExchangeAlias -DisplayName $DisplayName -Alias $ExchangeAlias -UserPrincipalName $initialSmtp -Password $securePassword -ErrorAction Stop | Out-Null
       } catch {
         # A timed-out/failed first request may materialize while the fallback is
         # submitted. Reconcile after any fallback error before declaring failure.
@@ -309,17 +311,19 @@ export async function ensureSharedMailbox({
   orgDomain,
   displayName,
   alias,
-  domain
+  domain,
+  password
 }) {
-  if (!displayName || !alias || !domain) {
-    throw new Error('Shared mailbox display name, alias, and domain are required');
+  if (!displayName || !alias || !domain || !password) {
+    throw new Error('Mailbox display name, alias, domain, and password are required');
   }
   const env = {
     ...(await baseEnv(orgDomain)),
     EXO_MAILBOX_DISPLAY_NAME: String(displayName),
     EXO_MAILBOX_ALIAS: String(alias),
     EXO_MAILBOX_EXCHANGE_ALIAS: buildExchangeAlias(alias, domain),
-    EXO_MAILBOX_DOMAIN: String(domain)
+    EXO_MAILBOX_DOMAIN: String(domain),
+    EXO_MAILBOX_PASSWORD: String(password)
   };
   const script = `
 $ErrorActionPreference = "Stop"
@@ -331,6 +335,7 @@ try {
   $alias = $env:EXO_MAILBOX_ALIAS
   $exchangeAlias = $env:EXO_MAILBOX_EXCHANGE_ALIAS
   $domain = $env:EXO_MAILBOX_DOMAIN
+  $password = $env:EXO_MAILBOX_PASSWORD
   $smtp = "$alias@$domain"
   $recipient = Get-Recipient -Identity $smtp -ErrorAction SilentlyContinue
   if ($recipient -and [string]$recipient.RecipientTypeDetails -ne "SharedMailbox") {
@@ -339,10 +344,7 @@ try {
   $mailbox = Get-EXOMailbox -Identity $smtp -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction SilentlyContinue
   $created = $false
   if (-not $mailbox) {
-    # Exchange Online's Shared parameter set doesn't expose UserPrincipalName.
-    # The order workflow updates the backing Entra user's UPN through Graph
-    # immediately after Exchange returns ExternalDirectoryObjectId.
-    $mailbox = New-SharedMailboxResilient -DisplayName $displayName -ExchangeAlias $exchangeAlias -RequestedSmtp $smtp
+    $mailbox = New-SharedMailboxResilient -DisplayName $displayName -ExchangeAlias $exchangeAlias -RequestedSmtp $smtp -Password $password
     $created = $true
   }
   if ($mailbox -and -not $mailbox.ExternalDirectoryObjectId) {
@@ -401,10 +403,11 @@ export async function ensureSharedMailboxes({
   const requests = mailboxes.map((mailbox, index) => {
     const displayName = String(mailbox?.displayName || '').trim();
     const alias = String(mailbox?.alias || '').trim();
-    if (!displayName || !alias) {
-      throw new Error(`Exchange mailbox batch item ${index + 1} is missing a display name or alias`);
+    const password = String(mailbox?.password || '');
+    if (!displayName || !alias || !password) {
+      throw new Error(`Exchange mailbox batch item ${index + 1} is missing a display name, alias, or password`);
     }
-    return { index, displayName, alias, exchangeAlias: buildExchangeAlias(alias, domain) };
+    return { index, displayName, alias, password, exchangeAlias: buildExchangeAlias(alias, domain) };
   });
   const requestedAddresses = requests.map(request => `${request.alias}@${domain}`.toLowerCase());
   if (new Set(requestedAddresses).size !== requestedAddresses.length) {
@@ -429,6 +432,7 @@ try {
     $displayName = [string]$request.displayName
     $alias = [string]$request.alias
     $exchangeAlias = [string]$request.exchangeAlias
+    $password = [string]$request.password
     $smtp = "$alias@$domain"
     try {
       $recipient = Get-Recipient -Identity $smtp -ErrorAction SilentlyContinue
@@ -438,7 +442,7 @@ try {
       $mailbox = Get-EXOMailbox -Identity $smtp -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction SilentlyContinue
       $created = $false
       if (-not $mailbox) {
-        $mailbox = New-SharedMailboxResilient -DisplayName $displayName -ExchangeAlias $exchangeAlias -RequestedSmtp $smtp
+        $mailbox = New-SharedMailboxResilient -DisplayName $displayName -ExchangeAlias $exchangeAlias -RequestedSmtp $smtp -Password $password
         $created = $true
       }
       if ($mailbox -and -not $mailbox.ExternalDirectoryObjectId) {
