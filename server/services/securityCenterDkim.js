@@ -181,6 +181,11 @@ export async function enableDkimSigning(page, tenantId, domain) {
   });
 }
 
+export function isDkimConfigEnabled(config) {
+  if (!config?.success) return false;
+  return config.Enabled === true || String(config.Enabled).toLowerCase() === 'true';
+}
+
 export async function retryEnableDkimSigning(page, tenantId, domain, log = console.log) {
   const intervalMs = Number(process.env.DKIM_ENABLE_RETRY_INTERVAL_MS || 60000);
   const timeoutMinutes = Number(process.env.DKIM_ENABLE_TIMEOUT_MIN || 120);
@@ -200,6 +205,24 @@ export async function retryEnableDkimSigning(page, tenantId, domain, log = conso
         status: last.status,
         response: last.json || last.text
       };
+    }
+
+    // Security Center can return HTTP 500 after Exchange has already applied
+    // the change. Re-read the authoritative config before treating the PUT as
+    // a failure so an idempotent re-enable cannot hold an order for hours.
+    try {
+      const current = await getDkimConfig(page, tenantId, domain);
+      if (isDkimConfigEnabled(current)) {
+        log('DKIM is already enabled in Exchange; continuing.');
+        return {
+          success: true,
+          attempts,
+          status: last.status,
+          response: current.raw
+        };
+      }
+    } catch {
+      // Preserve the existing retry behavior when the verification read fails.
     }
 
     log(`Enable DKIM failed (status ${last.status}). Retrying in ${Math.round(intervalMs / 1000)}s...`);
