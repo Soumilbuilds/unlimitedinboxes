@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { normalizeDomain } from '../services/domain.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -876,7 +877,11 @@ export function createTenant(tenant) {
     INSERT INTO tenants (user_id, name, domain, admin_email, admin_password, mfa_secret)
     VALUES (@user_id, @name, @domain, @admin_email, @admin_password, @mfa_secret)
   `);
-  const payload = { ...tenant, mfa_secret: tenant.mfa_secret ?? null };
+  const payload = {
+    ...tenant,
+    domain: normalizeDomain(tenant.domain),
+    mfa_secret: tenant.mfa_secret ?? null
+  };
   return stmt.run(payload);
 }
 
@@ -935,7 +940,8 @@ export function updateTenantDetails(id, updates = {}) {
         mfa_secret = COALESCE(?, mfa_secret)
     WHERE id = ?
   `);
-  return stmt.run(name, domain, admin_email, admin_password, mfa_secret, id);
+  const normalizedDomain = domain == null ? null : normalizeDomain(domain);
+  return stmt.run(name, normalizedDomain, admin_email, admin_password, mfa_secret, id);
 }
 
 export function updateTenantRedirect(id, redirectUrl) {

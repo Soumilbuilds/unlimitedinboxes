@@ -36,6 +36,7 @@ import {
  ensureSharedMailboxes
 } from './exchangePowerShell.js';
 import { createDelegatedExchangeSession } from './exchangeDelegatedPowerShell.js';
+import { normalizeDomain } from './domain.js';
 import {
  getOrderById,
  getOrders,
@@ -48,6 +49,7 @@ import {
  addOrderLog,
  updateTenantCloudflare,
  updateTenantId,
+ updateTenantDetails,
  acquireOrderProcessingLease,
  touchOrderProcessingLease,
  releaseOrderProcessingLease,
@@ -228,8 +230,14 @@ async function grantConsentIfNeeded(tenant, getTotpCode, orderId, scope = null) 
 async function runPreflightChecks(orderId, order, tenant) {
  logStep(orderId, 1, 'Preflight: verify tenant, domain, credentials, and tenant_id');
 
- if (!tenant.domain) {
+ const normalizedDomain = normalizeDomain(tenant.domain);
+ if (!normalizedDomain) {
  throw new Error('Tenant missing domain -- cannot proceed with order');
+ }
+ if (normalizedDomain !== tenant.domain) {
+ updateTenantDetails(tenant.id, { domain: normalizedDomain });
+ tenant.domain = normalizedDomain;
+ logMessage(orderId, 'Normalized the tenant domain before processing.');
  }
 
  if (!order.mailbox_password) {
