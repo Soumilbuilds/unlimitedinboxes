@@ -1,7 +1,6 @@
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { normalizeDomain } from '../services/domain.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -53,6 +52,7 @@ db.exec(`
     total_mailboxes INTEGER DEFAULT 100,
     mailbox_password TEXT,
     mailbox_names TEXT,
+    planned_mailboxes TEXT,
     created_mailboxes TEXT DEFAULT '[]',
     error_message TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -239,6 +239,10 @@ function ensureOrdersMailboxNamesColumn() {
   ensureColumn('orders', 'mailbox_names', 'TEXT');
 }
 
+function ensureOrdersPlannedMailboxesColumn() {
+  ensureColumn('orders', 'planned_mailboxes', 'TEXT');
+}
+
 function ensureOrdersProcessingLeaseColumns() {
   ensureColumn('orders', 'processing_token', 'TEXT');
   ensureColumn('orders', 'processing_heartbeat_at', 'TEXT');
@@ -386,6 +390,7 @@ function backfillInboxesUsed() {
 ensureOrdersPasswordColumn();
 ensureOrdersNameColumn();
 ensureOrdersMailboxNamesColumn();
+ensureOrdersPlannedMailboxesColumn();
 ensureOrdersProcessingLeaseColumns();
 ensureTenantsUserColumn();
 ensureTenantsRedirectColumn();
@@ -877,11 +882,7 @@ export function createTenant(tenant) {
     INSERT INTO tenants (user_id, name, domain, admin_email, admin_password, mfa_secret)
     VALUES (@user_id, @name, @domain, @admin_email, @admin_password, @mfa_secret)
   `);
-  const payload = {
-    ...tenant,
-    domain: normalizeDomain(tenant.domain),
-    mfa_secret: tenant.mfa_secret ?? null
-  };
+  const payload = { ...tenant, mfa_secret: tenant.mfa_secret ?? null };
   return stmt.run(payload);
 }
 
@@ -940,8 +941,7 @@ export function updateTenantDetails(id, updates = {}) {
         mfa_secret = COALESCE(?, mfa_secret)
     WHERE id = ?
   `);
-  const normalizedDomain = domain == null ? null : normalizeDomain(domain);
-  return stmt.run(name, normalizedDomain, admin_email, admin_password, mfa_secret, id);
+  return stmt.run(name, domain, admin_email, admin_password, mfa_secret, id);
 }
 
 export function updateTenantRedirect(id, redirectUrl) {
@@ -1157,6 +1157,24 @@ export function persistCreatedMailboxes(id, createdMailboxes) {
     SET created_mailboxes = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(JSON.stringify(createdMailboxes), id);
+}
+
+export function getOrPersistPlannedMailboxes(id, plannedMailboxes) {
+  const plannedJson = JSON.stringify(plannedMailboxes);
+  return db.transaction(() => {
+    db.prepare(`
+      UPDATE orders
+      SET planned_mailboxes = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND planned_mailboxes IS NULL
+    `).run(plannedJson, id);
+    const stored = db.prepare('SELECT planned_mailboxes FROM orders WHERE id = ?').get(id);
+    if (!stored) throw new Error(`Order ${id} was not found while saving its mailbox plan`);
+    try {
+      return JSON.parse(stored.planned_mailboxes);
+    } catch {
+      throw new Error(`Order ${id} has an invalid persisted mailbox plan`);
+    }
+  })();
 }
 
 export function updateOrderProgress(id, progress, createdMailboxes = null) {

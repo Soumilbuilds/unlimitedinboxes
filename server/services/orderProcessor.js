@@ -36,7 +36,6 @@ import {
  ensureSharedMailboxes
 } from './exchangePowerShell.js';
 import { createDelegatedExchangeSession } from './exchangeDelegatedPowerShell.js';
-import { normalizeDomain } from './domain.js';
 import {
  getOrderById,
  getOrders,
@@ -49,11 +48,11 @@ import {
  addOrderLog,
  updateTenantCloudflare,
  updateTenantId,
- updateTenantDetails,
  acquireOrderProcessingLease,
  touchOrderProcessingLease,
  releaseOrderProcessingLease,
- persistCreatedMailboxes
+ persistCreatedMailboxes,
+ getOrPersistPlannedMailboxes
 } from '../db/database.js';
 import crypto from 'node:crypto';
 
@@ -126,12 +125,6 @@ function isRetryableAdminStatus(status) {
 export function isExternalDirectoryMemberCreationError(error) {
  const message = String(error?.message || error || '');
  return /ExternalDirectoryObjectId/i.test(message) && /Member Creation/i.test(message);
-}
-
-export function isRecoverableExchangeProvisioningError(error) {
- const message = String(error?.message || error || '');
- return isExternalDirectoryMemberCreationError(error)
- || /Exchange Online PowerShell command timed out|temporar|server busy|internal server|transient|throttl|TooManyRequests/i.test(message);
 }
 
 async function createGraphClientProvider(clientId, clientSecret, tenantId) {
@@ -236,14 +229,8 @@ async function grantConsentIfNeeded(tenant, getTotpCode, orderId, scope = null) 
 async function runPreflightChecks(orderId, order, tenant) {
  logStep(orderId, 1, 'Preflight: verify tenant, domain, credentials, and tenant_id');
 
- const normalizedDomain = normalizeDomain(tenant.domain);
- if (!normalizedDomain) {
+ if (!tenant.domain) {
  throw new Error('Tenant missing domain -- cannot proceed with order');
- }
- if (normalizedDomain !== tenant.domain) {
- updateTenantDetails(tenant.id, { domain: normalizedDomain });
- tenant.domain = normalizedDomain;
- logMessage(orderId, 'Normalized the tenant domain before processing.');
  }
 
  if (!order.mailbox_password) {
@@ -587,6 +574,53 @@ function parseRequestedMailboxNames(order, total) {
  });
 }
 
+export function validatePlannedMailboxIdentities(plan, total) {
+ if (!Array.isArray(plan) || plan.length !== total) {
+ throw new Error(`Expected a persisted plan with exactly ${total} mailbox identities`);
+ }
+ const aliases = new Set();
+ return plan.map((identity, index) => {
+ const fullName = String(identity?.fullName || '').trim().replace(/\s+/g, ' ');
+ const alias = String(identity?.alias || '').trim().toLowerCase();
+ if (!fullName || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(alias)) {
+ throw new Error(`Persisted mailbox plan item ${index + 1} is invalid`);
+ }
+ if (aliases.has(alias)) {
+ throw new Error(`Persisted mailbox plan contains duplicate alias ${alias}`);
+ }
+ aliases.add(alias);
+ return { fullName, alias };
+ });
+}
+
+export function buildRandomMailboxPlan(total, persistedMailboxes) {
+ const plan = [];
+ const aliases = new Set();
+ for (const [index, mailbox] of persistedMailboxes.entries()) {
+ const fullName = String(mailbox?.name || '').trim().replace(/\s+/g, ' ');
+ const alias = String(mailbox?.email || '').split('@')[0].trim().toLowerCase();
+ if (!fullName || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(alias) || aliases.has(alias)) {
+ throw new Error(`Created mailbox checkpoint ${index + 1} cannot be used to build a retry-safe identity plan`);
+ }
+ aliases.add(alias);
+ plan.push({ fullName, alias });
+ }
+ while (plan.length < total) {
+ let identity = null;
+ for (let attempt = 0; attempt < 2000; attempt++) {
+ const generated = generateMailboxName();
+ if (!aliases.has(generated.alias.toLowerCase())) {
+ identity = generated;
+ break;
+ }
+ }
+ if (!identity) throw new Error('Could not generate a unique mailbox identity plan');
+ aliases.add(identity.alias.toLowerCase());
+ plan.push(identity);
+ }
+ return validatePlannedMailboxIdentities(plan, total);
+}
+
 async function createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain, mailboxPassword, delegatedExchangeSession = null) {
  if (delegatedExchangeSession) {
  const [result] = await delegatedExchangeSession.ensureSharedMailboxes({
@@ -895,11 +929,30 @@ export async function processOrder(orderId) {
  logMessage(orderId, 'Automatic MFA code generation is configured');
 
  const total = order.total_mailboxes || 100;
+ resetUsedNames();
  let requestedMailboxIdentities;
  try {
- requestedMailboxIdentities = parseRequestedMailboxNames(order, total);
+ let proposedPlan;
+ if (order.planned_mailboxes) {
+ proposedPlan = validatePlannedMailboxIdentities(JSON.parse(order.planned_mailboxes), total);
+ } else {
+ proposedPlan = parseRequestedMailboxNames(order, total)
+ || buildRandomMailboxPlan(total, persistedMailboxes);
+ }
+ proposedPlan = validatePlannedMailboxIdentities(proposedPlan, total);
+ requestedMailboxIdentities = validatePlannedMailboxIdentities(
+ getOrPersistPlannedMailboxes(orderId, proposedPlan),
+ total
+ );
+ const plannedAliases = new Set(requestedMailboxIdentities.map(identity => identity.alias));
+ for (const [index, mailbox] of persistedMailboxes.entries()) {
+ const alias = String(mailbox?.email || '').split('@')[0].trim().toLowerCase();
+ if (!plannedAliases.has(alias)) {
+ throw new Error(`Created mailbox checkpoint ${index + 1} is not present in the persisted identity plan`);
+ }
+ }
  } catch (error) {
- setOrderError(orderId, error.message);
+ setOrderError(orderId, `Mailbox identity plan is invalid: ${error.message}`);
  return;
  }
 
@@ -915,7 +968,6 @@ export async function processOrder(orderId) {
  updateOrderStatus(orderId, 'processing');
  clearOrderError(orderId);
  updateOrderProgress(orderId, persistedMailboxes.length ? Number(order.progress || 0) : 0, persistedMailboxes);
- resetUsedNames();
  const preflightWeight = 5;
  const cloudflareWeight = 5;
  const dnsSetupWeight = 10;
@@ -933,21 +985,10 @@ export async function processOrder(orderId) {
  let delegatedExchangeSession = null;
  let delegatedExchangeSessionPromise = null;
  let createdMailboxes = persistedMailboxes;
- const claimedAliases = new Set(createdMailboxes.map(mailbox => String(mailbox.email || '').split('@')[0].toLowerCase()));
  const identityForIndex = (index) => {
- const requested = requestedMailboxIdentities?.[index];
- if (requested) {
- claimedAliases.add(requested.alias.toLowerCase());
+ const requested = requestedMailboxIdentities[index];
+ if (!requested) throw new Error(`Mailbox identity plan is missing item ${index + 1}`);
  return requested;
- }
- for (let attempt = 0; attempt < 2000; attempt++) {
- const generated = generateMailboxName();
- if (!claimedAliases.has(generated.alias.toLowerCase())) {
- claimedAliases.add(generated.alias.toLowerCase());
- return generated;
- }
- }
- throw new Error('Could not generate a unique mailbox identity');
  };
  const ensureDelegatedExchangeSession = async () => {
  if (delegatedExchangeSession) return delegatedExchangeSession;
@@ -1178,7 +1219,7 @@ export async function processOrder(orderId) {
  delegatedExchangeSession
  );
  } catch (preflightError) {
- if (!exchangeOrgDomain || !isRecoverableExchangeProvisioningError(preflightError)) {
+ if (!exchangeOrgDomain || !isExternalDirectoryMemberCreationError(preflightError)) {
  throw preflightError;
  }
  logMessage(orderId, 'Mailbox provisioning needs automatic recovery; establishing an alternate secure connection.');

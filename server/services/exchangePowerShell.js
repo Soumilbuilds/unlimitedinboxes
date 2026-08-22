@@ -278,6 +278,45 @@ try {
   return json;
 }
 
+export async function listSharedMailboxesForDomain({ orgDomain, domain }) {
+  const targetDomain = String(domain || '').trim().toLowerCase();
+  if (!targetDomain) throw new Error('Mailbox domain is required');
+  const env = { ...(await baseEnv(orgDomain)), EXO_MAILBOX_DOMAIN: targetDomain };
+  const script = `
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+${connectExchangeScript}
+try {
+  $targetDomain = $env:EXO_MAILBOX_DOMAIN.ToLowerInvariant()
+  $mailboxes = @(
+    Get-EXOMailbox -ResultSize Unlimited -RecipientTypeDetails SharedMailbox -Properties PrimarySmtpAddress,DisplayName,ExternalDirectoryObjectId -ErrorAction Stop |
+      Where-Object { ([string]$_.PrimarySmtpAddress).ToLowerInvariant().EndsWith("@$targetDomain") } |
+      ForEach-Object {
+        [pscustomobject]@{
+          PrimarySmtpAddress = [string]$_.PrimarySmtpAddress
+          DisplayName = [string]$_.DisplayName
+          ExternalDirectoryObjectId = [string]$_.ExternalDirectoryObjectId
+        }
+      }
+  )
+  ConvertTo-Json -InputObject @($mailboxes) -Compress -Depth 3
+} finally {
+  Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+}
+`;
+  const { stdout } = await runPowerShell(script, env, 15 * 60 * 1000);
+  const parsed = extractJson(stdout);
+  const rows = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+  return rows.map(row => ({
+    primarySmtpAddress: String(row.PrimarySmtpAddress || '').trim().toLowerCase(),
+    displayName: String(row.DisplayName || '').trim(),
+    externalDirectoryObjectId: String(row.ExternalDirectoryObjectId || '').trim() || null
+  })).sort((left, right) => (
+    left.primarySmtpAddress < right.primarySmtpAddress ? -1
+      : left.primarySmtpAddress > right.primarySmtpAddress ? 1 : 0
+  ));
+}
+
 export async function ensureOrganizationSmtpAuthEnabled(orgDomain) {
   const env = await baseEnv(orgDomain);
   const script = `
