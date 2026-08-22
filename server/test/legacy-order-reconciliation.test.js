@@ -30,3 +30,21 @@ test('legacy reconciliation refuses incomplete Exchange inventory', () => {
     ]
   }), /only 1\/2 usable shared mailboxes/);
 });
+
+test('legacy reconciliation honors an existing immutable mailbox plan', () => {
+  const result = selectLegacyOrderMailboxes({
+    domain: 'example.com',
+    totalMailboxes: 2,
+    mailboxPassword: 'Password123!',
+    plannedMailboxes: [
+      { fullName: 'Zed', alias: 'z' },
+      { fullName: 'Aye', alias: 'a' }
+    ],
+    mailboxes: [
+      { primarySmtpAddress: 'a@example.com', displayName: 'Aye', externalDirectoryObjectId: 'a-id' },
+      { primarySmtpAddress: 'b@example.com', displayName: 'Bee', externalDirectoryObjectId: 'b-id' },
+      { primarySmtpAddress: 'z@example.com', displayName: 'Zed', externalDirectoryObjectId: 'z-id' }
+    ]
+  });
+  assert.deepEqual(result.selected.map(row => row.email), ['z@example.com', 'a@example.com']);
+});

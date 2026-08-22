@@ -1159,6 +1159,33 @@ export function persistCreatedMailboxes(id, createdMailboxes) {
   `).run(JSON.stringify(createdMailboxes), id);
 }
 
+export function reconcileLegacyOrderMailboxes({ id, plannedMailboxes, createdMailboxes, message }) {
+  return db.transaction(() => {
+    const order = db.prepare(`
+      SELECT status, created_mailboxes, planned_mailboxes FROM orders WHERE id = ?
+    `).get(id);
+    if (!order) throw new Error(`Order ${id} was not found during legacy reconciliation`);
+    if (order.status !== 'failed') throw new Error(`Order ${id} is no longer failed; refusing reconciliation`);
+    let existingCreated;
+    try { existingCreated = JSON.parse(order.created_mailboxes || '[]'); } catch { existingCreated = null; }
+    if (!Array.isArray(existingCreated) || existingCreated.length !== 0) {
+      throw new Error(`Order ${id} mailbox state changed; refusing to overwrite it`);
+    }
+    db.prepare(`
+      UPDATE orders
+      SET planned_mailboxes = COALESCE(planned_mailboxes, ?),
+          created_mailboxes = ?, status = 'failed', error_message = ?,
+          processing_token = NULL, processing_heartbeat_at = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(JSON.stringify(plannedMailboxes), JSON.stringify(createdMailboxes), message, id);
+    db.prepare(`
+      INSERT INTO order_logs (order_id, timestamp, message)
+      VALUES (?, ?, ?)
+    `).run(id, new Date().toISOString(), message);
+  })();
+}
+
 export function getOrPersistPlannedMailboxes(id, plannedMailboxes) {
   const plannedJson = JSON.stringify(plannedMailboxes);
   return db.transaction(() => {

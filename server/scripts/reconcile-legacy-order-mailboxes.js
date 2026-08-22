@@ -1,13 +1,7 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
-import {
-  addOrderLog,
-  getOrderById,
-  getTenantById,
-  persistCreatedMailboxes,
-  setOrderError
-} from '../db/database.js';
+import { getOrderById, getTenantById, reconcileLegacyOrderMailboxes } from '../db/database.js';
 import { getAppClient, getInitialDomainWithClient } from '../services/graph.js';
 import { listSharedMailboxesForDomain } from '../services/exchangePowerShell.js';
 import { selectLegacyOrderMailboxes } from '../services/legacyOrderReconciliation.js';
@@ -59,18 +53,32 @@ export async function reconcileLegacyOrder({ orderId, apply = false }) {
   if (!tenant) throw new Error(`Tenant ${order.tenant_id} was not found`);
   const orgDomain = await resolveOrganizationDomain(tenant);
   const inventory = await listSharedMailboxesForDomain({ orgDomain, domain: tenant.domain });
+  let plannedMailboxes = null;
+  if (order.planned_mailboxes) {
+    try { plannedMailboxes = JSON.parse(order.planned_mailboxes); } catch {
+      throw new Error(`Order ${orderId} has malformed planned mailbox state`);
+    }
+  }
   const result = selectLegacyOrderMailboxes({
     mailboxes: inventory,
     domain: tenant.domain,
     totalMailboxes: order.total_mailboxes,
-    mailboxPassword: order.mailbox_password
+    mailboxPassword: order.mailbox_password,
+    plannedMailboxes
   });
 
   if (apply) {
-    persistCreatedMailboxes(order.id, result.selected);
+    const recoveredPlan = result.selected.map(mailbox => ({
+      fullName: mailbox.name,
+      alias: mailbox.email.split('@')[0]
+    }));
     const message = `Recovered ${result.selected.length} legacy mailbox checkpoints from Exchange. The order is ready for a safe retry.`;
-    setOrderError(order.id, message);
-    addOrderLog(order.id, message);
+    reconcileLegacyOrderMailboxes({
+      id: order.id,
+      plannedMailboxes: recoveredPlan,
+      createdMailboxes: result.selected,
+      message
+    });
   }
   return {
     orderId: order.id,
