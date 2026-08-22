@@ -5,6 +5,7 @@ import {
   buildDelegatedExchangeSessionScript,
   parseExchangeDeviceCode,
 } from '../services/exchangeDelegatedPowerShell.js';
+import { isMicrosoftDeviceAuthorizationConfirmation } from '../services/puppeteer.js';
 
 test('parses the Exchange Online device authorization prompt used in production', () => {
   assert.deepEqual(parseExchangeDeviceCode(
@@ -23,4 +24,14 @@ test('delegated mailbox batches use supported Exchange cmdlets and no private ad
   assert.match(script, /Get-EXOMailbox/i);
   assert.match(script, /Set-CASMailbox/i);
   assert.doesNotMatch(script, /\/beta\/Mailbox|admin\.exchange\.microsoft\.com\/beta/i);
+});
+
+test('device-code flow accepts Exchange branded sign-in confirmation screens', () => {
+  assert.equal(
+    isMicrosoftDeviceAuthorizationConfirmation(
+      'Are you trying to sign in to Microsoft Exchange REST API Based Powershell? Continue',
+    ),
+    true,
+  );
+  assert.equal(isMicrosoftDeviceAuthorizationConfirmation('Enter the code displayed'), false);
 });

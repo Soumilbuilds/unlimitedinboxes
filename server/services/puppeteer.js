@@ -922,6 +922,12 @@ export async function ensureMicrosoftLogin(page, email, password, context, targe
  }
 }
 
+export function isMicrosoftDeviceAuthorizationConfirmation(bodyText) {
+ const lower = String(bodyText || '').toLowerCase();
+ return lower.includes('are you trying to sign in') &&
+ (lower.includes('continue') || lower.includes('yes'));
+}
+
 export async function completeMicrosoftDeviceCodeFlow({
  page,
  context,
@@ -968,7 +974,15 @@ export async function completeMicrosoftDeviceCodeFlow({
  }
  }
 
+ // Device-code authorization uses the client application's display name in
+ // this confirmation screen. Exchange Online currently identifies itself as
+ // "Microsoft Exchange REST API Based PowerShell", while other Microsoft
+ // clients use different names. Match the stable prompt/button language so a
+ // client rename cannot strand unattended provisioning on this screen.
+ const isDeviceAuthorizationConfirmation =
+ isMicrosoftDeviceAuthorizationConfirmation(bodyText);
  const isConsent =
+ isDeviceAuthorizationConfirmation ||
  lower.includes('permissions requested') ||
  lower.includes('accept the permissions') ||
  lower.includes('consent on behalf') ||
