@@ -127,6 +127,12 @@ export function isExternalDirectoryMemberCreationError(error) {
  return /ExternalDirectoryObjectId/i.test(message) && /Member Creation/i.test(message);
 }
 
+export function isRecoverableExchangeProvisioningError(error) {
+ const message = String(error?.message || error || '');
+ return isExternalDirectoryMemberCreationError(error)
+ || /Exchange Online PowerShell command timed out|SMTP AUTH remains disabled|temporar|server busy|internal server|transient|throttl|TooManyRequests/i.test(message);
+}
+
 async function createGraphClientProvider(clientId, clientSecret, tenantId) {
  let client = await getAppClient(clientId, clientSecret, tenantId);
  return {
@@ -1219,7 +1225,7 @@ export async function processOrder(orderId) {
  delegatedExchangeSession
  );
  } catch (preflightError) {
- if (!exchangeOrgDomain || !isExternalDirectoryMemberCreationError(preflightError)) {
+ if (!exchangeOrgDomain || !isRecoverableExchangeProvisioningError(preflightError)) {
  throw preflightError;
  }
  logMessage(orderId, 'Mailbox provisioning needs automatic recovery; establishing an alternate secure connection.');
@@ -1326,9 +1332,30 @@ export async function processOrder(orderId) {
  alias: item.alias,
  password: mailboxPassword
  }));
- const results = delegatedExchangeSession
+ let results;
+ try {
+ results = delegatedExchangeSession
  ? await delegatedExchangeSession.ensureSharedMailboxes({ domain, mailboxes: mailboxRequests })
  : await ensureSharedMailboxes({ orgDomain: exchangeOrgDomain, domain, mailboxes: mailboxRequests });
+ } catch (batchError) {
+ if (delegatedExchangeSession || !isRecoverableExchangeProvisioningError(batchError)) {
+ throw batchError;
+ }
+ logMessage(orderId, 'Mailbox batch needs automatic recovery; switching to the alternate secure connection.');
+ await ensureDelegatedExchangeSession();
+ exchangeOrgDomain = null;
+ results = await delegatedExchangeSession.ensureSharedMailboxes({ domain, mailboxes: mailboxRequests });
+ }
+
+ const hasRecoverableResultFailure = !delegatedExchangeSession && results.some(
+ result => !result.success && isRecoverableExchangeProvisioningError(result.error)
+ );
+ if (hasRecoverableResultFailure) {
+ logMessage(orderId, 'Mailbox batch returned a transient setup issue; retrying through the alternate secure connection.');
+ await ensureDelegatedExchangeSession();
+ exchangeOrgDomain = null;
+ results = await delegatedExchangeSession.ensureSharedMailboxes({ domain, mailboxes: mailboxRequests });
+ }
  const failures = [];
  for (const result of results) {
  const request = batch[result.index];

@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildRandomMailboxPlan,
   isExternalDirectoryMemberCreationError,
+  isRecoverableExchangeProvisioningError,
   validatePlannedMailboxIdentities,
 } from '../services/orderProcessor.js';
 
@@ -46,4 +47,14 @@ test('persisted plans reject wrong totals, invalid aliases, and duplicate aliase
     { fullName: 'First Name', alias: 'duplicate' },
     { fullName: 'Second Name', alias: 'DUPLICATE' },
   ], 2), /duplicate alias/i);
+});
+
+test('activates mailbox recovery when the app-only Exchange command times out', () => {
+  assert.equal(isRecoverableExchangeProvisioningError(new Error(
+    'Exchange Online PowerShell command timed out after 5 minutes',
+  )), true);
+  assert.equal(isRecoverableExchangeProvisioningError(
+    'SMTP AUTH remains disabled for shared mailbox user@example.com',
+  ), true);
+  assert.equal(isRecoverableExchangeProvisioningError(new Error('Access denied')), false);
 });
