@@ -1069,7 +1069,20 @@ export async function createSharedMailbox(page, displayName, alias, domain, log 
  }
  }
 
- const result = await page.evaluate(async (dName, dAlias, dDomain) => {
+ // The unified Microsoft admin shell hosts the Exchange application in its
+ // own frame. Execute the request inside that frame so its same-origin auth
+ // cookies and token cache are used; a top-frame cross-origin request is
+ // treated as an unauthenticated user by EAC.
+ const exchangeFrame = page.frames().find(frame => (
+ /admin\.exchange\.microsoft\.com/i.test(frame.url())
+ ));
+ const mailboxExecutionContext = exchangeFrame || page;
+ console.log(
+ '[Puppeteer] Mailbox execution context:',
+ safeMicrosoftLocation(mailboxExecutionContext.url())
+ );
+
+ const result = await mailboxExecutionContext.evaluate(async (dName, dAlias, dDomain) => {
  const email = `${dAlias}@${dDomain}`;
  const uuid = crypto.randomUUID ? crypto.randomUUID() : '00000000-0000-0000-0000-000000000000';
 
