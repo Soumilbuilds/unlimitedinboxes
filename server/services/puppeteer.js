@@ -35,6 +35,10 @@ export async function launchBrowser() {
  console.log(`[Puppeteer] Launching browser, headless: ${isProduction ? 'new' : false}`);
  browser = await puppeteer.launch({
  headless: isProduction ? 'new' : false,
+ // Bound every Chrome DevTools command. Without this, an unresponsive
+ // Microsoft sign-in renderer can leave the order lease heartbeating forever
+ // even though no browser work is progressing.
+ protocolTimeout: 60000,
  args: [
  '--no-sandbox',
  '--disable-setuid-sandbox',
@@ -137,6 +141,33 @@ function scoreMicrosoftUrl(rawUrl) {
  if (rawUrl.includes('login.microsoftonline.com')) return 70;
  if (rawUrl.includes('office.com')) return 60;
  return 50;
+}
+
+function isExchangeAdminUrl(rawUrl) {
+ if (!rawUrl) return false;
+ try {
+ const { hostname, pathname, hash } = new URL(rawUrl);
+ if (hostname === 'admin.exchange.microsoft.com') return true;
+ // Microsoft is progressively moving admin workloads under the unified
+ // admin.cloud.microsoft shell. Only accept it when the route is explicitly
+ // Exchange-related; the generic homepage is not sufficient for mailbox API
+ // calls and must be redirected to EAC first.
+ return (
+ (hostname === 'admin.cloud.microsoft' || hostname === 'admin.microsoft.com') &&
+ /exchange/i.test(`${pathname}${hash}`)
+ );
+ } catch {
+ return false;
+ }
+}
+
+function safeMicrosoftLocation(rawUrl) {
+ try {
+ const { origin, pathname, hash } = new URL(rawUrl);
+ return `${origin}${pathname}${hash}`;
+ } catch {
+ return 'unknown Microsoft page';
+ }
 }
 
 async function settleOnMicrosoftPage(context, currentPage) {
@@ -814,6 +845,21 @@ async function handleMicrosoftLoginFlow(page, email, password, context, getTotpC
  return page;
 }
 
+async function navigateMicrosoftPage(page, targetUrl) {
+ try {
+ await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+ } catch (error) {
+ const currentUrl = page?.url?.() || '';
+ const timedOut = /Navigation timeout/i.test(String(error?.message || ''));
+ // Microsoft login/admin SPAs can keep the navigation lifecycle open after
+ // the interactive DOM is already usable. Continue only when navigation has
+ // actually left about:blank; the explicit state checks that follow decide
+ // whether authentication succeeded.
+ if (!timedOut || !currentUrl || currentUrl === 'about:blank') throw error;
+ await sleep(1000);
+ }
+}
+
 export async function ensureMicrosoftLogin(page, email, password, context, targetUrl, getTotpCode = null, mfaSecret = null) {
  try {
  // If mfaSecret is provided, build a TOTP resolver automatically
@@ -825,7 +871,11 @@ export async function ensureMicrosoftLogin(page, email, password, context, targe
 
  for (let attempt = 0; attempt < 3; attempt += 1) {
  try {
- await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+ // Microsoft admin pages keep background requests open indefinitely, so
+ // networkidle2 is not a reliable readiness signal and can fail an otherwise
+ // successful login. DOMContentLoaded plus the explicit page-state checks
+ // below is deterministic enough for this flow.
+ await navigateMicrosoftPage(page, targetUrl);
 
  if (page.url().includes('login.microsoftonline.com')) {
  page = await handleMicrosoftLoginFlow(page, email, password, context, effectiveGetTotpCode);
@@ -834,11 +884,11 @@ export async function ensureMicrosoftLogin(page, email, password, context, targe
  let consentPromptReady = await isAdminConsentPrompt(page);
 
  if (page.url().includes('mysignins.microsoft.com') && !consentPromptReady) {
- await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+ await navigateMicrosoftPage(page, targetUrl);
  }
 
  if (page.url().includes('login.microsoftonline.com') && !consentPromptReady) {
- await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+ await navigateMicrosoftPage(page, targetUrl);
  if (page.url().includes('login.microsoftonline.com')) {
  page = await handleMicrosoftLoginFlow(page, email, password, context, effectiveGetTotpCode);
  }
@@ -979,11 +1029,25 @@ export async function loginToMicrosoft365(page, email, password, context = null,
  const result = await ensureMicrosoftLogin(page, email, password, context, targetUrl, effectiveTotp, mfaSecret);
  if (!result.success) return result;
 
- if (!result.page.url().includes('admin.exchange.microsoft.com')) {
- return { success: false, error: 'Could not reach Exchange admin center after login', page: result.page };
+ let exchangePage = result.page;
+ for (let attempt = 0; attempt < 3; attempt += 1) {
+ if (isExchangeAdminUrl(exchangePage.url())) {
+ console.log('[Puppeteer] Exchange admin workspace ready:', safeMicrosoftLocation(exchangePage.url()));
+ return { ...result, page: exchangePage };
  }
 
- return result;
+ // A successful Microsoft login commonly lands on the unified admin home
+ // page instead of returning to the originally requested Exchange route.
+ // Re-request EAC with the now-authenticated session and re-select the best
+ // Microsoft tab in case the portal opened it in a new page.
+ await navigateMicrosoftPage(exchangePage, targetUrl);
+ await sleep(2000);
+ exchangePage = await settleOnMicrosoftPage(context, exchangePage);
+ }
+
+ console.warn('Exchange admin navigation ended at:', exchangePage.url());
+ await saveDebugScreenshot(exchangePage, 'exchange_admin_navigation_error');
+ return { success: false, error: 'Could not reach Exchange admin center after login', page: exchangePage };
 }
 
 export async function createSharedMailbox(page, displayName, alias, domain, log = console.log) {
@@ -992,15 +1056,16 @@ export async function createSharedMailbox(page, displayName, alias, domain, log 
  throw new Error('Browser page closed before mailbox creation');
  }
  log(`Creating: ${displayName} (${alias}@${domain})`);
+ console.log('[Puppeteer] Mailbox request origin:', safeMicrosoftLocation(page.url()));
 
- if (!page.url().includes('admin.exchange.microsoft.com')) {
- await page.goto('https://admin.exchange.microsoft.com/#/mailboxes', {
- waitUntil: 'networkidle2',
- timeout: 60000
- });
+ if (!isExchangeAdminUrl(page.url())) {
+ await navigateMicrosoftPage(page, 'https://admin.exchange.microsoft.com/#/mailboxes');
  await new Promise(r => setTimeout(r, 3000));
  if (page.url().includes('login.microsoftonline.com')) {
  throw new Error('Exchange admin session not authenticated (login screen shown)');
+ }
+ if (!isExchangeAdminUrl(page.url())) {
+ throw new Error('Exchange admin session did not reach the mailbox workspace');
  }
  }
 
@@ -1017,6 +1082,18 @@ export async function createSharedMailbox(page, displayName, alias, domain, log 
  };
 
  try {
+ const adminAccessToken = [localStorage, sessionStorage]
+ .flatMap(storage => Array.from({ length: storage.length }, (_, index) => storage.key(index)))
+ .map(key => {
+ try { return JSON.parse(localStorage.getItem(key) || sessionStorage.getItem(key)); }
+ catch { return null; }
+ })
+ .find(entry => (
+ entry?.credentialType === 'AccessToken' &&
+ /admin\.cloud\.microsoft/i.test(String(entry?.target || '')) &&
+ entry?.secret
+ ))?.secret;
+
  const response = await fetch('https://admin.exchange.microsoft.com/beta/Mailbox', {
  method: 'POST',
  headers: {
@@ -1024,14 +1101,45 @@ export async function createSharedMailbox(page, displayName, alias, domain, log 
  'content-type': 'application/json',
  app: 'Cosmic',
  'x-requested-with': 'XMLHttpRequest',
- 'client-request-id': uuid
+ 'client-request-id': uuid,
+ ...(adminAccessToken ? { authorization: `Bearer ${adminAccessToken}` } : {})
  },
+ credentials: 'include',
  body: JSON.stringify(payload)
  });
 
  if (!response.ok) {
  const text = await response.text();
- return { success: false, status: response.status, error: text };
+ const storageMetadata = [];
+ for (const storage of [localStorage, sessionStorage]) {
+ for (let i = 0; i < storage.length; i += 1) {
+ const key = storage.key(i);
+ let parsed = null;
+ try { parsed = JSON.parse(storage.getItem(key)); } catch { /* metadata only */ }
+ storageMetadata.push({
+ key,
+ credentialType: parsed?.credentialType || null,
+ target: parsed?.target || parsed?.scope || null,
+ hasSecret: Boolean(parsed?.secret || parsed?.accessToken)
+ });
+ }
+ }
+ const resourceUrls = performance.getEntriesByType('resource')
+ .map(entry => entry.name)
+ .filter(url => /mailbox|exchange|adminapi|outlook\.office365/i.test(url))
+ .slice(-30)
+ .map(url => {
+ try {
+ const parsed = new URL(url);
+ return `${parsed.origin}${parsed.pathname}`;
+ } catch { return 'unparseable resource'; }
+ });
+ return {
+ success: false,
+ status: response.status,
+ error: text,
+ diagnostics: { storageMetadata, resourceUrls }
+ };
  }
 
  const json = await response.json();
@@ -1042,6 +1150,9 @@ export async function createSharedMailbox(page, displayName, alias, domain, log 
  }, displayName, alias, domain);
 
  if (!result.success) {
+ if (result.diagnostics) {
+ console.warn('[Puppeteer] Mailbox API authentication diagnostics:', JSON.stringify(result.diagnostics));
+ }
  throw new Error(`API Error ${result.status}: ${result.error}`);
  }
 
@@ -1073,10 +1184,7 @@ export async function ensureExchangeSmtpAuthEnabled(page, log = console.log) {
  try {
  log('Checking Exchange mail flow SMTP AUTH setting...');
 
- await page.goto('https://admin.exchange.microsoft.com/#/settings', {
- waitUntil: 'networkidle2',
- timeout: 60000
- });
+ await navigateMicrosoftPage(page, 'https://admin.exchange.microsoft.com/#/settings');
 
  await page.waitForFunction(() => {
  const heading = Array.from(document.querySelectorAll('h1,h2,h3')).find(el =>

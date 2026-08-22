@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
- createOrder,
+ createOrderWithinQuota,
  getOrders,
  getOrderById,
  getOrderByIdForUser,
@@ -11,11 +11,11 @@ import {
  addOrderLog,
  deleteOrder,
  getOrderLogs as getStoredLogs,
- getUserById
+ getUserById,
+ claimOrderForProcessing
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
 import { processOrder, cancelOrder, getOrderLogs, hasActiveJob } from '../services/orderProcessor.js';
-import { validateApiKey } from '../services/apiKey.js';
 
 const router = Router();
 
@@ -55,15 +55,7 @@ function isValidFullName(name) {
 }
 
 const requireAuth = async (req, res, next) => {
- const apiKey = req.headers['x-api-key'];
- if (apiKey) {
- const user = await validateApiKey(apiKey);
- if (!user) {
- return res.status(401).json({ error: 'Invalid API key' });
- }
- req.session.user = user;
- req.session.authenticated = true;
- } else if (!req.session.authenticated || !req.session.user?.id) {
+ if (!req.session.authenticated || !req.session.user?.id) {
  return res.status(401).json({ error: 'Unauthorized' });
  }
  next();
@@ -181,19 +173,34 @@ function billingRequiredPayload(accessState, actionLabel) {
  };
 }
 
-function sanitizeImplementationText(text) {
+export function sanitizeImplementationText(text) {
  if (!text) return text;
  let output = String(text);
 
- output = output.replace(/\bshared mailbox\b/gi, 'mailbox');
- output = output.replace(/\bExchange PowerShell\b/gi, 'automatic recovery');
+ // Order logs are customer-visible. Keep vendor implementation choices and
+ // low-level automation failures out of both historical and live responses.
+ output = output.replace(/\bshared mailboxes?\b/gi, match => (/mailboxes$/i.test(match) ? 'mailboxes' : 'mailbox'));
+ output = output.replace(/\b(?:Exchange(?: Online)?\s+)?PowerShell\b/gi, 'mailbox service');
+ output = output.replace(/\bMicrosoft Graph(?: API)?\b|\bGraph API\b|\bGraph (?:admin )?client\b|\bGraph\b/gi, 'Microsoft service');
+ output = output.replace(/\bPuppeteer\b|\bPlaywright\b/gi, 'automation service');
+ output = output.replace(/\bBrowser:\s*launch incognito and login to Microsoft 365\b/gi, 'Microsoft 365: establish a secure admin session');
+ output = output.replace(/\b(?:using )?browser fallback\b/gi, 'using automatic fallback');
+ output = output.replace(/\b(?:headless )?browser (?:session|context|page)\b/gi, 'automation session');
+ output = output.replace(/\bbrowser (?:session|context|page)\b/gi, 'automation session');
+ output = output.replace(/\bincognito (?:browser )?(?:session|context|page)\b/gi, 'isolated admin session');
+ output = output.replace(/\b(?:Chromium|Chrome DevTools|CDP|WebSocket)\b/gi, 'automation service');
+ output = output.replace(/\bExternalDirectoryObjectId\b|\bexternal directory object id\b/gi, 'mailbox identifier');
  output = output.replace(/Mailbox API create unavailable; falling back to UI flow \(\d+\)\.?/gi, 'Retrying mailbox creation...');
  output = output.replace(/Mailbox setup screen did not open cleanly \(attempt \d+\/\d+\)\. Reloading Exchange page\.\.\./gi, 'Mailbox setup screen did not open cleanly. Retrying...');
  output = output.replace(/Shared mailbox dialog did not open cleanly \(attempt \d+\/\d+\)\. Reloading Exchange page\.\.\./gi, 'Mailbox setup screen did not open cleanly. Retrying...');
- output = output.replace(/Browser mailbox creation did not complete\.[^.]*$/gi, 'Mailbox creation did not complete in the browser. Trying an automatic recovery step...');
+ output = output.replace(/Browser mailbox creation did not complete\.[^.]*$/gi, 'Mailbox creation did not complete. Trying an automatic recovery step...');
  output = output.replace(/Exchange PowerShell created or confirmed [^\s]+/gi, 'Automatic recovery created or confirmed the mailbox.');
  output = output.replace(/Exchange PowerShell mailbox creation failed[^:]*:\s*.+$/gi, 'Automatic recovery is currently unavailable.');
  output = output.replace(/spawn pwsh ENOENT/gi, 'automatic recovery is currently unavailable');
+ output = output.replace(/(?:Protocol error|Target closed|Navigation failed|Execution context was destroyed|Session closed)[^.;]*(?:[.;]|$)/gi, 'The Microsoft automation session was interrupted. ');
+ output = output.replace(/Waiting for selector `[^`]+` failed(?:: Waiting failed: \d+ms exceeded)?/gi, 'A Microsoft setup screen did not load in time');
+ output = output.replace(/(?:selector|xpath)\s*[`'"][^`'"]+[`'"]/gi, 'Microsoft setup control');
+ output = output.replace(/\bbrowser\b/gi, 'automation');
  output = output.replace(/Create mailbox error:\s*Waiting for selector `[^`]+` failed: Waiting failed: \d+ms exceeded/gi, 'Mailbox setup screen did not load in time.');
  output = output.replace(/Preflight failed during mailbox creation:\s*Waiting for selector `[^`]+` failed: Waiting failed: \d+ms exceeded/gi, 'Mailbox setup screen did not load in time. Please try again.');
  output = output.replace(/Preflight failed during mailbox creation:\s*Mailbox setup screen did not load in time\./gi, 'Mailbox setup screen did not load in time. Please try again.');
@@ -272,7 +279,7 @@ router.get('/', (req, res) => {
  created_mailboxes: JSON.parse(order.created_mailboxes || '[]')
  }, accessState)));
  } catch (error) {
- res.status(500).json({ error: error.message });
+ res.status(500).json({ error: maskSensitiveText(error.message) });
  }
 });
 
@@ -312,7 +319,10 @@ router.post('/', async (req, res) => {
  }
 
  const safeName = typeof order_name === 'string' && order_name.trim() ? order_name.trim() : null;
- const mailboxTotal = total_mailboxes || 100;
+ const mailboxTotal = Number(total_mailboxes || 100);
+ if (!Number.isInteger(mailboxTotal) || mailboxTotal < 1 || mailboxTotal > 500) {
+ return res.status(400).json({ error: 'Mailbox quantity must be an integer between 1 and 500.' });
+ }
  const parsedNames = parseMailboxNames(mailbox_names);
 
  if (parsedNames && !accessState.canUseCustomNames) {
@@ -329,14 +339,23 @@ router.post('/', async (req, res) => {
  }
  }
 
- const orderId = createOrder(
- tenant_id,
- mailboxTotal,
- mailbox_password,
- safeName,
- req.session.user.id,
- parsedNames
- );
+ let orderId;
+ try {
+ orderId = createOrderWithinQuota({
+ tenantId: tenant_id,
+ totalMailboxes: mailboxTotal,
+ mailboxPassword: mailbox_password,
+ orderName: safeName,
+ userId: req.session.user.id,
+ mailboxNames: parsedNames,
+ inboxesLimit: accessState.inboxesLimit,
+ });
+ } catch (error) {
+ if (error.code === 'INBOX_LIMIT_REACHED') {
+ return res.status(403).json({ code: error.code, error: error.message, inboxesRemaining: error.remaining });
+ }
+ throw error;
+ }
  const order = getOrderById(orderId);
 
  res.status(201).json({
@@ -344,7 +363,7 @@ router.post('/', async (req, res) => {
  created_mailboxes: []
  });
  } catch (error) {
- res.status(500).json({ error: error.message });
+ res.status(500).json({ error: maskSensitiveText(error.message) });
  }
 });
 
@@ -378,10 +397,10 @@ router.post('/:id/start', (req, res) => {
 
  if (order.status === 'processing') {
  if (hasActiveJob(order.id)) {
- return res.status(400).json({ error: 'Order is already processing' });
+ return res.json({ success: true, message: 'Order is already processing' });
  }
 
- processOrder(order.id);
+ void processOrder(order.id);
  return res.json({ success: true, message: 'Processing resumed' });
  }
 
@@ -395,12 +414,24 @@ router.post('/:id/start', (req, res) => {
  });
  }
 
- updateOrderStatus(order.id, 'processing');
- processOrder(order.id);
+ const claim = claimOrderForProcessing({
+ orderId: order.id,
+ userId: req.session.user.id,
+ maxConcurrentOrders: accessState.maxConcurrentOrders
+ });
+ if (!claim.claimed) {
+ return res.status(409).json({
+ code: claim.reason === 'concurrency' ? 'ORDER_CONCURRENCY_LIMIT' : 'ORDER_STATE_CONFLICT',
+ error: claim.reason === 'concurrency'
+ ? `Only ${accessState.maxConcurrentOrders} order(s) can be processed at a time on the current plan.`
+ : 'The order state changed before processing could start. Refresh and try again.'
+ });
+ }
+ void processOrder(order.id);
 
  res.json({ success: true, message: 'Processing started' });
  } catch (error) {
- res.status(500).json({ error: error.message });
+ res.status(500).json({ error: maskSensitiveText(error.message) });
  }
 });
 
@@ -417,7 +448,7 @@ router.post('/:id/cancel', (req, res) => {
  addOrderLog(order.id, 'Order cancelled by user (no active job found).');
  res.json({ success: true, message: 'Order cancelled' });
  } catch (error) {
- res.status(500).json({ error: error.message });
+ res.status(500).json({ error: maskSensitiveText(error.message) });
  }
 });
 
@@ -436,7 +467,7 @@ router.delete('/:id', (req, res) => {
  deleteOrder(order.id);
  res.json({ success: true });
  } catch (error) {
- res.status(500).json({ error: error.message });
+ res.status(500).json({ error: maskSensitiveText(error.message) });
  }
 });
 
@@ -448,19 +479,25 @@ router.get('/:id/logs', (req, res) => {
  const accessState = req.accessState || getUserAccessState(req.session.user);
  const inMemory = getOrderLogs(orderId);
  if (inMemory) {
- const mapped = accessState.canDownloadAll
- ? inMemory
- : inMemory.map(entry => ({ ...entry, message: maskSensitiveText(entry.message) }));
+ const mapped = inMemory.map(entry => ({
+ ...entry,
+ message: accessState.canDownloadAll
+ ? sanitizeImplementationText(entry.message)
+ : maskSensitiveText(entry.message)
+ }));
  return res.json(mapped);
  }
 
  const stored = getStoredLogs(orderId);
- const mapped = accessState.canDownloadAll
- ? stored
- : stored.map(entry => ({ ...entry, message: maskSensitiveText(entry.message) }));
+ const mapped = stored.map(entry => ({
+ ...entry,
+ message: accessState.canDownloadAll
+ ? sanitizeImplementationText(entry.message)
+ : maskSensitiveText(entry.message)
+ }));
  res.json(mapped);
  } catch (error) {
- res.status(500).json({ error: error.message });
+ res.status(500).json({ error: maskSensitiveText(error.message) });
  }
 });
 

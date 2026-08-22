@@ -5,7 +5,7 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const db = new Database(join(__dirname, 'app.db'));
+const db = new Database(process.env.APP_DB_PATH || join(__dirname, 'app.db'));
 
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
@@ -60,6 +60,55 @@ db.exec(`
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
 
+  -- The original API implementation was intentionally retired. Its keys are
+  -- incompatible with the fresh developer API and must never remain usable.
+  DROP TABLE IF EXISTS api_keys;
+
+  CREATE TABLE IF NOT EXISTS developer_api_keys (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    secret_hash TEXT NOT NULL UNIQUE,
+    display_prefix TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_used_at DATETIME,
+    revoked_at DATETIME,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_developer_api_keys_user
+    ON developer_api_keys(user_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS developer_api_requests (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    key_id TEXT,
+    method TEXT NOT NULL,
+    path TEXT NOT NULL,
+    idempotency_key TEXT,
+    request_hash TEXT,
+    status TEXT NOT NULL DEFAULT 'processing',
+    http_status INTEGER,
+    response_body TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME,
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(key_id) REFERENCES developer_api_keys(id)
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_developer_api_requests_idempotency
+    ON developer_api_requests(user_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_developer_api_requests_user_created
+    ON developer_api_requests(user_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS developer_api_rate_windows (
+    key_id TEXT NOT NULL,
+    window_start INTEGER NOT NULL,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(key_id, window_start)
+  );
+
   CREATE TABLE IF NOT EXISTS order_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     order_id INTEGER NOT NULL,
@@ -91,15 +140,6 @@ db.exec(`
     error_message TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS api_keys (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL UNIQUE,
-    key_hash TEXT NOT NULL UNIQUE,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    last_used_at DATETIME,
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
 
@@ -196,6 +236,11 @@ function ensureOrdersNameColumn() {
 
 function ensureOrdersMailboxNamesColumn() {
   ensureColumn('orders', 'mailbox_names', 'TEXT');
+}
+
+function ensureOrdersProcessingLeaseColumns() {
+  ensureColumn('orders', 'processing_token', 'TEXT');
+  ensureColumn('orders', 'processing_heartbeat_at', 'TEXT');
 }
 
 function ensureTenantsUserColumn() {
@@ -321,9 +366,26 @@ function backfillLifetimeCompletedOrders() {
   `).run();
 }
 
+function backfillInboxesUsed() {
+  db.prepare(`
+    UPDATE users
+    SET inboxes_used = (
+      SELECT COALESCE(SUM(orders.total_mailboxes), 0)
+      FROM orders
+      WHERE orders.user_id = users.id AND orders.status = 'completed'
+    )
+    WHERE COALESCE(inboxes_used, 0) < (
+      SELECT COALESCE(SUM(orders.total_mailboxes), 0)
+      FROM orders
+      WHERE orders.user_id = users.id AND orders.status = 'completed'
+    )
+  `).run();
+}
+
 ensureOrdersPasswordColumn();
 ensureOrdersNameColumn();
 ensureOrdersMailboxNamesColumn();
+ensureOrdersProcessingLeaseColumns();
 ensureTenantsUserColumn();
 ensureTenantsRedirectColumn();
 ensureTenantsMfaSecretColumn();
@@ -331,6 +393,7 @@ ensureOrdersUserColumn();
 ensureUserBillingColumns();
 ensureTenantPurchasesColumns();
 backfillLifetimeCompletedOrders();
+backfillInboxesUsed();
 
 // --- USERS ---
 
@@ -921,6 +984,41 @@ export function createOrder(tenantId, totalMailboxes = 100, mailboxPassword = nu
   return result.lastInsertRowid;
 }
 
+export function createOrderWithinQuota({
+  tenantId,
+  totalMailboxes = 100,
+  mailboxPassword = null,
+  orderName = null,
+  userId,
+  mailboxNames = null,
+  inboxesLimit = null,
+}) {
+  const create = db.transaction(() => {
+    const requested = Number(totalMailboxes);
+    if (!Number.isInteger(requested) || requested < 1) {
+      const error = new Error('The mailbox quantity must be a positive integer.');
+      error.code = 'INVALID_MAILBOX_QUANTITY';
+      throw error;
+    }
+    const completed = Number(db.prepare('SELECT COALESCE(inboxes_used, 0) AS total FROM users WHERE id = ?').get(userId)?.total || 0);
+    const reserved = Number(db.prepare(`
+      SELECT COALESCE(SUM(total_mailboxes), 0) AS total
+      FROM orders
+      WHERE user_id = ? AND status NOT IN ('cancelled', 'completed')
+    `).get(userId)?.total || 0);
+    const committed = completed + reserved;
+    if (Number.isFinite(inboxesLimit) && committed + requested > inboxesLimit) {
+      const error = new Error(`This order exceeds the plan allowance. ${Math.max(0, inboxesLimit - committed)} inboxes remain.`);
+      error.code = 'INBOX_LIMIT_REACHED';
+      error.remaining = Math.max(0, inboxesLimit - committed);
+      error.limit = inboxesLimit;
+      throw error;
+    }
+    return createOrder(tenantId, requested, mailboxPassword, orderName, userId, mailboxNames);
+  });
+  return create();
+}
+
 export function getOrders(userId = null) {
   if (!userId) {
     return db.prepare(`
@@ -960,7 +1058,7 @@ export function getOrderByIdForUser(id, userId) {
 }
 
 export function updateOrderStatus(id, status) {
-  const existing = db.prepare('SELECT id, user_id, status FROM orders WHERE id = ?').get(id);
+  const existing = db.prepare('SELECT id, user_id, status, total_mailboxes FROM orders WHERE id = ?').get(id);
   const stmt = db.prepare(`
     UPDATE orders
     SET status = ?, updated_at = CURRENT_TIMESTAMP
@@ -977,9 +1075,10 @@ export function updateOrderStatus(id, status) {
     db.prepare(`
       UPDATE users
       SET lifetime_completed_orders = COALESCE(lifetime_completed_orders, 0) + 1,
+          inboxes_used = COALESCE(inboxes_used, 0) + ?,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(existing.user_id);
+    `).run(Number(existing.total_mailboxes || 0), existing.user_id);
 
     // Quota tracking for non-reseller users
     const user = db.prepare('SELECT reseller_plan, orders_per_month, orders_used_this_period FROM users WHERE id = ?').get(existing.user_id);
@@ -989,6 +1088,69 @@ export function updateOrderStatus(id, status) {
   }
 
   return result;
+}
+
+export function claimOrderForProcessing({ orderId, userId, maxConcurrentOrders }) {
+  const claim = db.transaction(() => {
+    const order = db.prepare('SELECT id, status FROM orders WHERE id = ? AND user_id = ?').get(orderId, userId);
+    if (!order) return { claimed: false, reason: 'not_found' };
+    if (!['pending', 'failed'].includes(order.status)) return { claimed: false, reason: order.status };
+    const processing = Number(db.prepare(`
+      SELECT COUNT(*) AS count FROM orders
+      WHERE user_id = ? AND status = 'processing' AND id != ?
+    `).get(userId, orderId).count);
+    if (Number.isFinite(maxConcurrentOrders) && processing >= maxConcurrentOrders) {
+      return { claimed: false, reason: 'concurrency' };
+    }
+    const result = db.prepare(`
+      UPDATE orders
+      SET status = 'processing', processing_token = NULL,
+          processing_heartbeat_at = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND user_id = ? AND status IN ('pending', 'failed')
+    `).run(orderId, userId);
+    return { claimed: result.changes === 1, reason: result.changes ? null : 'conflict' };
+  });
+  return claim();
+}
+
+export function acquireOrderProcessingLease(orderId, token, staleAfterSeconds = 900) {
+  const safeSeconds = Math.max(60, Number(staleAfterSeconds) || 900);
+  return db.prepare(`
+    UPDATE orders
+    SET processing_token = ?, processing_heartbeat_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'processing'
+      AND (
+        processing_token IS NULL
+        OR processing_token = ?
+        OR processing_heartbeat_at IS NULL
+        OR processing_heartbeat_at < datetime('now', '-' || ? || ' seconds')
+      )
+  `).run(token, orderId, token, safeSeconds).changes === 1;
+}
+
+export function touchOrderProcessingLease(orderId, token) {
+  return db.prepare(`
+    UPDATE orders
+    SET processing_heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND processing_token = ?
+  `).run(orderId, token);
+}
+
+export function releaseOrderProcessingLease(orderId, token) {
+  return db.prepare(`
+    UPDATE orders
+    SET processing_token = NULL, processing_heartbeat_at = NULL
+    WHERE id = ? AND processing_token = ?
+  `).run(orderId, token);
+}
+
+export function persistCreatedMailboxes(id, createdMailboxes) {
+  return db.prepare(`
+    UPDATE orders
+    SET created_mailboxes = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(JSON.stringify(createdMailboxes), id);
 }
 
 export function updateOrderProgress(id, progress, createdMailboxes = null) {
@@ -1184,26 +1346,136 @@ export function updateTenantPurchaseById(id, updates = {}) {
   return updateTenantPurchase('id', id, updates);
 }
 
-export function validateApiKeyForUser(keyHash) {
-  const row = db.prepare('SELECT user_id FROM api_keys WHERE key_hash = ?').get(keyHash);
-  return row ? row.user_id : null;
+// --- DEVELOPER API ---
+
+export function createDeveloperApiKey({ id, userId, name, secretHash, displayPrefix }) {
+  const active = db.prepare(`
+    SELECT COUNT(*) AS count FROM developer_api_keys
+    WHERE user_id = ? AND revoked_at IS NULL
+  `).get(userId);
+  if (Number(active.count) >= 5) {
+    const error = new Error('Revoke an existing API key before creating another one.');
+    error.code = 'API_KEY_LIMIT_REACHED';
+    throw error;
+  }
+  db.prepare(`
+    INSERT INTO developer_api_keys (id, user_id, name, secret_hash, display_prefix)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(id, userId, name, secretHash, displayPrefix);
+  return getDeveloperApiKeyByIdForUser(id, userId);
 }
 
-export function createApiKey(userId, keyHash) {
-  db.prepare('DELETE FROM api_keys WHERE user_id = ?').run(userId);
-  db.prepare('INSERT INTO api_keys (user_id, key_hash) VALUES (?, ?)').run(userId, keyHash);
+export function getDeveloperApiKeyByIdForUser(id, userId) {
+  return db.prepare(`
+    SELECT id, name, display_prefix, created_at, last_used_at, revoked_at
+    FROM developer_api_keys WHERE id = ? AND user_id = ?
+  `).get(id, userId);
 }
 
-export function getApiKey(userId) {
-  return db.prepare('SELECT created_at, last_used_at FROM api_keys WHERE user_id = ?').get(userId);
+export function listDeveloperApiKeys(userId) {
+  return db.prepare(`
+    SELECT id, name, display_prefix, created_at, last_used_at, revoked_at
+    FROM developer_api_keys WHERE user_id = ? ORDER BY created_at DESC
+  `).all(userId);
 }
 
-export function deleteApiKey(userId) {
-  return db.prepare('DELETE FROM api_keys WHERE user_id = ?').run(userId);
+export function revokeDeveloperApiKey(id, userId) {
+  return db.prepare(`
+    UPDATE developer_api_keys SET revoked_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+  `).run(id, userId);
 }
 
-export function touchApiKey(userId) {
-  db.prepare("UPDATE api_keys SET last_used_at = datetime('now') WHERE user_id = ?").run(userId);
+export function findDeveloperApiKey(secretHash) {
+  return db.prepare(`
+    SELECT id, user_id, name, display_prefix
+    FROM developer_api_keys
+    WHERE secret_hash = ? AND revoked_at IS NULL
+  `).get(secretHash);
+}
+
+export function touchDeveloperApiKey(id) {
+  return db.prepare(`
+    UPDATE developer_api_keys SET last_used_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND (last_used_at IS NULL OR last_used_at < datetime('now', '-1 minute'))
+  `).run(id);
+}
+
+export function consumeDeveloperApiRateLimit(keyId, limit, now = Date.now()) {
+  const windowStart = Math.floor(now / 60000) * 60000;
+  const consume = db.transaction(() => {
+    db.prepare('DELETE FROM developer_api_rate_windows WHERE window_start < ?').run(windowStart - 120000);
+    db.prepare(`
+      INSERT INTO developer_api_rate_windows (key_id, window_start, request_count)
+      VALUES (?, ?, 1)
+      ON CONFLICT(key_id, window_start)
+      DO UPDATE SET request_count = request_count + 1
+    `).run(keyId, windowStart);
+    return Number(db.prepare(`
+      SELECT request_count FROM developer_api_rate_windows
+      WHERE key_id = ? AND window_start = ?
+    `).get(keyId, windowStart).request_count);
+  });
+  const count = consume();
+  return {
+    allowed: count <= limit,
+    limit,
+    remaining: Math.max(0, limit - count),
+    reset: Math.ceil((windowStart + 60000) / 1000),
+  };
+}
+
+export function beginDeveloperApiRequest({ id, userId, keyId, method, path, idempotencyKey, requestHash }) {
+  const begin = db.transaction(() => {
+    const existing = db.prepare(`
+      SELECT id, method, path, request_hash, status, http_status, response_body
+      FROM developer_api_requests
+      WHERE user_id = ? AND idempotency_key = ?
+    `).get(userId, idempotencyKey);
+    if (existing) return { existing };
+    db.prepare(`
+      INSERT INTO developer_api_requests
+        (id, user_id, key_id, method, path, idempotency_key, request_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, userId, keyId, method, path, idempotencyKey, requestHash);
+    return { id };
+  });
+  return begin();
+}
+
+export function completeDeveloperApiRequest(id, httpStatus, responseBody, status = 'completed') {
+  return db.prepare(`
+    UPDATE developer_api_requests
+    SET status = ?, http_status = ?, response_body = ?, completed_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'processing'
+  `).run(status, httpStatus, String(responseBody || '').slice(0, 100000), id);
+}
+
+export function recordDeveloperApiRequest({ id, userId, keyId, method, path, httpStatus }) {
+  return db.prepare(`
+    INSERT INTO developer_api_requests
+      (id, user_id, key_id, method, path, status, http_status, completed_at)
+    VALUES (?, ?, ?, ?, ?, 'completed', ?, CURRENT_TIMESTAMP)
+  `).run(id, userId, keyId, method, path, httpStatus);
+}
+
+export function getDeveloperApiHistory(userId, limit = 20) {
+  return db.prepare(`
+    SELECT id, method, path, status, http_status, created_at, completed_at
+    FROM developer_api_requests
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(userId, Math.max(1, Math.min(100, Number(limit) || 20)));
+}
+
+export function getReservedInboxCount(userId) {
+  const completed = Number(db.prepare('SELECT COALESCE(inboxes_used, 0) AS total FROM users WHERE id = ?').get(userId)?.total || 0);
+  const reserved = Number(db.prepare(`
+    SELECT COALESCE(SUM(total_mailboxes), 0) AS total FROM orders
+    WHERE user_id = ? AND status NOT IN ('cancelled', 'completed')
+  `).get(userId)?.total || 0);
+  return completed + reserved;
 }
 
 // --- RESELLER API QUOTA ---

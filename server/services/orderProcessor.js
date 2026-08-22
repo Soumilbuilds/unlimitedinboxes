@@ -1,5 +1,5 @@
 import { createIncognitoPage, loginToMicrosoft365, createSharedMailbox, ensureExchangeSmtpAuthEnabled, grantAdminConsent } from './puppeteer.js';
-import { createZone, addDnsRecord, listDnsRecords, updateZoneNameServers } from './cloudflare.js';
+import { createZone, addDnsRecord, listDnsRecords, updateZoneNameServers, upsertZoneRedirect } from './cloudflare.js';
 import { ensureSpfRecord, ensureDmarcRecord, ensureDkimRecords } from './emailAuth.js';
 import {
  addDomainToMicrosoft,
@@ -46,19 +46,53 @@ import {
  clearOrderError,
  addOrderLog,
  updateTenantCloudflare,
- updateTenantId
+ updateTenantId,
+ acquireOrderProcessingLease,
+ touchOrderProcessingLease,
+ releaseOrderProcessingLease,
+ persistCreatedMailboxes
 } from '../db/database.js';
+import crypto from 'node:crypto';
 
 const activeJobs = new Map();
+const PROCESSING_HEARTBEAT_INTERVAL_MS = 30_000;
 
 function logMessage(orderId, message) {
+ const job = activeJobs.get(orderId);
+ if (job?.leaseLost) {
+ throw new Error('Order execution lease was lost to another worker');
+ }
  const timestamp = new Date().toISOString();
  addOrderLog(orderId, message, timestamp);
- const job = activeJobs.get(orderId);
  if (job) {
  job.logs.push({ timestamp, message });
+ const heartbeat = touchOrderProcessingLease(orderId, job.token);
+ if (heartbeat.changes !== 1) {
+ job.leaseLost = true;
+ throw new Error('Order execution lease was lost to another worker');
+ }
  }
  console.log(`[Order ${orderId}] ${message}`);
+}
+
+function startProcessingHeartbeat(orderId, job) {
+ const timer = setInterval(() => {
+ if (activeJobs.get(orderId) !== job || job.leaseLost) return;
+ try {
+ const heartbeat = touchOrderProcessingLease(orderId, job.token);
+ if (heartbeat.changes !== 1) {
+ job.leaseLost = true;
+ job.cancelled = true;
+ console.error(`[Order ${orderId}] Heartbeat stopped because another worker owns the execution lease.`);
+ }
+ } catch (error) {
+ // A transient SQLite error must not surrender ownership. The next heartbeat
+ // or normal log write will retry before the lease can become stale.
+ console.error(`[Order ${orderId}] Could not refresh processing heartbeat: ${error.message}`);
+ }
+ }, PROCESSING_HEARTBEAT_INTERVAL_MS);
+ if (typeof timer.unref === 'function') timer.unref();
+ job.heartbeatTimer = timer;
 }
 
 function logStep(orderId, stepNumber, stepDescription) {
@@ -84,6 +118,11 @@ function checkCancelled(orderId, message = null) {
 
 function isRetryableAdminStatus(status) {
  return status === 400 || status === 404 || status === 429 || status === 500 || status === 503;
+}
+
+export function isExternalDirectoryMemberCreationError(error) {
+ const message = String(error?.message || error || '');
+ return /ExternalDirectoryObjectId/i.test(message) && /Member Creation/i.test(message);
 }
 
 async function createGraphClientProvider(clientId, clientSecret, tenantId) {
@@ -271,9 +310,10 @@ async function runAddDomainToMicrosoft(orderId, tenant, getTotpCode) {
  MASTER_CLIENT_ID,
  MASTER_CLIENT_SECRET,
  tenant.tenant_id,
- tenant.domain
+ tenant.domain,
+ true
  );
- logMessage(orderId, 'Microsoft Graph authorization is already active; interactive consent was not needed.');
+ logMessage(orderId, 'Microsoft authorization is already active; interactive consent was not needed.');
  return existingAuthorizationMatch;
  } catch (authorizationProbeError) {
  const status = authorizationProbeError?.response?.status;
@@ -288,7 +328,7 @@ async function runAddDomainToMicrosoft(orderId, tenant, getTotpCode) {
  if (!requiresConsent) {
  throw authorizationProbeError;
  }
- logMessage(orderId, 'Microsoft Graph authorization is missing; opening isolated admin consent.');
+ logMessage(orderId, 'Microsoft authorization is missing; opening isolated admin consent.');
  }
 
  let consentResult = await grantConsentIfNeeded(tenant, getTotpCode, orderId);
@@ -457,7 +497,7 @@ async function runAddExchangeDnsRecords(orderId, zoneId, domain, verifyResult) {
 }
 
 async function runPrepareGraphAdminClient(orderId, tenant) {
- logStep(orderId, 7, 'Graph API: set up admin client with app permissions');
+ logStep(orderId, 7, 'Microsoft: prepare secure admin permissions');
  const { MASTER_CLIENT_ID, MASTER_CLIENT_SECRET } = process.env;
  const graphProvider = await createGraphClientProvider(MASTER_CLIENT_ID, MASTER_CLIENT_SECRET, tenant.tenant_id);
 
@@ -480,14 +520,14 @@ async function runPrepareGraphAdminClient(orderId, tenant) {
  logMessage(
  orderId,
  assignment.action === 'created'
- ? 'Exchange Administrator assigned to the provisioning application.'
- : 'Exchange Administrator assignment already present.'
+ ? 'Mailbox administration permissions prepared.'
+ : 'Mailbox administration permissions already prepared.'
  );
  } catch (exchangeRoleError) {
- throw new Error(`Failed to prepare Exchange app-only access: ${exchangeRoleError.message}`);
+ throw new Error(`Failed to prepare mailbox administration access: ${exchangeRoleError.message}`);
  }
 
- logMessage(orderId, `Graph client ready -- Global Admin role ID: ${globalAdminRoleId}`);
+ logMessage(orderId, 'Microsoft admin permissions are ready.');
  return { graphProvider, globalAdminRoleId, exchangeOrgDomain };
 }
 
@@ -543,8 +583,8 @@ async function createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, 
  logMessage(
  orderId,
  result.created
- ? ` Exchange Online created ${result.email}`
- : ` Exchange Online confirmed existing mailbox ${result.email}`
+ ? ` Mailbox created: ${result.email}`
+ : ` Existing mailbox confirmed: ${result.email}`
  );
  return result;
  }
@@ -560,7 +600,7 @@ async function runCreateMailboxes(
  identities = null,
  exchangeOrgDomain = null
 ) {
- logStep(orderId, 9, `Create ${totalMailboxes} shared mailboxes`);
+ logStep(orderId, 9, `Create ${totalMailboxes} mailboxes`);
  const createdMailboxes = [];
 
  for (let i = 0; i < totalMailboxes; i++) {
@@ -676,13 +716,13 @@ async function runReconcileExchangeMailboxes(orderId, createdMailboxes, domain, 
 }
 
 async function runConfigureSmtpAuth(orderId, page, exchangeOrgDomain = null) {
- logStep(orderId, 11, 'Exchange: enable SMTP AUTH before mailbox creation');
+ logStep(orderId, 11, 'Prepare mailbox sending access');
  if (exchangeOrgDomain) {
  const result = await ensureOrganizationSmtpAuthEnabled(exchangeOrgDomain);
  logMessage(
  orderId,
  result.Changed
- ? 'Organization SMTP AUTH enabled through Exchange Online PowerShell.'
+ ? 'Organization SMTP AUTH enabled.'
  : 'Organization SMTP AUTH was already enabled.'
  );
  return;
@@ -703,9 +743,13 @@ async function runConfigureEmailAuth(orderId, zoneId, domain, tenant, getTotpCod
  const dmarc = await ensureDmarcRecord(zoneId, domain, dmarcValue);
  logMessage(orderId, dmarc.action === 'created' ? 'DMARC record created.' : 'DMARC record already present.');
 
+ let dkimSuccess = false;
+ let lastDkimError = null;
+
+ for (let attempt = 1; attempt <= 3; attempt++) {
  let securitySession = null;
  try {
- logMessage(orderId, 'Fetching DKIM selectors via Security Center...');
+ logMessage(orderId, `Fetching DKIM selectors via Security Center (Attempt ${attempt}/3)...`);
  securitySession = await loginToSecurityCenter(tenant.admin_email, tenant.admin_password, getTotpCode);
  if (!securitySession.success) {
  throw new Error(securitySession.error || 'Security Center login failed');
@@ -725,8 +769,16 @@ async function runConfigureEmailAuth(orderId, zoneId, domain, tenant, getTotpCod
  }
  logMessage(orderId, 'DKIM enabled.');
  }
+
+ dkimSuccess = true;
+ break;
  } catch (dkimError) {
- logMessage(orderId, `DKIM setup issue (non-fatal): ${dkimError.message}`);
+ lastDkimError = dkimError;
+ logMessage(orderId, `DKIM setup issue on attempt ${attempt}: ${dkimError.message}`);
+ if (attempt < 3) {
+ logMessage(orderId, 'Retrying DKIM setup in 30 seconds...');
+ await sleep(30000);
+ }
  } finally {
  if (securitySession?.page) {
  try { await securitySession.page.close(); } catch { /* ignore */ }
@@ -734,6 +786,13 @@ async function runConfigureEmailAuth(orderId, zoneId, domain, tenant, getTotpCod
  if (securitySession?.context) {
  try { await securitySession.context.close(); } catch { /* ignore */ }
  }
+ }
+ }
+
+ // DKIM failure is treated as a fatal error because inboxes without DKIM
+ // will have severe deliverability issues and customers will see 'DKIM missing' errors.
+ if (!dkimSuccess) {
+ throw new Error(`Critical: DKIM setup failed after 3 attempts. Last error: ${lastDkimError?.message}`);
  }
 }
 
@@ -748,10 +807,13 @@ async function runFinalizeOrder(orderId, createdMailboxes, totalMailboxes) {
 }
 
 export async function processOrder(orderId) {
+ if (activeJobs.has(orderId)) {
+ return false;
+ }
  const order = getOrderById(orderId);
  if (!order) {
  console.error(`Order ${orderId} not found`);
- return;
+ return false;
  }
 
  const tenant = getTenantById(order.tenant_id);
@@ -789,14 +851,6 @@ export async function processOrder(orderId) {
  );
  return;
  }
- if (persistedMailboxes.length > 0 && order.status !== 'completed') {
- setOrderError(
- orderId,
- `Automatic retry blocked because ${persistedMailboxes.length} mailbox(es) were already created. Resume must preserve and reconcile them before continuing.`
- );
- return;
- }
-
  const { MASTER_CLIENT_ID, MASTER_CLIENT_SECRET } = process.env;
  if (!MASTER_CLIENT_ID || !MASTER_CLIENT_SECRET) {
  setOrderError(orderId, 'Missing Microsoft app credentials (MASTER_CLIENT_ID / MASTER_CLIENT_SECRET) in .env');
@@ -821,10 +875,18 @@ export async function processOrder(orderId) {
  return;
  }
 
+ const leaseToken = crypto.randomUUID();
+ if (!acquireOrderProcessingLease(orderId, leaseToken)) {
+ console.log(`[Order ${orderId}] Processing lease is already held; duplicate start ignored.`);
+ return false;
+ }
+ const job = { cancelled: false, logs: [], token: leaseToken, leaseLost: false, heartbeatTimer: null };
+ activeJobs.set(orderId, job);
+ startProcessingHeartbeat(orderId, job);
+
  updateOrderStatus(orderId, 'processing');
  clearOrderError(orderId);
- updateOrderProgress(orderId, 0, []);
- activeJobs.set(orderId, { cancelled: false, logs: [] });
+ updateOrderProgress(orderId, persistedMailboxes.length ? Number(order.progress || 0) : 0, persistedMailboxes);
  resetUsedNames();
  const preflightWeight = 5;
  const cloudflareWeight = 5;
@@ -839,7 +901,85 @@ export async function processOrder(orderId) {
  let exchangeOrgDomain = null;
  let browserContext = null;
  let page = null;
- let createdMailboxes = [];
+ let mailboxAdminSessionPromise = null;
+ let createdMailboxes = persistedMailboxes;
+ const claimedAliases = new Set(createdMailboxes.map(mailbox => String(mailbox.email || '').split('@')[0].toLowerCase()));
+ const identityForIndex = (index) => {
+ const requested = requestedMailboxIdentities?.[index];
+ if (requested) {
+ claimedAliases.add(requested.alias.toLowerCase());
+ return requested;
+ }
+ for (let attempt = 0; attempt < 2000; attempt++) {
+ const generated = generateMailboxName();
+ if (!claimedAliases.has(generated.alias.toLowerCase())) {
+ claimedAliases.add(generated.alias.toLowerCase());
+ return generated;
+ }
+ }
+ throw new Error('Could not generate a unique mailbox identity');
+ };
+ const ensureMailboxAdminSession = async () => {
+ if (page && browserContext) return page;
+ if (mailboxAdminSessionPromise) return mailboxAdminSessionPromise;
+
+ mailboxAdminSessionPromise = (async () => {
+ let newContext = null;
+ let newPage = null;
+ try {
+ const session = await createIncognitoPage();
+ newContext = session.context;
+ newPage = session.page;
+ newPage.setDefaultTimeout(60000);
+
+ const updatedTenant = getTenantByIdForUser(tenant.id, tenant.user_id);
+ if (!updatedTenant?.mfa_secret || !isValidTotpSecret(updatedTenant.mfa_secret)) {
+ throw new Error('The tenant MFA secret is missing or invalid');
+ }
+ const freshGetTotpCode = () => generateTotpCode(updatedTenant.mfa_secret);
+ logMessage(orderId, 'Automatic MFA code generation is ready for Microsoft login');
+ logMessage(orderId, 'Establishing a secure Microsoft 365 admin session...');
+
+ const loginResult = await loginToMicrosoft365(
+ newPage,
+ updatedTenant.admin_email,
+ updatedTenant.admin_password,
+ newContext,
+ freshGetTotpCode
+ );
+ if (!loginResult?.success) {
+ const loginError = String(loginResult?.error || 'Unknown login error');
+ let errorMsg = `Login failed: ${loginError}`;
+ if (loginError.includes('Login page still shown after attempts')) {
+ errorMsg = 'Microsoft 365 login failed -- MFA is required. Please ensure your admin account has MFA registered and the MFA secret is added to the tenant.';
+ } else if (loginError.includes('Invalid username or password')) {
+ errorMsg = 'Invalid admin email or password -- please check your credentials in the tenant settings.';
+ }
+ throw new Error(errorMsg);
+ }
+
+ browserContext = newContext;
+ page = loginResult.page || newPage;
+ logMessage(orderId, 'Microsoft 365 admin session established successfully.');
+ return page;
+ } catch (error) {
+ if (newPage) {
+ try { await newPage.close(); } catch { /* ignore */ }
+ }
+ if (newContext) {
+ try { await newContext.close(); } catch { /* ignore */ }
+ }
+ throw error;
+ }
+ })();
+
+ try {
+ return await mailboxAdminSessionPromise;
+ } catch (error) {
+ mailboxAdminSessionPromise = null;
+ throw error;
+ }
+ };
 
  try {
  // STEP 1: Preflight checks
@@ -849,7 +989,7 @@ export async function processOrder(orderId) {
  if (validatedTenant.tenant_id !== tenant.tenant_id) {
  tenant.tenant_id = validatedTenant.tenant_id;
  }
- updateOrderProgress(orderId, preflightWeight, []);
+ updateOrderProgress(orderId, Math.max(preflightWeight, Number(order.progress || 0)), createdMailboxes);
  if (checkCancelled(orderId)) return;
  } catch (err) {
  logMessage(orderId, `STEP 1 FAILED: ${err.message}`);
@@ -860,7 +1000,7 @@ export async function processOrder(orderId) {
  try {
  logStep(orderId, 2, 'Cloudflare: create/verify zone for domain');
  zoneId = await runSetupCloudflareZone(orderId, domain, tenant);
- updateOrderProgress(orderId, preflightWeight + cloudflareWeight, []);
+ updateOrderProgress(orderId, Math.max(preflightWeight + cloudflareWeight, Number(order.progress || 0)), createdMailboxes);
  if (checkCancelled(orderId)) return;
  } catch (err) {
  logMessage(orderId, `STEP 2 FAILED: ${err.message}`);
@@ -871,6 +1011,10 @@ export async function processOrder(orderId) {
  try {
  logStep(orderId, 3, 'Nameservers: ensure domain NS records point to Cloudflare');
  await runUpdateNameservers(orderId, zoneId, tenant);
+ if (tenant.redirect_url) {
+ await upsertZoneRedirect(zoneId, domain, tenant.redirect_url);
+ logMessage(orderId, 'Domain redirect configured.');
+ }
  if (checkCancelled(orderId)) return;
  } catch (err) {
  logMessage(orderId, `STEP 3 FAILED: ${err.message}`);
@@ -911,7 +1055,7 @@ export async function processOrder(orderId) {
 
  // STEP 7: Prepare Graph admin client
  try {
- logStep(orderId, 7, 'Graph API: set up admin client with app permissions');
+ logStep(orderId, 7, 'Microsoft: prepare secure admin permissions');
  const graphSetup = await runPrepareGraphAdminClient(orderId, tenant);
  graphProvider = graphSetup.graphProvider;
  globalAdminRoleId = graphSetup.globalAdminRoleId;
@@ -919,7 +1063,7 @@ export async function processOrder(orderId) {
  if (checkCancelled(orderId)) return;
  } catch (err) {
  logMessage(orderId, `STEP 7 FAILED: ${err.message}`);
- throw new Error(`Graph admin client setup failed: ${err.message}`);
+ throw new Error(`Microsoft admin permission setup failed: ${err.message}`);
  }
 
  // STEP 8: Disable Security Defaults
@@ -935,39 +1079,15 @@ export async function processOrder(orderId) {
  // STEP 9: Connect to Exchange Online
  try {
  logStep(orderId, 9, exchangeOrgDomain
- ? 'Exchange: validate app-only PowerShell connection'
- : 'Browser: launch incognito and login to Microsoft 365');
+ ? 'Microsoft 365: validate secure mailbox connection'
+ : 'Microsoft 365: establish a secure admin session');
  if (exchangeOrgDomain) {
  const connection = await testExchangeOnlineConnection(exchangeOrgDomain);
- logMessage(orderId, `Exchange Online app-only connection ready (${connection.AcceptedDomainCount} accepted domain(s)).`);
+ logMessage(orderId, `Secure mailbox connection ready (${connection.AcceptedDomainCount} accepted domain(s)).`);
  } else {
- logMessage(orderId, 'Exchange certificate configuration is absent; using browser fallback.');
- const { context: exchangeContext, page: newPage } = await createIncognitoPage();
- browserContext = exchangeContext;
- page = newPage;
- page.setDefaultTimeout(60000);
+ logMessage(orderId, 'Using automatic Microsoft 365 connection fallback.');
  if (checkCancelled(orderId)) return;
-
- const updatedTenant = getTenantByIdForUser(tenant.id, tenant.user_id);
- if (!updatedTenant?.mfa_secret || !isValidTotpSecret(updatedTenant.mfa_secret)) {
- throw new Error('The tenant MFA secret is missing or invalid');
- }
- const freshGetTotpCode = () => generateTotpCode(updatedTenant.mfa_secret);
- logMessage(orderId, 'Automatic MFA code generation is ready for Microsoft login');
-
- logMessage(orderId, 'Logging in to Microsoft 365 Exchange admin center...');
- const loginResult = await loginToMicrosoft365(page, updatedTenant.admin_email, updatedTenant.admin_password, browserContext, freshGetTotpCode);
- if (!loginResult.success) {
- let errorMsg = `Login failed: ${loginResult.error}`;
- if (loginResult.error.includes('Login page still shown after attempts')) {
- errorMsg = 'Microsoft 365 login failed -- MFA is required. Please ensure your admin account has MFA registered and the MFA secret is added to the tenant.';
- } else if (loginResult.error.includes('Invalid username or password')) {
- errorMsg = 'Invalid admin email or password -- please check your credentials in the tenant settings.';
- }
- throw new Error(errorMsg);
- }
- if (loginResult.page) page = loginResult.page;
- logMessage(orderId, 'Logged in to Microsoft 365 successfully');
+ await ensureMailboxAdminSession();
  }
  if (checkCancelled(orderId)) return;
  } catch (err) {
@@ -977,7 +1097,7 @@ export async function processOrder(orderId) {
 
  // STEP 10: Enable SMTP AUTH before mailbox creation
  try {
- logStep(orderId, 10, 'Exchange: enable SMTP AUTH before mailbox creation');
+ logStep(orderId, 10, 'Prepare mailbox sending access');
  await runConfigureSmtpAuth(orderId, page, exchangeOrgDomain);
  if (checkCancelled(orderId)) return;
  } catch (err) {
@@ -988,19 +1108,43 @@ export async function processOrder(orderId) {
  // STEP 11: Preflight mailbox creation + full enablement
  try {
  logStep(orderId, 11, 'Preflight: create 1 mailbox and fully enable sign-in + Global Admin');
- const preflight = await runCreateMailboxes(
+ let preflight;
+ if (createdMailboxes.length) {
+ preflight = [createdMailboxes[0]];
+ } else {
+ const preflightIdentity = identityForIndex(0);
+ try {
+ preflight = await runCreateMailboxes(
  orderId,
  1,
  domain,
  mailboxPassword,
  page,
- requestedMailboxIdentities ? [requestedMailboxIdentities[0]] : null,
+ [preflightIdentity],
  exchangeOrgDomain
  );
+ } catch (preflightError) {
+ if (!exchangeOrgDomain || !isExternalDirectoryMemberCreationError(preflightError)) {
+ throw preflightError;
+ }
+ logMessage(orderId, 'Mailbox provisioning needs automatic recovery; establishing an alternate secure connection.');
+ await ensureMailboxAdminSession();
+ exchangeOrgDomain = null;
+ preflight = await runCreateMailboxes(
+ orderId,
+ 1,
+ domain,
+ mailboxPassword,
+ page,
+ [preflightIdentity],
+ exchangeOrgDomain
+ );
+ }
+ }
  if (preflight.length === 0) {
  throw new Error('Preflight mailbox creation returned no mailboxes');
  }
- createdMailboxes = preflight;
+ if (!createdMailboxes.length) createdMailboxes = preflight;
  updateOrderProgress(orderId, preflightWeight + cloudflareWeight + dnsSetupWeight, createdMailboxes);
 
  const pfMailbox = createdMailboxes[0];
@@ -1010,6 +1154,7 @@ export async function processOrder(orderId) {
  throw new Error(`Preflight failed: user object id not returned for ${pfMailbox.email}`);
  }
  createdMailboxes[0].objectId = userId;
+ persistCreatedMailboxes(orderId, createdMailboxes);
 
  await sleep(5000);
  if (checkCancelled(orderId, 'Order cancelled during preflight.')) return;
@@ -1056,19 +1201,26 @@ export async function processOrder(orderId) {
  // STEP 12: Create remaining mailboxes
  if (total > 1) {
  try {
- logStep(orderId, 12, `Create remaining ${total - 1} shared mailboxes`);
+ logStep(orderId, 12, `Create remaining ${total - 1} mailboxes`);
  const remainingCount = total - 1;
+ const persistedEmails = new Set(createdMailboxes.map(mailbox => String(mailbox.email || '').toLowerCase()));
+ const remainingIndexes = requestedMailboxIdentities
+ ? requestedMailboxIdentities
+ .map((identity, index) => ({ identity, index }))
+ .filter(({ identity }) => !persistedEmails.has(`${identity.alias}@${domain}`.toLowerCase()))
+ .map(({ index }) => index)
+ : Array.from({ length: Math.max(0, total - createdMailboxes.length) }, (_, offset) => createdMailboxes.length + offset);
  if (exchangeOrgDomain) {
  const batchSize = 10;
- for (let batchStart = 1; batchStart < total; batchStart += batchSize) {
+ for (let batchOffset = 0; batchOffset < remainingIndexes.length; batchOffset += batchSize) {
  if (checkCancelled(orderId, 'Order cancelled during mailbox creation.')) {
  throw new Error('Order cancelled by user');
  }
 
  const batch = [];
- const batchEnd = Math.min(total, batchStart + batchSize);
- for (let i = batchStart; i < batchEnd; i++) {
- const { fullName, alias } = requestedMailboxIdentities?.[i] || generateMailboxName();
+ const batchIndexes = remainingIndexes.slice(batchOffset, batchOffset + batchSize);
+ for (const i of batchIndexes) {
+ const { fullName, alias } = identityForIndex(i);
  batch.push({ fullName, alias });
  logMessage(orderId, `[${i + 1}/${total}] Queued mailbox: ${fullName} (${alias}@${domain})`);
  }
@@ -1108,22 +1260,22 @@ export async function processOrder(orderId) {
  );
  }
 
- const processedRemaining = batchEnd - 1;
+ const processedRemaining = Math.max(0, createdMailboxes.length - 1);
  const progress = preflightWeight + cloudflareWeight + dnsSetupWeight
  + Math.round((processedRemaining / remainingCount) * mailboxCreationWeight);
  updateOrderProgress(orderId, progress, createdMailboxes);
- logMessage(orderId, `Persisted mailbox batch through ${batchEnd}/${total} (${createdMailboxes.length}/${total} ready).`);
+ logMessage(orderId, `Persisted mailbox batch (${createdMailboxes.length}/${total} ready).`);
  if (failures.length) {
  throw new Error(`Mailbox batch had ${failures.length} failure(s): ${failures.join('; ')}`);
  }
  }
  } else {
- for (let i = 1; i < total; i++) {
+ for (const i of remainingIndexes) {
  if (checkCancelled(orderId, 'Order cancelled during mailbox creation.')) {
  throw new Error('Order cancelled by user');
  }
 
- const { fullName, alias } = requestedMailboxIdentities?.[i] || generateMailboxName();
+ const { fullName, alias } = identityForIndex(i);
  logMessage(orderId, `[${i + 1}/${total}] Creating mailbox: ${fullName} (${alias}@${domain})`);
 
  const result = await createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain);
@@ -1141,7 +1293,7 @@ export async function processOrder(orderId) {
  logMessage(orderId, ` FAILED: ${result.error}`);
  }
 
- const createdCount = i;
+ const createdCount = Math.max(0, createdMailboxes.length - 1);
  const progress = preflightWeight + cloudflareWeight + dnsSetupWeight + Math.round((createdCount / remainingCount) * mailboxCreationWeight);
  updateOrderProgress(orderId, progress, createdMailboxes);
  await sleep(1500);
@@ -1231,9 +1383,17 @@ export async function processOrder(orderId) {
  await runFinalizeOrder(orderId, createdMailboxes, total);
 
  } catch (error) {
+ const job = activeJobs.get(orderId);
+ if (job?.leaseLost) {
+ console.error(`[Order ${orderId}] Stopped because another worker owns the execution lease.`);
+ } else {
+ if (createdMailboxes.length) {
+ try { persistCreatedMailboxes(orderId, createdMailboxes); } catch { /* Preserve the original failure. */ }
+ }
  logMessage(orderId, `FATAL ERROR: ${error.message}`);
  setOrderError(orderId, error.message);
  updateOrderStatus(orderId, 'failed');
+ }
  } finally {
  if (page) {
  try { await page.close(); } catch (e) { }
@@ -1241,9 +1401,13 @@ export async function processOrder(orderId) {
  if (browserContext) {
  try { await browserContext.close(); } catch (e) { }
  }
+ const job = activeJobs.get(orderId);
+ if (job?.heartbeatTimer) clearInterval(job.heartbeatTimer);
  activeJobs.delete(orderId);
+ releaseOrderProcessingLease(orderId, leaseToken);
  logMessage(orderId, 'Order processing finished.');
  }
+ return true;
 }
 
 export function getOrderLogs(orderId) {
@@ -1280,9 +1444,7 @@ export function resumeInterruptedOrders() {
  });
 
  for (const order of interrupted) {
- const message = 'Processing was interrupted by a server restart. Automatic replay was stopped to prevent duplicate mailboxes; review this order before retrying.';
- logMessage(order.id, message);
- setOrderError(order.id, message);
- updateOrderStatus(order.id, 'failed');
+ logMessage(order.id, 'Processing was interrupted. Resuming from the last persisted mailbox checkpoint.');
+ void processOrder(order.id);
  }
 }

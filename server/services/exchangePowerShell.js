@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -7,6 +8,24 @@ const EXO_APP_ID = process.env.EXO_APP_ID || process.env.MASTER_CLIENT_ID;
 const EXO_CERT_PFX_PATH = process.env.EXO_CERT_PFX_PATH;
 const EXO_CERT_PASSWORD = process.env.EXO_CERT_PASSWORD;
 const EXO_CERT_PFX_BASE64 = process.env.EXO_CERT_PFX_BASE64;
+
+// Exchange aliases are tenant-wide, even when the SMTP domains differ. Using
+// the requested local part directly can therefore select or collide with a
+// mailbox on another domain. Keep the customer-facing address unchanged while
+// giving Exchange a deterministic, tenant-wide internal alias.
+export function buildExchangeAlias(alias, domain) {
+  const localPart = String(alias || '').trim().toLowerCase();
+  const smtpDomain = String(domain || '').trim().toLowerCase();
+  const prefix = localPart
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '')
+    .slice(0, 46) || 'mailbox';
+  const digest = createHash('sha256')
+    .update(`${localPart}@${smtpDomain}`)
+    .digest('hex')
+    .slice(0, 12);
+  return `${prefix}-${digest}`.slice(0, 64);
+}
 
 export function isExchangePowerShellConfigured() {
   return Boolean(
@@ -135,6 +154,104 @@ if (-not $connected) {
 }
 `;
 
+// New-Mailbox occasionally fails for a newly verified custom domain because
+// Exchange's internal Graph lookup has not caught up with the domain yet. The
+// mailbox may still have been created, so reconcile first. If it was not, make
+// the backing object on the tenant's initial onmicrosoft.com domain and switch
+// the primary SMTP address to the requested custom domain afterwards.
+const resilientSharedMailboxScript = `
+function Wait-SharedMailbox {
+  param(
+    [string]$ExchangeAlias,
+    [string]$RequestedSmtp,
+    [string]$InitialSmtp,
+    [int]$Attempts = 12
+  )
+  for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+    foreach ($identity in @($RequestedSmtp, $InitialSmtp, $ExchangeAlias)) {
+      $found = Get-EXOMailbox -Identity $identity -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,EmailAddresses,Alias,DisplayName,RecipientTypeDetails -ErrorAction SilentlyContinue
+      if (-not $found -or [string]$found.RecipientTypeDetails -ne 'SharedMailbox') { continue }
+      $addresses = @($found.EmailAddresses | ForEach-Object { ([string]$_).ToLowerInvariant() })
+      $matchesAddress = $addresses -contains "smtp:$($RequestedSmtp.ToLowerInvariant())" -or $addresses -contains "smtp:$($InitialSmtp.ToLowerInvariant())"
+      $matchesAlias = ([string]$found.Alias).ToLowerInvariant() -eq $ExchangeAlias.ToLowerInvariant()
+      # Do not ever return a mailbox merely because it has the requested local
+      # part. Aliases are tenant-wide and that could mutate another domain's
+      # mailbox. The hashed ExchangeAlias is unique to the complete SMTP address.
+      if (($matchesAddress -or $matchesAlias) -and $found.ExternalDirectoryObjectId) { return $found }
+    }
+    if ($attempt -lt $Attempts) { Start-Sleep -Seconds 5 }
+  }
+  return $null
+}
+
+function New-SharedMailboxResilient {
+  param(
+    [string]$DisplayName,
+    [string]$ExchangeAlias,
+    [string]$RequestedSmtp
+  )
+  $initialSmtp = "$ExchangeAlias@$($env:EXO_ORG)"
+  $firstCreateError = $null
+  try {
+    New-Mailbox -Shared -Name $ExchangeAlias -DisplayName $DisplayName -Alias $ExchangeAlias -PrimarySmtpAddress $RequestedSmtp -ErrorAction Stop | Out-Null
+  } catch {
+    $createError = [string]$_.Exception.Message
+    $firstCreateError = $createError
+
+    # A failed or timed-out request can commit before Exchange returns its
+    # error. Reconcile every failure before deciding whether it is safe to retry.
+    $mailbox = Wait-SharedMailbox -ExchangeAlias $ExchangeAlias -RequestedSmtp $RequestedSmtp -InitialSmtp $initialSmtp -Attempts 4
+    if (-not $mailbox) {
+      $isRetriableCreationError = (
+        ($createError -match 'ExternalDirectoryObjectId' -and $createError -match 'Member Creation') -or
+        $createError -match 'timed?\s*out|temporar|server busy|internal server|transient|throttl|TooManyRequests'
+      )
+      if (-not $isRetriableCreationError) { throw }
+      try {
+        New-Mailbox -Shared -Name $ExchangeAlias -DisplayName $DisplayName -Alias $ExchangeAlias -ErrorAction Stop | Out-Null
+      } catch {
+        # A timed-out/failed first request may materialize while the fallback is
+        # submitted. Reconcile after any fallback error before declaring failure.
+        $fallbackCreateError = [string]$_.Exception.Message
+      }
+    }
+  }
+
+  $mailbox = Wait-SharedMailbox -ExchangeAlias $ExchangeAlias -RequestedSmtp $RequestedSmtp -InitialSmtp $initialSmtp
+  if (-not $mailbox) {
+    $details = @($firstCreateError, $fallbackCreateError) | Where-Object { $_ }
+    throw "Mailbox $RequestedSmtp was not visible after creation. $($details -join ' | ')"
+  }
+  return $mailbox
+}
+
+function Set-SharedMailboxPrimarySmtpResilient {
+  param(
+    [object]$Mailbox,
+    [string]$ExchangeAlias,
+    [string]$RequestedSmtp
+  )
+  if (([string]$Mailbox.PrimarySmtpAddress).ToLowerInvariant() -eq $RequestedSmtp.ToLowerInvariant()) {
+    return $Mailbox
+  }
+  $lastSetError = $null
+  for ($attempt = 1; $attempt -le 6; $attempt++) {
+    try {
+      $identity = if ($Mailbox.ExternalDirectoryObjectId) { [string]$Mailbox.ExternalDirectoryObjectId } else { $ExchangeAlias }
+      Set-Mailbox -Identity $identity -PrimarySmtpAddress $RequestedSmtp -ErrorAction Stop
+    } catch {
+      $lastSetError = [string]$_.Exception.Message
+    }
+    $updated = Wait-SharedMailbox -ExchangeAlias $ExchangeAlias -RequestedSmtp $RequestedSmtp -InitialSmtp "$ExchangeAlias@$($env:EXO_ORG)" -Attempts 2
+    if ($updated -and ([string]$updated.PrimarySmtpAddress).ToLowerInvariant() -eq $RequestedSmtp.ToLowerInvariant()) {
+      return $updated
+    }
+    if ($attempt -lt 6) { Start-Sleep -Seconds 5 }
+  }
+  throw "Primary SMTP address for $RequestedSmtp did not reconcile. $lastSetError"
+}
+`;
+
 export async function testExchangeOnlineConnection(orgDomain) {
   const env = await baseEnv(orgDomain);
   const script = `
@@ -201,15 +318,18 @@ export async function ensureSharedMailbox({
     ...(await baseEnv(orgDomain)),
     EXO_MAILBOX_DISPLAY_NAME: String(displayName),
     EXO_MAILBOX_ALIAS: String(alias),
+    EXO_MAILBOX_EXCHANGE_ALIAS: buildExchangeAlias(alias, domain),
     EXO_MAILBOX_DOMAIN: String(domain)
   };
   const script = `
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 ${connectExchangeScript}
+${resilientSharedMailboxScript}
 try {
   $displayName = $env:EXO_MAILBOX_DISPLAY_NAME
   $alias = $env:EXO_MAILBOX_ALIAS
+  $exchangeAlias = $env:EXO_MAILBOX_EXCHANGE_ALIAS
   $domain = $env:EXO_MAILBOX_DOMAIN
   $smtp = "$alias@$domain"
   $recipient = Get-Recipient -Identity $smtp -ErrorAction SilentlyContinue
@@ -222,19 +342,17 @@ try {
     # Exchange Online's Shared parameter set doesn't expose UserPrincipalName.
     # The order workflow updates the backing Entra user's UPN through Graph
     # immediately after Exchange returns ExternalDirectoryObjectId.
-    New-Mailbox -Shared -Name $displayName -DisplayName $displayName -Alias $alias -PrimarySmtpAddress $smtp -ErrorAction Stop | Out-Null
+    $mailbox = New-SharedMailboxResilient -DisplayName $displayName -ExchangeAlias $exchangeAlias -RequestedSmtp $smtp
     $created = $true
-    for ($attempt = 1; $attempt -le 12 -and -not $mailbox; $attempt++) {
-      Start-Sleep -Seconds 5
-      $mailbox = Get-EXOMailbox -Identity $smtp -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction SilentlyContinue
-    }
+  }
+  if ($mailbox -and -not $mailbox.ExternalDirectoryObjectId) {
+    $mailbox = Wait-SharedMailbox -ExchangeAlias $exchangeAlias -RequestedSmtp $smtp -InitialSmtp "$exchangeAlias@$($env:EXO_ORG)"
   }
   if (-not $mailbox) {
     throw "Shared mailbox $smtp was not visible after creation"
   }
   if (([string]$mailbox.PrimarySmtpAddress).ToLowerInvariant() -ne $smtp.ToLowerInvariant()) {
-    Set-Mailbox -Identity $mailbox.ExternalDirectoryObjectId -WindowsEmailAddress $smtp -ErrorAction Stop
-    $mailbox = Get-EXOMailbox -Identity $mailbox.ExternalDirectoryObjectId -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction Stop
+    $mailbox = Set-SharedMailboxPrimarySmtpResilient -Mailbox $mailbox -ExchangeAlias $exchangeAlias -RequestedSmtp $smtp
   }
   if (([string]$mailbox.PrimarySmtpAddress).ToLowerInvariant() -ne $smtp.ToLowerInvariant()) {
     throw "Primary SMTP address for $smtp did not reconcile"
@@ -286,8 +404,12 @@ export async function ensureSharedMailboxes({
     if (!displayName || !alias) {
       throw new Error(`Exchange mailbox batch item ${index + 1} is missing a display name or alias`);
     }
-    return { index, displayName, alias };
+    return { index, displayName, alias, exchangeAlias: buildExchangeAlias(alias, domain) };
   });
+  const requestedAddresses = requests.map(request => `${request.alias}@${domain}`.toLowerCase());
+  if (new Set(requestedAddresses).size !== requestedAddresses.length) {
+    throw new Error('Exchange mailbox batch contains duplicate recipient addresses');
+  }
   const env = {
     ...(await baseEnv(orgDomain)),
     EXO_MAILBOX_DOMAIN: String(domain),
@@ -297,6 +419,7 @@ export async function ensureSharedMailboxes({
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 ${connectExchangeScript}
+${resilientSharedMailboxScript}
 try {
   $domain = $env:EXO_MAILBOX_DOMAIN
   $batchJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:EXO_MAILBOX_BATCH_BASE64))
@@ -305,6 +428,7 @@ try {
   foreach ($request in $requests) {
     $displayName = [string]$request.displayName
     $alias = [string]$request.alias
+    $exchangeAlias = [string]$request.exchangeAlias
     $smtp = "$alias@$domain"
     try {
       $recipient = Get-Recipient -Identity $smtp -ErrorAction SilentlyContinue
@@ -314,19 +438,17 @@ try {
       $mailbox = Get-EXOMailbox -Identity $smtp -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction SilentlyContinue
       $created = $false
       if (-not $mailbox) {
-        New-Mailbox -Shared -Name $displayName -DisplayName $displayName -Alias $alias -PrimarySmtpAddress $smtp -ErrorAction Stop | Out-Null
+        $mailbox = New-SharedMailboxResilient -DisplayName $displayName -ExchangeAlias $exchangeAlias -RequestedSmtp $smtp
         $created = $true
-        for ($attempt = 1; $attempt -le 12 -and -not $mailbox; $attempt++) {
-          Start-Sleep -Seconds 5
-          $mailbox = Get-EXOMailbox -Identity $smtp -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction SilentlyContinue
-        }
+      }
+      if ($mailbox -and -not $mailbox.ExternalDirectoryObjectId) {
+        $mailbox = Wait-SharedMailbox -ExchangeAlias $exchangeAlias -RequestedSmtp $smtp -InitialSmtp "$exchangeAlias@$($env:EXO_ORG)"
       }
       if (-not $mailbox) {
         throw "Shared mailbox $smtp was not visible after creation"
       }
       if (([string]$mailbox.PrimarySmtpAddress).ToLowerInvariant() -ne $smtp.ToLowerInvariant()) {
-        Set-Mailbox -Identity $mailbox.ExternalDirectoryObjectId -WindowsEmailAddress $smtp -ErrorAction Stop
-        $mailbox = Get-EXOMailbox -Identity $mailbox.ExternalDirectoryObjectId -Properties ExternalDirectoryObjectId,PrimarySmtpAddress,DisplayName,RecipientTypeDetails -ErrorAction Stop
+        $mailbox = Set-SharedMailboxPrimarySmtpResilient -Mailbox $mailbox -ExchangeAlias $exchangeAlias -RequestedSmtp $smtp
       }
       if (([string]$mailbox.PrimarySmtpAddress).ToLowerInvariant() -ne $smtp.ToLowerInvariant()) {
         throw "Primary SMTP address for $smtp did not reconcile"
