@@ -57,10 +57,10 @@ function Ensure-DelegatedMailbox {
     }
     $securePassword = ConvertTo-SecureString ([string]$Request.password) -AsPlainText -Force
     try {
-      # Supplying the complete member identity avoids an Exchange Online
-      # backend defect where the abbreviated Shared parameter set creates the
-      # directory member but omits ExternalDirectoryObjectId in its response.
-      New-Mailbox -Shared -Name $Request.exchangeAlias -DisplayName $Request.displayName -Alias $Request.exchangeAlias -UserPrincipalName $smtp -Password $securePassword -PrimarySmtpAddress $smtp -ErrorAction Stop | Out-Null
+      # Supplying a password avoids an Exchange Online backend defect where
+      # the abbreviated Shared request can omit ExternalDirectoryObjectId.
+      # The live REST cmdlet does not expose UserPrincipalName for this set.
+      New-Mailbox -Shared -Name $Request.exchangeAlias -DisplayName $Request.displayName -Alias $Request.exchangeAlias -Password $securePassword -PrimarySmtpAddress $smtp -ErrorAction Stop | Out-Null
       $created = $true
     } catch {
       $creationError = [string]$_.Exception.Message

@@ -195,7 +195,7 @@ function New-SharedMailboxResilient {
   $securePassword = ConvertTo-SecureString $Password -AsPlainText -Force
   $firstCreateError = $null
   try {
-    New-Mailbox -Shared -Name $ExchangeAlias -DisplayName $DisplayName -Alias $ExchangeAlias -UserPrincipalName $RequestedSmtp -Password $securePassword -PrimarySmtpAddress $RequestedSmtp -ErrorAction Stop | Out-Null
+    New-Mailbox -Shared -Name $ExchangeAlias -DisplayName $DisplayName -Alias $ExchangeAlias -Password $securePassword -PrimarySmtpAddress $RequestedSmtp -ErrorAction Stop | Out-Null
   } catch {
     $createError = [string]$_.Exception.Message
     $firstCreateError = $createError
@@ -210,7 +210,7 @@ function New-SharedMailboxResilient {
       )
       if (-not $isRetriableCreationError) { throw }
       try {
-        New-Mailbox -Shared -Name $ExchangeAlias -DisplayName $DisplayName -Alias $ExchangeAlias -UserPrincipalName $initialSmtp -Password $securePassword -ErrorAction Stop | Out-Null
+        New-Mailbox -Shared -Name $ExchangeAlias -DisplayName $DisplayName -Alias $ExchangeAlias -Password $securePassword -ErrorAction Stop | Out-Null
       } catch {
         # A timed-out/failed first request may materialize while the fallback is
         # submitted. Reconcile after any fallback error before declaring failure.

@@ -21,7 +21,8 @@ test('delegated mailbox batches use supported Exchange cmdlets and no private ad
   assert.match(script, /Connect-ExchangeOnline\s+-Device/i);
   assert.match(script, /foreach \(\$request in @\(\$command\.payload\.mailboxes\)\)/i);
   assert.match(script, /New-Mailbox\s+-Shared/i);
-  assert.match(script, /-UserPrincipalName\s+\$smtp\s+-Password\s+\$securePassword/i);
+  assert.match(script, /New-Mailbox[\s\S]*-Password\s+\$securePassword/i);
+  assert.doesNotMatch(script, /-UserPrincipalName/i);
   assert.match(script, /Get-EXOMailbox/i);
   assert.match(script, /Set-CASMailbox/i);
   assert.doesNotMatch(script, /\/beta\/Mailbox|admin\.exchange\.microsoft\.com\/beta/i);
