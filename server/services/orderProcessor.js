@@ -128,6 +128,12 @@ export function isExternalDirectoryMemberCreationError(error) {
  return /ExternalDirectoryObjectId/i.test(message) && /Member Creation/i.test(message);
 }
 
+export function isRecoverableExchangeProvisioningError(error) {
+ const message = String(error?.message || error || '');
+ return isExternalDirectoryMemberCreationError(error)
+ || /Exchange Online PowerShell command timed out|temporar|server busy|internal server|transient|throttl|TooManyRequests/i.test(message);
+}
+
 async function createGraphClientProvider(clientId, clientSecret, tenantId) {
  let client = await getAppClient(clientId, clientSecret, tenantId);
  return {
@@ -1172,7 +1178,7 @@ export async function processOrder(orderId) {
  delegatedExchangeSession
  );
  } catch (preflightError) {
- if (!exchangeOrgDomain || !isExternalDirectoryMemberCreationError(preflightError)) {
+ if (!exchangeOrgDomain || !isRecoverableExchangeProvisioningError(preflightError)) {
  throw preflightError;
  }
  logMessage(orderId, 'Mailbox provisioning needs automatic recovery; establishing an alternate secure connection.');
