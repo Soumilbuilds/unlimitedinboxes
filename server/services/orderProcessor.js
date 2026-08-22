@@ -35,6 +35,7 @@ import {
  ensureSharedMailbox,
  ensureSharedMailboxes
 } from './exchangePowerShell.js';
+import { createDelegatedExchangeSession } from './exchangeDelegatedPowerShell.js';
 import {
  getOrderById,
  getOrders,
@@ -572,7 +573,18 @@ function parseRequestedMailboxNames(order, total) {
  });
 }
 
-async function createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain) {
+async function createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain, delegatedExchangeSession = null) {
+ if (delegatedExchangeSession) {
+ const [result] = await delegatedExchangeSession.ensureSharedMailboxes({
+ domain,
+ mailboxes: [{ displayName: fullName, alias }]
+ });
+ if (!result?.success) {
+ throw new Error(result?.error || `Mailbox creation failed for ${alias}@${domain}`);
+ }
+ logMessage(orderId, result.created ? ` Mailbox created: ${result.email}` : ` Existing mailbox confirmed: ${result.email}`);
+ return result;
+ }
  if (exchangeOrgDomain) {
  const result = await ensureSharedMailbox({
  orgDomain: exchangeOrgDomain,
@@ -598,7 +610,8 @@ async function runCreateMailboxes(
  mailboxPassword,
  page,
  identities = null,
- exchangeOrgDomain = null
+ exchangeOrgDomain = null,
+ delegatedExchangeSession = null
 ) {
  logStep(orderId, 9, `Create ${totalMailboxes} mailboxes`);
  const createdMailboxes = [];
@@ -611,7 +624,7 @@ async function runCreateMailboxes(
  const { fullName, alias } = identities?.[i] || generateMailboxName();
  logMessage(orderId, `[${i + 1}/${totalMailboxes}] Creating mailbox: ${fullName} (${alias}@${domain})`);
 
- const result = await createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain);
+ const result = await createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain, delegatedExchangeSession);
  if (result.success) {
  const email = result.email;
  createdMailboxes.push({
@@ -680,20 +693,19 @@ async function runEnableSignIn(orderId, createdMailboxes, mailboxPassword, graph
  }
 }
 
-async function runReconcileExchangeMailboxes(orderId, createdMailboxes, domain, exchangeOrgDomain) {
- if (!exchangeOrgDomain) return;
+async function runReconcileExchangeMailboxes(orderId, createdMailboxes, domain, exchangeOrgDomain, delegatedExchangeSession = null) {
+ if (!exchangeOrgDomain && !delegatedExchangeSession) return;
 
  const batchSize = 10;
  for (let start = 0; start < createdMailboxes.length; start += batchSize) {
  const batch = createdMailboxes.slice(start, start + batchSize);
- const results = await ensureSharedMailboxes({
- orgDomain: exchangeOrgDomain,
- domain,
- mailboxes: batch.map(mailbox => ({
+ const mailboxRequests = batch.map(mailbox => ({
  displayName: mailbox.name,
  alias: String(mailbox.email || '').split('@')[0]
- }))
- });
+ }));
+ const results = delegatedExchangeSession
+ ? await delegatedExchangeSession.ensureSharedMailboxes({ domain, mailboxes: mailboxRequests })
+ : await ensureSharedMailboxes({ orgDomain: exchangeOrgDomain, domain, mailboxes: mailboxRequests });
  const failures = results.filter(result => !result.success);
  if (failures.length) {
  throw new Error(
@@ -902,6 +914,8 @@ export async function processOrder(orderId) {
  let browserContext = null;
  let page = null;
  let mailboxAdminSessionPromise = null;
+ let delegatedExchangeSession = null;
+ let delegatedExchangeSessionPromise = null;
  let createdMailboxes = persistedMailboxes;
  const claimedAliases = new Set(createdMailboxes.map(mailbox => String(mailbox.email || '').split('@')[0].toLowerCase()));
  const identityForIndex = (index) => {
@@ -918,6 +932,29 @@ export async function processOrder(orderId) {
  }
  }
  throw new Error('Could not generate a unique mailbox identity');
+ };
+ const ensureDelegatedExchangeSession = async () => {
+ if (delegatedExchangeSession) return delegatedExchangeSession;
+ if (delegatedExchangeSessionPromise) return delegatedExchangeSessionPromise;
+ const updatedTenant = getTenantByIdForUser(tenant.id, tenant.user_id);
+ if (!updatedTenant?.mfa_secret || !isValidTotpSecret(updatedTenant.mfa_secret)) {
+ throw new Error('The tenant MFA secret is missing or invalid');
+ }
+ delegatedExchangeSessionPromise = createDelegatedExchangeSession({
+ email: updatedTenant.admin_email,
+ password: updatedTenant.admin_password,
+ mfaSecret: updatedTenant.mfa_secret,
+ getTotpCode: () => generateTotpCode(updatedTenant.mfa_secret),
+ log: message => logMessage(orderId, message)
+ });
+ try {
+ delegatedExchangeSession = await delegatedExchangeSessionPromise;
+ logMessage(orderId, 'Alternate secure Microsoft connection established.');
+ return delegatedExchangeSession;
+ } catch (error) {
+ delegatedExchangeSessionPromise = null;
+ throw error;
+ }
  };
  const ensureMailboxAdminSession = async () => {
  if (page && browserContext) return page;
@@ -1121,14 +1158,15 @@ export async function processOrder(orderId) {
  mailboxPassword,
  page,
  [preflightIdentity],
- exchangeOrgDomain
+ exchangeOrgDomain,
+ delegatedExchangeSession
  );
  } catch (preflightError) {
  if (!exchangeOrgDomain || !isExternalDirectoryMemberCreationError(preflightError)) {
  throw preflightError;
  }
  logMessage(orderId, 'Mailbox provisioning needs automatic recovery; establishing an alternate secure connection.');
- await ensureMailboxAdminSession();
+ await ensureDelegatedExchangeSession();
  exchangeOrgDomain = null;
  preflight = await runCreateMailboxes(
  orderId,
@@ -1137,7 +1175,8 @@ export async function processOrder(orderId) {
  mailboxPassword,
  page,
  [preflightIdentity],
- exchangeOrgDomain
+ exchangeOrgDomain,
+ delegatedExchangeSession
  );
  }
  }
@@ -1210,7 +1249,7 @@ export async function processOrder(orderId) {
  .filter(({ identity }) => !persistedEmails.has(`${identity.alias}@${domain}`.toLowerCase()))
  .map(({ index }) => index)
  : Array.from({ length: Math.max(0, total - createdMailboxes.length) }, (_, offset) => createdMailboxes.length + offset);
- if (exchangeOrgDomain) {
+ if (exchangeOrgDomain || delegatedExchangeSession) {
  const batchSize = 10;
  for (let batchOffset = 0; batchOffset < remainingIndexes.length; batchOffset += batchSize) {
  if (checkCancelled(orderId, 'Order cancelled during mailbox creation.')) {
@@ -1225,14 +1264,13 @@ export async function processOrder(orderId) {
  logMessage(orderId, `[${i + 1}/${total}] Queued mailbox: ${fullName} (${alias}@${domain})`);
  }
 
- const results = await ensureSharedMailboxes({
- orgDomain: exchangeOrgDomain,
- domain,
- mailboxes: batch.map(item => ({
+ const mailboxRequests = batch.map(item => ({
  displayName: item.fullName,
  alias: item.alias
- }))
- });
+ }));
+ const results = delegatedExchangeSession
+ ? await delegatedExchangeSession.ensureSharedMailboxes({ domain, mailboxes: mailboxRequests })
+ : await ensureSharedMailboxes({ orgDomain: exchangeOrgDomain, domain, mailboxes: mailboxRequests });
  const failures = [];
  for (const result of results) {
  const request = batch[result.index];
@@ -1278,7 +1316,7 @@ export async function processOrder(orderId) {
  const { fullName, alias } = identityForIndex(i);
  logMessage(orderId, `[${i + 1}/${total}] Creating mailbox: ${fullName} (${alias}@${domain})`);
 
- const result = await createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain);
+ const result = await createMailbox(orderId, page, exchangeOrgDomain, fullName, alias, domain, delegatedExchangeSession);
  if (result.success) {
  const email = result.email;
  createdMailboxes.push({
@@ -1320,7 +1358,7 @@ export async function processOrder(orderId) {
  // the onmicrosoft.com address as primary while the backing user converges.
  try {
  logStep(orderId, 14, 'Reconcile Exchange primary SMTP and mailbox SMTP AUTH');
- await runReconcileExchangeMailboxes(orderId, createdMailboxes, domain, exchangeOrgDomain);
+ await runReconcileExchangeMailboxes(orderId, createdMailboxes, domain, exchangeOrgDomain, delegatedExchangeSession);
  updateOrderProgress(orderId, 70, createdMailboxes);
  if (checkCancelled(orderId)) return;
  } catch (err) {
@@ -1395,6 +1433,9 @@ export async function processOrder(orderId) {
  updateOrderStatus(orderId, 'failed');
  }
  } finally {
+ if (delegatedExchangeSession) {
+ try { await delegatedExchangeSession.close(); } catch { /* ignore */ }
+ }
  if (page) {
  try { await page.close(); } catch (e) { }
  }
