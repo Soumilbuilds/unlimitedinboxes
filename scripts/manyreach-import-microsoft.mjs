@@ -14,7 +14,7 @@ const puppeteer = puppeteerModule.default || puppeteerModule;
 const StealthPlugin = StealthPluginModule.default || StealthPluginModule;
 puppeteer.use(StealthPlugin());
 
-const DEFAULT_CSV = '/Users/poonam/Downloads/export-emailacc-20260702T13_15_24.csv';
+const DEFAULT_CSV = process.env.MANYREACH_CSV || '';
 const DEFAULT_STATE_FILE = 'logs/manyreach-import/state.json';
 const DEFAULT_RESULTS_FILE = 'logs/manyreach-import/results.ndjson';
 const DEFAULT_SCREENSHOT_DIR = 'logs/manyreach-import/screenshots';
@@ -51,10 +51,11 @@ Usage:
     node scripts/manyreach-import-microsoft.mjs [options]
 
 Options:
-  --csv <path>              Mailbox export CSV. Default: ${DEFAULT_CSV}
+  --csv <path>              Mailbox export CSV. Required unless MANYREACH_CSV is set.
   --cookies <path>          Manyreach cookies JSON file. Also supports MANYREACH_COOKIES_FILE.
   --password <value>        Mailbox password. Prefer MAILBOX_PASSWORD to avoid shell history.
   --oauth-url <url>         Microsoft OAuth URL. Defaults to the Manyreach Microsoft sender URL.
+  --org-id <id>             Manyreach organization ID. Derived from the OAuth state when omitted.
   --limit <n>               Process only n accounts after filtering.
   --skip <n>                Skip first n accounts after filtering.
   --only <a@b,c@d>          Process only these emails.
@@ -173,13 +174,14 @@ function filterMailboxes(rows, opts) {
     .map((row, index) => ({
       index,
       email: String(row.email || row.username || '').trim().toLowerCase(),
+      password: String(row.password || '').trim(),
       firstName: String(row.first_name || '').trim(),
       lastName: String(row.last_name || '').trim(),
       provider: String(row.provider || '').trim().toUpperCase(),
       row
     }))
     .filter(item => item.email && item.email.includes('@'))
-    .filter(item => !provider || item.provider === provider)
+    .filter(item => !provider || !item.provider || item.provider === provider)
     .filter(item => !only || only.has(item.email));
 
   const skip = toInt(opts.skip, 0, '--skip');
@@ -316,7 +318,10 @@ async function connectMailbox(params) {
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const result = await connectMailboxOnce(params);
-    if (result.status !== 'failed' || !isTransientAutomationError(result.reason) || attempt === maxRetries) {
+    const retryable =
+      (result.status === 'failed' && isTransientAutomationError(result.reason)) ||
+      /timed out after/i.test(String(result.reason || ''));
+    if (!retryable || attempt === maxRetries) {
       return result;
     }
 
@@ -394,7 +399,7 @@ async function connectMailboxOnce({ browser, item, password, cookies, oauthUrl, 
 }
 
 function isTransientAutomationError(message) {
-  return /detached frame|execution context was destroyed|cannot find context|target closed|navigation failed|frame got detached/i
+  return /detached frame|execution context was destroyed|cannot find context|target closed|navigation failed|frame got detached|session closed|protocol error|iframe has been closed/i
     .test(String(message || ''));
 }
 
@@ -563,12 +568,18 @@ async function handleManyreachLanding(page, item, opts) {
     return { done: true, success: true, reason: 'Sender already exists', finalUrl: url };
   }
 
-  if (/error|failed|invalid|denied/.test(lower) && /oauth|microsoft|sender|mailbox|permission/.test(lower)) {
+  const landingUrl = new URL(url);
+  const oauthError = landingUrl.searchParams.get('error') || landingUrl.searchParams.get('error_description');
+  const explicitConnectionError =
+    /(?:oauth|microsoft) (?:authorization |connection )?(?:error|failed|denied)/.test(lower) ||
+    /failed to (?:add|connect) (?:sender|mailbox)/.test(lower) ||
+    /sender (?:authorization|connection) (?:error|failed|denied)/.test(lower);
+  if (oauthError || explicitConnectionError) {
     const screenshot = await saveScreenshot(page, item.email, 'manyreach-error', opts);
     return {
       done: true,
       success: false,
-      reason: clipText(lower),
+      reason: oauthError ? `Manyreach OAuth error: ${clipText(oauthError)}` : clipText(lower),
       finalUrl: url,
       screenshot
     };
@@ -612,9 +623,9 @@ async function verifySenderVisible(page, item, opts) {
   url.searchParams.set('search', item.email);
   url.searchParams.set('provider', '');
   url.searchParams.set('trackingDomain', '');
-  url.searchParams.set('o', '15308');
+  if (opts.orgId) url.searchParams.set('o', String(opts.orgId));
   url.searchParams.set('servicetype', 'all');
-  url.searchParams.set('org', '15308');
+  if (opts.orgId) url.searchParams.set('org', String(opts.orgId));
 
   try {
     await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -659,6 +670,8 @@ async function handleConsent(page) {
 
   if (!looksLikeConsent) return false;
 
+  if (await clickSelector(page, '#idSIButton9')) return true;
+  if (await clickSelector(page, 'input[type="submit"][value*="Accept" i]')) return true;
   return clickVisibleByText(page, ['accept', 'yes', 'continue', 'allow']);
 }
 
@@ -910,9 +923,13 @@ async function main() {
   }
 
   const csvPath = opts.csv || DEFAULT_CSV;
+  if (!csvPath) {
+    throw new Error('Missing mailbox CSV. Set MANYREACH_CSV or pass --csv.');
+  }
   const stateFile = opts.stateFile || DEFAULT_STATE_FILE;
   const resultsFile = opts.resultsFile || DEFAULT_RESULTS_FILE;
   const oauthUrl = opts.oauthUrl || process.env.MANYREACH_MS_OAUTH_URL || DEFAULT_OAUTH_URL;
+  opts.orgId = opts.orgId || process.env.MANYREACH_ORG_ID || extractOrgIdFromOAuthUrl(oauthUrl);
   const rows = await readCsv(csvPath);
   const selected = filterMailboxes(rows, opts);
 
@@ -927,9 +944,9 @@ async function main() {
     return;
   }
 
-  const password = opts.password || process.env.MAILBOX_PASSWORD;
-  if (!password) {
-    throw new Error('Missing mailbox password. Set MAILBOX_PASSWORD or pass --password.');
+  const fallbackPassword = opts.password || process.env.MAILBOX_PASSWORD || '';
+  if (selected.some(item => !item.password) && !fallbackPassword) {
+    throw new Error('Some rows are missing a password. Add a password column, set MAILBOX_PASSWORD, or pass --password.');
   }
 
   const cookies = await loadCookies(opts);
@@ -969,7 +986,7 @@ async function main() {
       const result = await connectMailbox({
         browser,
         item,
-        password,
+        password: item.password || fallbackPassword,
         cookies,
         oauthUrl,
         opts
@@ -994,6 +1011,17 @@ async function main() {
     });
   } finally {
     await shutdown();
+  }
+}
+
+function extractOrgIdFromOAuthUrl(oauthUrl) {
+  try {
+    const state = new URL(oauthUrl).searchParams.get('state');
+    if (!state) return '';
+    const stateUrl = new URL(state, 'https://app.manyreach.com');
+    return stateUrl.searchParams.get('org') || stateUrl.searchParams.get('o') || '';
+  } catch {
+    return '';
   }
 }
 
