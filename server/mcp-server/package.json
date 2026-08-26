@@ -1,0 +1,15 @@
+{
+ "name": "unlimited-inboxes-mcp",
+ "version": "1.0.0",
+ "type": "module",
+ "main": "index.js",
+ "scripts": {
+  "start": "node index.js"
+ },
+ "dependencies": {
+  "@modelcontextprotocol/sdk": "^1.6.0",
+  "cors": "^2.8.5",
+  "express": "^4.19.2",
+  "zod": "^3.25.76"
+ }
+}

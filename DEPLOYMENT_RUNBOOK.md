@@ -191,3 +191,67 @@ Whop is the active processor for new subscriptions. Stripe and xPay remain legac
 - Overdue billing (`past_due`, `unpaid`, or `incomplete`) is a hard gate: redirect to `/billing?intent=retry` and show the open Stripe invoice or billing portal.
 - Completed trial order usage is tracked on the user record so deleting an old completed order does not reset the one-order trial limit.
 - Tenant purchases are one-time Stripe Checkout payments. If `STRIPE_PRICE_US_TENANT` or `STRIPE_PRICE_ASIA_TENANT` points at a recurring Stripe price, the server intentionally creates inline one-time price data instead of using that recurring price directly.
+
+## MCP Server
+
+The MCP server exposes the `/v1/` REST API as MCP tools via SSE transport.
+
+- MCP URL: `https://mcp.unlimitedinboxes.com/mcp?api_key=ui_live_...`
+- Port: 3001
+- Systemd unit: `unlimited-inboxes-mcp.service`
+- Working directory: `/opt/unlimited-inboxes/current/server/mcp-server`
+- Source: `server/mcp-server/`
+- Depends on the main app being healthy on port 3000
+
+### Deploy the MCP server
+
+```bash
+# On VPS:
+cp unlimited-inboxes-mcp.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now unlimited-inboxes-mcp
+```
+
+### MCP Client Configuration
+
+Use this URL in any MCP-compatible client (Claude Desktop, ChatGPT, etc.):
+
+```
+https://mcp.unlimitedinboxes.com/mcp?api_key=YOUR_API_KEY
+```
+
+Replace `YOUR_API_KEY` with a valid developer API key (`ui_live_...`). Get one from the web dashboard at https://app.unlimitedinboxes.com.
+
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `get_account` | Account plan, inbox limits, rate limits |
+| `list_orders` | List orders (optionally filter by domain) |
+| `create_order` | Create a new mailbox provisioning order |
+| `get_order` | Get order details by ID |
+| `prepare_nameservers` | Prepare Cloudflare nameservers |
+| `check_nameservers` | Check nameserver delegation |
+| `start_order` | Start provisioning mailboxes |
+| `download_csv` | Download credentials as CSV |
+
+### ChatGPT Integration
+
+1. Settings → Connectors → Add custom MCP
+2. Server URL: `https://mcp.unlimitedinboxes.com/mcp?api_key=ui_live_...`
+3. Transport: SSE
+4. Save and use tools in any conversation
+
+### Claude Desktop Integration
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+ "mcpServers": {
+ "unlimited-inboxes": {
+ "url": "https://mcp.unlimitedinboxes.com/mcp?api_key=ui_live_..."
+ }
+ }
+}
+```

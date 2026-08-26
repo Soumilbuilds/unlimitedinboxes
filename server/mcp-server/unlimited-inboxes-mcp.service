@@ -1,0 +1,17 @@
+[Unit]
+Description=Unlimited Inboxes MCP Server
+After=network.target unlimited-inboxes.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/unlimited-inboxes/current/server/mcp-server
+ExecStart=/usr/bin/node index.js
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PORT=3001
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

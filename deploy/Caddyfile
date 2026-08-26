@@ -1,0 +1,11 @@
+mcp.unlimitedinboxes.com {
+	reverse_proxy 127.0.0.1:3001
+}
+
+app.unlimitedinboxes.com {
+	reverse_proxy 127.0.0.1:3000
+}
+
+api.unlimitedinboxes.com {
+	reverse_proxy 127.0.0.1:3000
+}
