@@ -101,6 +101,9 @@ else
   $SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/client\" && (npm ci || npm install) && npm run build"
 fi
 
+echo "Verifying frontend assets before activation..."
+$SSH_CMD "$REMOTE" "node \"$RELEASE_DIR/scripts/verify-frontend-assets.mjs\" \"$RELEASE_DIR/client/dist\""
+
 PREVIOUS_RELEASE="$($SSH_CMD "$REMOTE" "readlink -f \"$DEPLOY_PATH/current\" 2>/dev/null || true")"
 
 $SSH_CMD "$REMOTE" "ln -sfn \"$RELEASE_DIR\" \"$DEPLOY_PATH/current\""

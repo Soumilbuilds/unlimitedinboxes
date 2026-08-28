@@ -85,6 +85,9 @@ $SSH_CMD "$REMOTE" "touch \"$SHARED_DIR/db/app.db\"; ln -sfn \"$SHARED_DIR/db/ap
 $SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/server\" && (npm ci --omit=dev || npm install --omit=dev)"
 $SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/client\" && (npm ci --omit=dev || npm install --omit=dev) || true"
 
+echo "Verifying frontend assets before activation..."
+$SSH_CMD "$REMOTE" "node \"$RELEASE_DIR/scripts/verify-frontend-assets.mjs\" \"$RELEASE_DIR/client/dist\""
+
 PREVIOUS_RELEASE="$($SSH_CMD "$REMOTE" "readlink -f \"$DEPLOY_PATH/current\" 2>/dev/null || true")"
 
 $SSH_CMD "$REMOTE" "ln -sfn \"$RELEASE_DIR\" \"$DEPLOY_PATH/current\""
