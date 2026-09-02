@@ -109,6 +109,21 @@ test('paid basic membership grants all 100 inbox downloads', () => {
   assert.equal(access.downloadAllowance, Infinity);
 });
 
+test('an Agency grant is not downgraded by an active Whop intro membership', () => {
+  const updates = buildWhopMembershipUpdates({
+    id: 'mem_intro',
+    status: 'trialing',
+    plan: { id: WHOP_PLAN_IDS.intro },
+    renewal_period_end: new Date(Date.now() + 5 * 86400000).toISOString(),
+  });
+  const access = getUserAccessState({ ...user, ...updates, plan: 'agency' });
+
+  assert.equal(access.effectivePlan, 'agency');
+  assert.equal(access.isTrialing, false);
+  assert.equal(access.canDownloadAll, true);
+  assert.equal(access.downloadAllowance, Infinity);
+});
+
 test('an expired Whop trial does not retain access while a webhook is delayed', () => {
   const updates = buildWhopMembershipUpdates({
     id: 'mem_expired',

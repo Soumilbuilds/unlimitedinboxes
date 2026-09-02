@@ -12,6 +12,12 @@ const PLAN_LIMITS = {
 };
 
 function getPlanKey(user) {
+ const stored = user?.plan;
+
+ // Agency can be granted outside the normal checkout lifecycle. An intro
+ // membership must never downgrade that higher, explicitly stored entitlement.
+ if (stored === 'agency') return 'agency';
+
  const whopStatus = getWhopStatus(user?.whop_membership_status);
  const whopDetails = getWhopPlanDetails(user?.whop_plan_id);
  if (whopDetails && isWhopMembershipActive(whopStatus)) {
@@ -27,7 +33,6 @@ function getPlanKey(user) {
  const subPlan = user?.xpay_subscription_plan;
  if (subPlan && PLAN_LIMITS[subPlan]) return subPlan;
 
- const stored = user?.plan;
  if (stored && PLAN_LIMITS[stored]) return stored;
 
  return 'free';
@@ -89,7 +94,7 @@ export function getUserAccessState(user) {
  const isPastDue = usesWhop
  ? ['past_due', 'unresolved'].includes(whopStatus)
  : isSubscriptionPastDue(subscriptionStatus);
- const trialing = isOnTrial(user);
+ const trialing = planKey === 'trial' && isOnTrial(user);
  const currentPeriodEnd = usesWhop ? user?.whop_current_period_end : user?.xpay_current_period_end;
  const periodEnd = currentPeriodEnd ? new Date(currentPeriodEnd) : null;
  const cancelledAtPeriodEnd = Boolean(usesWhop ? user?.whop_cancel_at_period_end : user?.xpay_cancel_at_period_end);
@@ -100,7 +105,8 @@ export function getUserAccessState(user) {
  ? whopPaidPeriodActive
  : subscriptionStatus === 'ACTIVE'
  && (!cancelledAtPeriodEnd || (periodEnd && periodEnd > new Date()));
- const isActive = paidPeriodActive || trialing;
+ const activeWhopIntro = usesWhop && whopStatus === 'trialing' && isOnTrial(user);
+ const isActive = paidPeriodActive || trialing || activeWhopIntro;
 
  const inboxesAvailable = inboxesLimit === Infinity
  ? Infinity

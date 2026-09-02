@@ -16,6 +16,11 @@ import {
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
 import { processOrder, cancelOrder, getOrderLogs, hasActiveJob } from '../services/orderProcessor.js';
+import {
+ buildMailboxCsv,
+ getMailboxCredentialRows,
+ getUniqueMailboxCredentialRows
+} from '../services/mailboxCsv.js';
 
 const router = Router();
 
@@ -270,6 +275,28 @@ function maybeMaskOrder(order, accessState) {
  };
 }
 
+function sendCredentialCsv(res, rows, filename) {
+ if (!rows.length) {
+ return res.status(409).json({
+ code: 'NO_MAILBOX_CREDENTIALS',
+ error: 'No complete mailbox credentials were found. Please contact support instead of downloading a blank file.'
+ });
+ }
+
+ res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+ res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+ res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+ res.setHeader('Pragma', 'no-cache');
+ res.setHeader('X-Content-Type-Options', 'nosniff');
+ return res.send(buildMailboxCsv(rows));
+}
+
+function applyDownloadAllowance(rows, accessState) {
+ const allowance = accessState?.downloadAllowance;
+ if (!Number.isFinite(allowance)) return rows;
+ return rows.slice(0, Math.max(0, Number(allowance)));
+}
+
 router.get('/', (req, res) => {
  try {
  const orders = getOrders(req.session.user.id);
@@ -280,6 +307,54 @@ router.get('/', (req, res) => {
  }, accessState)));
  } catch (error) {
  res.status(500).json({ error: maskSensitiveText(error.message) });
+ }
+});
+
+router.get('/download/all', (req, res) => {
+ try {
+ const accessState = req.accessState || getUserAccessState(req.session.user);
+ if (accessState.downloadAllowance <= 0) {
+ return res.status(403).json({
+ code: 'DOWNLOAD_NOT_ALLOWED',
+ error: 'Mailbox downloads require an active subscription.'
+ });
+ }
+
+ const completedOrders = getOrders(req.session.user.id)
+ .filter(order => order.status === 'completed');
+ const rows = applyDownloadAllowance(
+ getUniqueMailboxCredentialRows(completedOrders),
+ accessState
+ );
+ return sendCredentialCsv(res, rows, `${rows.length.toLocaleString('en-US')} Microsoft Inboxes.csv`);
+ } catch (error) {
+ return res.status(500).json({ error: maskSensitiveText(error.message) });
+ }
+});
+
+router.get('/:id/download', (req, res) => {
+ try {
+ const orderId = parseInt(req.params.id, 10);
+ if (!Number.isInteger(orderId)) return res.status(400).json({ error: 'Invalid order ID.' });
+
+ const order = getOrderByIdForUser(orderId, req.session.user.id);
+ if (!order) return res.status(404).json({ error: 'Order not found.' });
+ if (order.status !== 'completed') {
+ return res.status(409).json({ error: 'This order is not completed yet.' });
+ }
+
+ const accessState = req.accessState || getUserAccessState(req.session.user);
+ if (accessState.downloadAllowance <= 0) {
+ return res.status(403).json({
+ code: 'DOWNLOAD_NOT_ALLOWED',
+ error: 'Mailbox downloads require an active subscription.'
+ });
+ }
+
+ const rows = applyDownloadAllowance(getMailboxCredentialRows(order), accessState);
+ return sendCredentialCsv(res, rows, `${rows.length.toLocaleString('en-US')} Microsoft Inboxes.csv`);
+ } catch (error) {
+ return res.status(500).json({ error: maskSensitiveText(error.message) });
  }
 });
 
