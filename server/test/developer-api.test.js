@@ -241,6 +241,7 @@ test('dashboard and API orders share one transactional inbox allowance', () => {
     () => database.createOrderWithinQuota({ tenantId, totalMailboxes: 1, mailboxPassword: 'Password123!', orderName: 'Too Many', userId, inboxesLimit: 100 }),
     (error) => error.code === 'INBOX_LIMIT_REACHED' && error.remaining === 0,
   );
+  database.updateOrderProgress(first, 100, Array.from({ length: 60 }, (_, i) => ({ email: `inbox${i}@quota.example.com`, password: 'Password123!' })));
   database.updateOrderStatus(first, 'completed');
   database.deleteOrder(first);
   assert.equal(database.getReservedInboxCount(userId), 100);

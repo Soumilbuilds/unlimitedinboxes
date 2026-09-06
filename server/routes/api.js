@@ -6,7 +6,8 @@ import {
   createTenant,
   getTenants,
   updateTenantDetails,
-  createOrder,
+  createOrderWithinQuota,
+  claimOrderForProcessing,
   getOrderById
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
@@ -264,7 +265,7 @@ router.post('/orders', requireApiKey, async (req, res) => {
     if (tenant) {
       // Check if this tenant already has an active (non-cancelled) order
       const existingOrders = getOrders(req.session.user.id).filter(
-        o => o.tenant_id === tenant.id && o.status !== 'cancelled'
+        o => o.tenant_id === tenant.id && !['cancelled', 'failed'].includes(o.status)
       );
       if (existingOrders.length > 0) {
         return res.status(409).json({
@@ -304,13 +305,7 @@ router.post('/orders', requireApiKey, async (req, res) => {
       : `${new Date().toLocaleString('default', { month: 'short', year: 'numeric' })}-${tenant_domain}`;
 
     // Create order
-    const orderId = createOrder(
-      tenant.id,
-      mailboxTotal,
-      mailbox_password,
-      safeName,
-      req.session.user.id
-    );
+    const orderId = createOrderWithinQuota({ tenantId: tenant.id, totalMailboxes: mailboxTotal, mailboxPassword: mailbox_password, orderName: safeName, userId: req.session.user.id, inboxesLimit: accessState.inboxesLimit });
 
     const order = getOrderById(orderId);
 
@@ -419,7 +414,7 @@ router.post('/orders/:id/start', requireApiKey, async (req, res) => {
       return res.json({ success: true, message: 'Processing resumed' });
     }
 
-    if (!['pending', 'failed', 'cancelled'].includes(order.status)) {
+    if (!['pending', 'failed'].includes(order.status)) {
       return res.status(400).json({ error: `Cannot start order in "${order.status}" status` });
     }
 
@@ -458,7 +453,8 @@ router.post('/orders/:id/start', requireApiKey, async (req, res) => {
       });
     }
 
-    updateOrderStatus(orderId, 'processing');
+    const claim = claimOrderForProcessing({ orderId, userId: req.session.user.id, maxConcurrentOrders: accessState.maxConcurrentOrders, inboxesLimit: accessState.inboxesLimit });
+    if (!claim.claimed) return res.status(409).json({ code: 'ORDER_START_BLOCKED', error: `Order cannot start: ${claim.reason}` });
     processOrder(orderId);
 
     res.json({ success: true, message: 'Processing started' });

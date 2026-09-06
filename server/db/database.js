@@ -1,3 +1,4 @@
+import { getMailboxCredentialRows } from '../services/mailboxCsv.js';
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -372,19 +373,28 @@ function backfillLifetimeCompletedOrders() {
 }
 
 function backfillInboxesUsed() {
-  db.prepare(`
-    UPDATE users
-    SET inboxes_used = (
-      SELECT COALESCE(SUM(orders.total_mailboxes), 0)
-      FROM orders
-      WHERE orders.user_id = users.id AND orders.status = 'completed'
-    )
-    WHERE COALESCE(inboxes_used, 0) < (
-      SELECT COALESCE(SUM(orders.total_mailboxes), 0)
-      FROM orders
-      WHERE orders.user_id = users.id AND orders.status = 'completed'
-    )
-  `).run();
+  // Preserve historical usage from deleted orders, but refund false completions.
+  ensureColumn('orders', 'charged_inboxes', 'INTEGER DEFAULT 0');
+  db.exec('CREATE TABLE IF NOT EXISTS quota_migrations (id TEXT PRIMARY KEY)');
+  db.transaction(() => {
+    if (db.prepare('SELECT 1 FROM quota_migrations WHERE id = ?').get('usable-inboxes-v1')) return;
+    for (const order of db.prepare("SELECT * FROM orders WHERE status = 'completed'").all()) {
+      const count = usableInboxCount(order);
+      if (count < Number(order.total_mailboxes) || count === 0) {
+        db.prepare("UPDATE orders SET status = 'failed', error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+          .run('Previous completion was invalid: inbox provisioning was incomplete. Retry or create a new order.', order.id);
+        db.prepare('UPDATE users SET inboxes_used = MAX(0, COALESCE(inboxes_used, 0) - ?), lifetime_completed_orders = MAX(0, COALESCE(lifetime_completed_orders, 0) - 1) WHERE id = ?')
+          .run(Number(order.total_mailboxes || 0), order.user_id);
+      } else {
+        db.prepare('UPDATE orders SET charged_inboxes = ? WHERE id = ?').run(count, order.id);
+      }
+    }
+    db.prepare('INSERT INTO quota_migrations (id) VALUES (?)').run('usable-inboxes-v1');
+  })();
+}
+
+function usableInboxCount(order) {
+  return new Set(getMailboxCredentialRows(order).map(row => row.email.toLowerCase())).size;
 }
 
 ensureOrdersPasswordColumn();
@@ -1010,7 +1020,7 @@ export function createOrderWithinQuota({
     const reserved = Number(db.prepare(`
       SELECT COALESCE(SUM(total_mailboxes), 0) AS total
       FROM orders
-      WHERE user_id = ? AND status NOT IN ('cancelled', 'completed')
+      WHERE user_id = ? AND status IN ('pending', 'processing')
     `).get(userId)?.total || 0);
     const committed = completed + reserved;
     if (Number.isFinite(inboxesLimit) && committed + requested > inboxesLimit) {
@@ -1064,43 +1074,44 @@ export function getOrderByIdForUser(id, userId) {
 }
 
 export function updateOrderStatus(id, status) {
-  const existing = db.prepare('SELECT id, user_id, status, total_mailboxes FROM orders WHERE id = ?').get(id);
-  const stmt = db.prepare(`
-    UPDATE orders
-    SET status = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `);
-  const result = stmt.run(status, id);
-
-  if (
-    result.changes > 0
-    && status === 'completed'
-    && existing?.status !== 'completed'
-    && existing?.user_id
-  ) {
-    db.prepare(`
-      UPDATE users
-      SET lifetime_completed_orders = COALESCE(lifetime_completed_orders, 0) + 1,
-          inboxes_used = COALESCE(inboxes_used, 0) + ?,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).run(Number(existing.total_mailboxes || 0), existing.user_id);
-
-    // Quota tracking for non-reseller users
-    const user = db.prepare('SELECT reseller_plan, orders_per_month, orders_used_this_period FROM users WHERE id = ?').get(existing.user_id);
-    if (user && !user.reseller_plan && user.orders_per_month) {
-      db.prepare('UPDATE users SET orders_used_this_period = COALESCE(orders_used_this_period, 0) + 1 WHERE id = ?').run(existing.user_id);
+  return db.transaction(() => {
+    const existing = db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
+    if (!existing) return { changes: 0 };
+    const count = status === 'completed' ? usableInboxCount(existing) : 0;
+    if (status === 'completed' && (count === 0 || count !== Number(existing.total_mailboxes))) {
+      throw new Error('Cannot complete an order without all created inbox credentials.');
     }
-  }
-
-  return result;
+    const previous = Number(existing.charged_inboxes || 0);
+    const result = db.prepare('UPDATE orders SET status = ?, charged_inboxes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, count, id);
+    if (existing.user_id) {
+      const completedDelta = Number(status === 'completed') - Number(existing.status === 'completed');
+      db.prepare(`UPDATE users SET inboxes_used = MAX(0, COALESCE(inboxes_used, 0) + ?),
+        lifetime_completed_orders = MAX(0, COALESCE(lifetime_completed_orders, 0) + ?),
+        updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(count - previous, completedDelta, existing.user_id);
+      if (completedDelta) db.prepare(`UPDATE users SET orders_used_this_period = MAX(0, COALESCE(orders_used_this_period, 0) + ?)
+        WHERE id = ? AND NOT reseller_plan AND orders_per_month > 0`).run(completedDelta, existing.user_id);
+    }
+    return result;
+  })();
 }
 
-export function claimOrderForProcessing({ orderId, userId, maxConcurrentOrders }) {
+export function claimOrderForProcessing({ orderId, userId, maxConcurrentOrders, inboxesLimit = Infinity }) {
   const claim = db.transaction(() => {
-    const order = db.prepare('SELECT id, status FROM orders WHERE id = ? AND user_id = ?').get(orderId, userId);
+    const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(orderId, userId);
     if (!order) return { claimed: false, reason: 'not_found' };
     if (!['pending', 'failed'].includes(order.status)) return { claimed: false, reason: order.status };
+    const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(order.tenant_id);
+    const conflict = db.prepare(`SELECT orders.id FROM orders JOIN tenants ON tenants.id = orders.tenant_id
+      WHERE orders.user_id = ? AND orders.id != ? AND orders.status IN ('pending', 'processing', 'completed')
+      AND (tenants.id = ? OR (tenants.tenant_id IS NOT NULL AND lower(tenants.tenant_id) = lower(?))
+        OR lower(tenants.admin_email) = lower(?)) LIMIT 1`)
+      .get(userId, orderId, order.tenant_id, tenant?.tenant_id || null, tenant?.admin_email || '');
+    if (conflict) return { claimed: false, reason: 'tenant_already_used' };
+    const reserved = getReservedInboxCount(userId) - (order.status === 'pending' ? Number(order.total_mailboxes) : 0);
+    if (Number.isFinite(inboxesLimit) && reserved + Number(order.total_mailboxes) > inboxesLimit) {
+      return { claimed: false, reason: 'inbox_limit' };
+    }
+
     const processing = Number(db.prepare(`
       SELECT COUNT(*) AS count FROM orders
       WHERE user_id = ? AND status = 'processing' AND id != ?
@@ -1524,7 +1535,7 @@ export function getReservedInboxCount(userId) {
   const completed = Number(db.prepare('SELECT COALESCE(inboxes_used, 0) AS total FROM users WHERE id = ?').get(userId)?.total || 0);
   const reserved = Number(db.prepare(`
     SELECT COALESCE(SUM(total_mailboxes), 0) AS total FROM orders
-    WHERE user_id = ? AND status NOT IN ('cancelled', 'completed')
+    WHERE user_id = ? AND status IN ('pending', 'processing')
   `).get(userId)?.total || 0);
   return completed + reserved;
 }

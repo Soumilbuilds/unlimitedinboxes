@@ -143,7 +143,7 @@ function getOrdersForSameTenantIdentity(userId, tenantLike) {
  }
 
  return getOrders(userId)
- .filter(order => tenantIds.has(order.tenant_id) && order.status !== 'cancelled')
+ .filter(order => tenantIds.has(order.tenant_id) && !['cancelled', 'failed'].includes(order.status))
  .sort((left, right) => left.id - right.id);
 }
 
@@ -447,7 +447,7 @@ router.post('/:id/start', (req, res) => {
  const order = getOrderByIdForUser(parseInt(req.params.id, 10), req.session.user.id);
  if (!order) return res.status(404).json({ error: 'Order not found' });
  const earlierSameTenantOrder = getOrdersForSameTenantIdentity(req.session.user.id, order)
- .find(existing => existing.id !== order.id && existing.id < order.id);
+ .find(existing => existing.id !== order.id);
  if (earlierSameTenantOrder) {
  return res.status(409).json({
  code: 'TENANT_ALREADY_USED',
@@ -492,7 +492,8 @@ router.post('/:id/start', (req, res) => {
  const claim = claimOrderForProcessing({
  orderId: order.id,
  userId: req.session.user.id,
- maxConcurrentOrders: accessState.maxConcurrentOrders
+ maxConcurrentOrders: accessState.maxConcurrentOrders,
+ inboxesLimit: accessState.inboxesLimit
  });
  if (!claim.claimed) {
  return res.status(409).json({
