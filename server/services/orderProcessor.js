@@ -118,8 +118,12 @@ function checkCancelled(orderId, message = null) {
  return true;
 }
 
-function isRetryableAdminStatus(status) {
- return status === 400 || status === 404 || status === 429 || status === 500 || status === 503;
+export function isRetryableAdminFailure(result) {
+ const status = Number(result?.status);
+ if ([400, 404, 408, 429, 500, 502, 503, 504].includes(status)) return true;
+ // Axios timeouts and temporary network failures have no HTTP status. These
+ // are safe to retry for the idempotent Graph PATCH actions used below.
+ return !status && /\b(timeout|timed out|ECONNABORTED|ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|network error)\b/i.test(String(result?.error || ''));
 }
 
 export function isExternalDirectoryMemberCreationError(error) {
@@ -188,8 +192,7 @@ async function retryAdminAction(orderId, label, actionFn, attempts = 6, delayMs 
  for (let i = 0; i < attempts; i++) {
  last = await actionFn();
  if (last?.success) return last;
- const status = last?.status;
- if (!isRetryableAdminStatus(status)) break;
+ if (!isRetryableAdminFailure(last) || i === attempts - 1) break;
  logMessage(orderId, `${label} retrying (${i + 1}/${attempts}) in ${Math.round(delayMs / 1000)}s...`);
  await sleep(delayMs);
  }

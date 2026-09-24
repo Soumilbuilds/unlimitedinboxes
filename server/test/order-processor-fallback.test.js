@@ -5,6 +5,7 @@ import {
   buildRandomMailboxPlan,
   isExternalDirectoryMemberCreationError,
   isRecoverableExchangeProvisioningError,
+  isRetryableAdminFailure,
   validatePlannedMailboxIdentities,
 } from '../services/orderProcessor.js';
 
@@ -57,4 +58,15 @@ test('activates mailbox recovery when the app-only Exchange command times out', 
     'SMTP AUTH remains disabled for shared mailbox user@example.com',
   ), true);
   assert.equal(isRecoverableExchangeProvisioningError(new Error('Access denied')), false);
+});
+
+test('retries transient Graph failures including requests with no HTTP response', () => {
+  for (const error of ['timeout of 30000ms exceeded', 'ECONNRESET', 'Network Error']) {
+    assert.equal(isRetryableAdminFailure({ success: false, error }), true);
+  }
+  for (const status of [408, 429, 500, 502, 503, 504]) {
+    assert.equal(isRetryableAdminFailure({ success: false, status }), true);
+  }
+  assert.equal(isRetryableAdminFailure({ success: false, status: 403, error: 'Forbidden' }), false);
+  assert.equal(isRetryableAdminFailure({ success: false, error: 'Invalid password' }), false);
 });
