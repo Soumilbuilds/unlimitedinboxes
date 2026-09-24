@@ -33,7 +33,9 @@ import {
  testExchangeOnlineConnection,
  ensureOrganizationSmtpAuthEnabled,
  ensureSharedMailbox,
- ensureSharedMailboxes
+ ensureSharedMailboxes,
+ getDkimSelectors as getDkimSelectorsWithExchange,
+ enableDkim as enableDkimWithExchange
 } from './exchangePowerShell.js';
 import { createDelegatedExchangeSession } from './exchangeDelegatedPowerShell.js';
 import {
@@ -801,7 +803,7 @@ async function runConfigureSmtpAuth(orderId, page, exchangeOrgDomain = null) {
  await ensureSmtpAuthSetting(orderId, page);
 }
 
-async function runConfigureEmailAuth(orderId, zoneId, domain, tenant, getTotpCode) {
+async function runConfigureEmailAuth(orderId, zoneId, domain, tenant, getTotpCode, exchangeOrgDomain = null) {
  logStep(orderId, 12, 'Configure email authentication (SPF, DKIM, DMARC)');
  const spfValue = process.env.SPF_VALUE || 'v=spf1 include:spf.protection.outlook.com -all';
  const dmarcValue = process.env.DMARC_VALUE || 'v=DMARC1; p=none; pct=100';
@@ -813,6 +815,21 @@ async function runConfigureEmailAuth(orderId, zoneId, domain, tenant, getTotpCod
  logMessage(orderId, 'Adding DMARC record...');
  const dmarc = await ensureDmarcRecord(zoneId, domain, dmarcValue);
  logMessage(orderId, dmarc.action === 'created' ? 'DMARC record created.' : 'DMARC record already present.');
+
+ if (exchangeOrgDomain) {
+ try {
+ const config = await getDkimSelectorsWithExchange(domain, exchangeOrgDomain);
+ await ensureDkimRecords(zoneId, domain, config.Selector1CNAME, config.Selector2CNAME);
+ if (config.Enabled !== true) {
+ const enabled = await enableDkimWithExchange(domain, exchangeOrgDomain);
+ if (enabled.Enabled !== true) throw new Error('Exchange did not confirm DKIM signing is enabled');
+ }
+ logMessage(orderId, 'DKIM signing confirmed through Exchange Online.');
+ return;
+ } catch (exchangeError) {
+ logMessage(orderId, `Exchange DKIM setup needs portal recovery: ${exchangeError.message}`);
+ }
+ }
 
  let dkimSuccess = false;
  let lastDkimError = null;
@@ -988,6 +1005,7 @@ export async function processOrder(orderId) {
  let graphProvider = null;
  let globalAdminRoleId = null;
  let exchangeOrgDomain = null;
+ let exchangeDkimOrgDomain = null;
  let browserContext = null;
  let page = null;
  let mailboxAdminSessionPromise = null;
@@ -1162,6 +1180,7 @@ export async function processOrder(orderId) {
  const graphSetup = await runPrepareGraphAdminClient(orderId, tenant);
  graphProvider = graphSetup.graphProvider;
  globalAdminRoleId = graphSetup.globalAdminRoleId;
+ exchangeDkimOrgDomain = graphSetup.exchangeOrgDomain;
  exchangeOrgDomain = isExchangePowerShellConfigured() ? graphSetup.exchangeOrgDomain : null;
  if (checkCancelled(orderId)) return;
  } catch (err) {
@@ -1498,7 +1517,8 @@ export async function processOrder(orderId) {
  // STEP 15: Email authentication
  try {
  logStep(orderId, 15, 'Configure email authentication (SPF, DKIM, DMARC)');
- await runConfigureEmailAuth(orderId, zoneId, domain, tenant, getTotpCode);
+ await runConfigureEmailAuth(orderId, zoneId, domain, tenant, getTotpCode,
+ isExchangePowerShellConfigured() ? exchangeDkimOrgDomain : null);
  if (checkCancelled(orderId)) return;
  } catch (err) {
  logMessage(orderId, `STEP 15 FAILED: ${err.message}`);
