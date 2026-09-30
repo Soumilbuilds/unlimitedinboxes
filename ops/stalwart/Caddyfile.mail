@@ -1,0 +1,5 @@
+# Append this isolated site block after mail.igoutbound.com points at the VPS.
+# Caddy uses it to issue and renew the mail certificate; management stays private.
+mail.igoutbound.com {
+	respond 404
+}

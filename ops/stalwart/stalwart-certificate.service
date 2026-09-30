@@ -1,0 +1,8 @@
+[Unit]
+Description=Synchronize Caddy Mail Certificate To Stalwart
+After=caddy.service docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/stalwart/sync_caddy_certificate.py

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Caddy Mail Certificate For Stalwart
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=stalwart-certificate.service
+
+[Install]
+WantedBy=timers.target

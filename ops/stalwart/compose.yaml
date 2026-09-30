@@ -1,0 +1,23 @@
+name: stalwart
+
+services:
+  stalwart:
+    image: stalwartlabs/stalwart:v0.16.24
+    container_name: stalwart
+    restart: unless-stopped
+    init: true
+    environment:
+      STALWART_PUBLIC_URL: https://mail.igoutbound.com
+    ports:
+      - "25:25"
+      - "127.0.0.1:1993:993"
+      - "127.0.0.1:18080:8080"
+      - "127.0.0.1:10443:443"
+    volumes:
+      - ./config:/etc/stalwart
+      - ./data:/var/lib/stalwart
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

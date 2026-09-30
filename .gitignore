@@ -20,3 +20,4 @@ server/screenshots/
 client/dist/
 server/db/*.db
 server/db/*.db-*
+*.credentials.csv
