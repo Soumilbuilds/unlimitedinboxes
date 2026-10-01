@@ -123,15 +123,16 @@ export class StalwartMailboxProvider {
     return match ? publicDomain(match) : null;
   }
 
-  async ensureDomain(name) {
+  async ensureDomain(name, { dkimManagement = 'Automatic' } = {}) {
     const normalized = domainName(name);
+    if (!['Automatic', 'Manual'].includes(dkimManagement)) throw new TypeError('Invalid DKIM management mode');
     const existing = await this.getDomain(normalized);
     if (existing) return { ...existing, created: false };
     const result = await this.call('x:Domain/set', { create: { new1: {
       name: normalized,
       aliases: {},
       certificateManagement: { '@type': 'Manual' },
-      dkimManagement: { '@type': 'Automatic' },
+      dkimManagement: { '@type': dkimManagement },
       dnsManagement: { '@type': 'Manual' },
       subAddressing: { '@type': 'Enabled' },
     } } });

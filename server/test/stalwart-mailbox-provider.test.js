@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { FileSecretStore } from '../services/fileSecretStore.js';
 import { StalwartMailboxProvider } from '../services/stalwartMailboxProvider.js';
+import { parseOptions, provision } from '../../ops/stalwart/provision-mailboxes.mjs';
 import {
   buildManyreachSenderPayload, buildManyreachSenderCsv, writeManyreachSenderCsvFile,
 } from '../services/manyreachSenderExport.js';
@@ -34,7 +35,8 @@ function fakeStalwart(pageCap = 100) {
     } else if (method.endsWith('/set') && args.create) {
       const data = args.create.new1;
       const id = String(nextId++);
-      objects.set(id, { id, ...data, ...(method.includes('Account') ? { emailAddress: `${data.name}@example.test` } : {}) });
+      const domain = [...domains.values()].find(item => item.id === data.domainId)?.name;
+      objects.set(id, { id, ...data, ...(method.includes('Account') ? { emailAddress: `${data.name}@${domain}` } : {}) });
       result = { created: { new1: { id } } };
     } else if (method.endsWith('/set') && args.update) {
       const id = Object.keys(args.update)[0];
@@ -94,6 +96,40 @@ test('ensures domains and mailboxes once and excludes the bootstrap administrato
   const stored = await secretStore.get('mailbox:alice@example.test');
   assert.equal(stored.length >= 32, true);
   assert.equal(accounts.get(first.id).credentials['0'].secret === stored, true);
+}));
+
+test('provisions two domains with manual DKIM and full email addresses without repeating creates or exposing secrets', async () => fixture(async ({ provider, calls, accounts, secretStore }) => {
+  const { domains, localParts } = parseOptions(['--dry-run']);
+  const output = [];
+  const run = () => provision({ provider, domains, localParts, write: text => output.push(text) });
+  await run();
+  await run();
+  assert.equal(domains.length, 2);
+  assert.equal(localParts.length, 5);
+  assert.equal(calls.filter(call => call.method === 'x:Domain/set').length, 2);
+  assert.equal(calls.filter(call => call.method === 'x:Account/set' && call.args.create).length, 10);
+  const expectedEmails = new Set(domains.flatMap(domain => localParts.map(local => `${local}@${domain}`)));
+  for (const call of calls.filter(call => call.method === 'x:Domain/set')) {
+    assert.deepEqual(call.args.create.new1.dkimManagement, { '@type': 'Manual' });
+    assert.deepEqual(call.args.create.new1.dnsManagement, { '@type': 'Manual' });
+    assert.deepEqual(call.args.create.new1.certificateManagement, { '@type': 'Manual' });
+  }
+  for (const account of accounts.values()) {
+    assert.equal(expectedEmails.has(account.emailAddress), true);
+    assert.equal((await provider.getMailbox(account.emailAddress)).email, account.emailAddress);
+    assert.equal(account.name.includes('@'), false);
+    assert.equal(output.join('').includes(await secretStore.get(`mailbox:${account.emailAddress}`)), false);
+  }
+  assert.equal(output.filter(line => line.includes(': Created')).length, 12);
+  assert.equal(output.filter(line => line.includes(': Existing')).length, 12);
+  assert.equal(output.some(line => line.includes('stacy@taloperations.com')), true);
+  assert.equal(output.some(line => line.includes('mia@talcollectiveco.com')), true);
+}));
+
+test('keeps the provider default DKIM mode for other callers and validates the override', async () => fixture(async ({ provider, calls }) => {
+  await provider.ensureDomain('example.test');
+  assert.deepEqual(calls.find(call => call.method === 'x:Domain/set').args.create.new1.dkimManagement, { '@type': 'Automatic' });
+  await assert.rejects(provider.ensureDomain('another.test', { dkimManagement: 'Invalid' }), /Invalid DKIM management mode/);
 }));
 
 test('persists the mailbox password before Account/set and recovers after a lost response', async () => fixture(async ({
