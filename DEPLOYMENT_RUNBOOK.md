@@ -1,6 +1,6 @@
 # Unlimited Inboxes Deployment Runbook
 
-Last audited: 2026-05-28
+Last audited: 2026-10-01
 
 ## Current Production Topology
 
@@ -71,7 +71,7 @@ That means copying files to `/root/server`, `/root/client`, or `/opt/unlimited-i
 Run from the repo root:
 
 ```bash
-cd "/Users/poonam/Desktop/Unlimited Mailboxes final"
+cd "/Users/poonam/unlimitedinboxes"
 git status --short --branch
 ```
 
@@ -93,7 +93,7 @@ git push origin main
 Deploy from GitHub to a timestamped release on the VPS:
 
 ```bash
-./scripts/deploy_github.sh
+SYNC_ENV=0 ./scripts/deploy_github.sh
 ```
 
 On this Mac, deploy credentials live in ignored local file `.deploy.env`. Do not commit that file. If another agent needs to deploy from this machine, it should source `.deploy.env` through the script rather than pasting credentials into commands or docs.
@@ -108,16 +108,18 @@ That deploys the committed GitHub branch and leaves local scratch files untouche
 
 What the script does:
 
-1. Pushes local `main` to GitHub if needed.
+1. Archives the current committed revision and pushes that exact revision to GitHub `main` (or the explicitly configured branch). Automatic staging is disabled.
 2. Fetches `origin/main` into `/opt/unlimited-inboxes/repo`.
 3. Copies the GitHub version into `/opt/unlimited-inboxes/releases/<timestamp>`.
 4. Links shared `.env` and shared `app.db` into the release.
 5. Installs server dependencies inside the release.
-6. Builds the client locally by default and rsyncs `client/dist` into the release to avoid VPS OOM during Vite builds.
+6. Builds the archived committed client locally and transfers its assets into the matching release to avoid VPS OOM during Vite builds. Dirty working files never enter the build.
 7. Moves `/opt/unlimited-inboxes/current` to the new release.
 8. Restarts `unlimited-inboxes.service`.
 9. Health-checks `http://127.0.0.1:3000/api/health`.
 10. Rolls back the symlink and restarts the service if the health check fails.
+
+Environment sync defaults to disabled. Update individual new configuration values deliberately in the shared production environment; never replace it with a stale local file. The pre-deploy database backup uses SQLite's online backup API and checks integrity, so committed WAL data is included. SSH keys work without an interactive password prompt; an existing `SSHPASS` from the ignored deployment configuration is also supported.
 
 ## Manual VPS Checks
 
@@ -255,3 +257,29 @@ Add to `claude_desktop_config.json`:
  }
 }
 ```
+
+## SMTP Provisioning
+
+Develop and deploy only from `/Users/poonam/unlimitedinboxes`. SMTP has separate orders, leases, domain claims, and credential references; Microsoft and SMTP share inbox and credential allowances.
+
+Set only these new values in the existing shared production environment, preserving every existing value:
+
+```text
+SMTP_PUBLIC_HOST=mail.igoutbound.com
+SMTP_PORT=465
+IMAP_PORT=993
+SMTP_SECRET_DIR=/opt/stalwart/secrets/values
+SMTP_MANAGEMENT_URL=http://127.0.0.1:18080
+SMTP_MANAGEMENT_TOKEN_REF=stalwart:provisioning-api-key
+SMTP_OUTBOUND_SPF=v=spf1 ip4:62.171.150.14 ~all
+```
+
+The secret directory is the already deployed protected FileSecretStore used by mailbox provisioning. Store Resend keys, mailbox passwords, and staged signing keys there, never in the application database or release. Do not synchronize local environment files. Domain signing automation requires domain/account provisioning permissions plus `sysDkimSignatureQuery`, `sysDkimSignatureGet`, and `sysDkimSignatureCreate` proven against the live service; never grant global settings or superuser permissions. Preserve the existing authenticated-local-domain signing policy.
+
+Smoke checks: health, Microsoft and SMTP navigation, invalid Resend key, correct connected domain count, controlled-domain nameserver delegation, requested inbox count, resumable provisioning, owner-only transient CSV download, SMTP and IMAP authentication, and closed unauthenticated relay. Never use an unrelated customer domain for a smoke test.
+
+Unverified domain reservations expire after 24 hours without renewing on repeated requests. Only confirmed app-created DNS zones can transfer from an abandoned unverified order; ambiguous provider outcomes require operator review. Stopping an order releases quota for inboxes without a creation intent after the worker lease drains; confirmed or uncertain creations remain reserved. Restarting re-reserves the requested quantity transactionally.
+
+Systemd shutdown allows up to 45 seconds for in-flight SMTP provider requests to drain and save positive creation receipts before process exit. Preserve a service `TimeoutStopSec` above that window.
+
+If a create request has an unknown outcome, provisioning pauses rather than adopting the discovered resource. Preserve the original claim and immutable intent, back up the database, and compare the provider creation audit with the order and operation time. Only an operator with positive evidence of the matching app creation may reconcile a receipt; a saved password or discovered resource alone is insufficient. Never delete an existing domain, reset its inbox passwords, or change signing keys to force a retry.

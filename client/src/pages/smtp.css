@@ -1,0 +1,85 @@
+.smtp-page { min-width: 0; }
+.smtp-page .page-header p, .smtp-connection p, .smtp-modal-body p { color: rgba(245,245,245,.65); line-height: 1.65; }
+.smtp-connection { margin-bottom: 28px; padding: 26px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
+.smtp-connection-heading { display: flex; justify-content: space-between; align-items: start; gap: 20px; }
+.smtp-connection h2 { font-size: 20px; margin: 0 0 8px; }
+.smtp-connection p { margin: 0; font-size: 14px; }
+.smtp-connection-meta { display: flex; flex-wrap: wrap; gap: 12px 32px; margin-top: 24px; font-size: 13px; color: rgba(245,245,245,.65); }
+.smtp-connection-meta strong, .smtp-connection-meta a { color: var(--accent); }
+.smtp-connection-meta a:hover { text-decoration: underline; }
+.smtp-connection-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.smtp-key-form { margin-top: 24px; max-width: 720px; }
+.smtp-key-form label, .smtp-modal-body label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.smtp-key-input { display: flex; gap: 10px; }
+.smtp-key-input input { flex: 1; min-width: 0; }
+.smtp-page input, .smtp-modal input, .smtp-modal textarea { background: #070707; border: 1px solid rgba(134,247,184,.24); border-radius: 9px; padding: 13px 14px; color: var(--text); font: inherit; font-size: 14px; outline: none; }
+.smtp-page input:focus, .smtp-modal input:focus, .smtp-modal textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(134,247,184,.08); }
+.smtp-page button:focus-visible, .smtp-modal button:focus-visible, .smtp-page a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.smtp-page .smtp-help, .smtp-modal .smtp-help { font-size: 12px; color: rgba(245,245,245,.6); margin-top: 12px; line-height: 1.65; }
+.smtp-empty { padding: 60px 24px; border: 1px solid rgba(134,247,184,.14); border-radius: 12px; background: #070707; }
+.smtp-empty h2 { font-size: 20px; margin-top: 20px; }
+.smtp-empty p { font-size: 14px; color: rgba(245,245,245,.6); margin-bottom: 24px; }
+.smtp-empty-mark { margin: auto; width: 48px; height: 48px; display: grid; place-items: center; color: var(--accent); background: rgba(134,247,184,.06); border: 1px solid var(--border); border-radius: 12px; font: 24px 'IBM Plex Mono', monospace; }
+.smtp-orders > *, .smtp-orders .order-header > div, .smtp-orders .order-row-main { min-width: 0; }
+.smtp-orders .order-row { padding: 18px; }
+.smtp-orders .order-row-main { width: 100%; gap: 9px; }
+.smtp-orders strong, .smtp-orders h2, .smtp-orders .order-header p { overflow-wrap: anywhere; }
+.smtp-orders .status { width: fit-content; white-space: normal; font-size: 11px; }
+.smtp-orders .orders-panel { padding: 26px; }
+.smtp-page .status.waiting_dns, .smtp-page .status.waiting_verification, .smtp-page .status.pending_nameservers { background: rgba(110,170,255,.09); color: #aecbfa; }
+.smtp-page .status.draft, .smtp-page .status.cancelled { background: rgba(255,255,255,.06); color: rgba(245,245,245,.65); }
+.smtp-log-heading { font-size: 13px; font-weight: 600; margin-top: 8px; }
+.smtp-log-empty { padding: 20px 12px; color: rgba(245,245,245,.5); font-size: 13px; }
+.smtp-orders .log-line { grid-template-columns: 70px minmax(0,1fr); overflow-wrap: anywhere; }
+.smtp-orders .log-line time { color: rgba(245,245,245,.45); }
+.smtp-modal-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.82); backdrop-filter: blur(8px); display: grid; place-items: center; padding: 24px; overflow-y: auto; }
+.smtp-modal { width: min(600px,100%); max-height: calc(100dvh - 48px); overflow-y: auto; background: #0b0b0b; border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); padding: 30px; }
+.smtp-modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.smtp-modal-header h2 { margin: 8px 0 0; font-size: 23px; letter-spacing: -.02em; }
+.smtp-eyebrow { color: var(--accent); font-size: 11px; letter-spacing: .07em; font-weight: 600; }
+.smtp-steps { list-style: none; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; padding: 0; margin: 28px 0; }
+.smtp-steps li { display: flex; flex-direction: column; align-items: center; gap: 9px; font-size: 11px; color: rgba(245,245,245,.4); text-align: center; }
+.smtp-steps li > span { width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.12); border-radius: 50%; font-size: 12px; }
+.smtp-steps .current, .smtp-steps .done { color: var(--accent); }
+.smtp-steps .current > span, .smtp-steps .done > span { background: rgba(134,247,184,.08); border-color: var(--border-strong); }
+.smtp-modal-body { min-height: 210px; }
+.smtp-modal-body > p { font-size: 14px; margin: 0 0 22px; }
+.smtp-modal-body > input, .smtp-modal-body textarea { display: block; width: 100%; }
+.smtp-modal-body textarea { resize: vertical; min-height: 140px; font-family: 'IBM Plex Mono',monospace; line-height: 1.65; }
+.smtp-modal-actions { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid rgba(255,255,255,.07); padding-top: 22px; margin-top: 24px; }
+.smtp-nameservers { display: grid; gap: 12px; }
+.smtp-nameserver { display: flex; gap: 10px; }
+.smtp-nameserver input { width: 100%; min-width: 0; font-family: 'IBM Plex Mono',monospace; font-size: 12px; }
+.smtp-label-row { display: flex; justify-content: space-between; gap: 12px; }
+.smtp-label-row > span { font-size: 12px; color: var(--accent); }
+.smtp-confirmation, .smtp-positive { color: var(--accent); }
+.smtp-confirmation { font-size: 13px; margin: 0 0 18px; }
+.smtp-input-error { color: var(--error); font-size: 12px; line-height: 1.6; margin-top: 10px; }
+.smtp-review { border: 1px solid rgba(134,247,184,.15); border-radius: 10px; padding: 4px 18px; margin: 0; }
+.smtp-review > div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 15px 0; border-bottom: 1px solid rgba(255,255,255,.06); font-size: 13px; }
+.smtp-review > div:last-child { border: 0; }
+.smtp-review dt { color: rgba(245,245,245,.6); }
+.smtp-review dd { margin: 0; text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.smtp-modal .smtp-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+@media (max-width: 1200px) and (min-width: 961px) { .smtp-orders { grid-template-columns: 220px minmax(0,1fr); gap: 16px; } }
+@media (max-width: 960px) { .smtp-layout .sidebar { flex-wrap: wrap; gap: 16px; } .smtp-layout .sidebar-nav { flex-wrap: wrap; justify-content: center; } .smtp-layout .sidebar-logo { width: auto; } .smtp-layout .sidebar-footer { margin-top: 0; } }
+@media (max-width: 600px) {
+  .smtp-page { padding: 24px 16px; }
+  .smtp-connection, .smtp-orders .orders-panel { padding: 20px 16px; }
+  .smtp-connection-heading, .smtp-orders .order-header { flex-direction: column; gap: 12px; }
+  .smtp-key-input { flex-wrap: wrap; }
+  .smtp-key-input input { flex-basis: 100%; }
+  .smtp-connection-meta { flex-direction: column; gap: 12px; }
+  .smtp-modal-overlay { padding: 12px; }
+  .smtp-modal { max-height: calc(100dvh - 24px); padding: 24px 18px; }
+  .smtp-modal-header h2 { font-size: 20px; }
+  .smtp-modal-actions .btn { padding: 12px; }
+  .smtp-orders .log-line { grid-template-columns: 52px minmax(0,1fr); font-size: 11px; }
+}
+
+.smtp-preparing { display: flex; align-items: center; gap: 12px; min-height: 68px; padding: 18px; margin-bottom: 20px; border: 1px solid rgba(110,170,255,.16); border-radius: 10px; background: linear-gradient(110deg,rgba(134,247,184,.035),rgba(110,170,255,.045)); color: #aecbfa; font-size: 13px; }
+.smtp-preparing .spinner { width: 18px; height: 18px; margin: 0; border-width: 2px; flex-shrink: 0; }
+.smtp-page .page-actions, .smtp-orders .order-actions { flex-wrap: wrap; }
+.smtp-orders .order-row { text-align: left; color: inherit; font: inherit; cursor: pointer; }
+.smtp-modal-actions .btn { white-space: normal; }
+@media (prefers-reduced-motion: reduce) { .smtp-preparing .spinner { animation: none; } }

@@ -1,4 +1,17 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, generateKeyPair, createPublicKey } from 'node:crypto';
+import { promisify } from 'node:util';
+
+const generateKeyPairAsync = promisify(generateKeyPair);
+const provisioningLocks = new Map();
+
+async function serializeProvisioning(key, operation) {
+  const previous = provisioningLocks.get(key) ?? Promise.resolve();
+  const pending = previous.catch(() => {}).then(operation);
+  provisioningLocks.set(key, pending);
+  try { return await pending; } finally {
+    if (provisioningLocks.get(key) === pending) provisioningLocks.delete(key);
+  }
+}
 
 const CAPABILITIES = ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'];
 const PAGE_SIZE = 100;
@@ -102,7 +115,9 @@ export class StalwartMailboxProvider {
       const page = await this.call(`x:${type}/query`, { filter, position, limit: PAGE_SIZE });
       if (!Array.isArray(page.ids)) throw new Error('Invalid Stalwart query response');
       if (page.ids.length) {
-        const fetched = await this.call(`x:${type}/get`, { ids: page.ids });
+        const fetched = await this.call(`x:${type}/get`, { ids: page.ids,
+          ...(type === 'DkimSignature' ? { properties: ['id', '@type', 'domainId', 'selector', 'publicKey', 'stage'] } : {}),
+        });
         if (!Array.isArray(fetched.list)) throw new Error('Invalid Stalwart get response');
         objects.push(...fetched.list);
       }
@@ -123,7 +138,12 @@ export class StalwartMailboxProvider {
     return match ? publicDomain(match) : null;
   }
 
-  async ensureDomain(name, { dkimManagement = 'Automatic' } = {}) {
+  async ensureDomain(name, { manualDkim = false, dkimManagement = manualDkim ? 'Manual' : 'Automatic' } = {}) {
+    const normalized = domainName(name);
+    return serializeProvisioning(`domain:${normalized}`, () => this.ensureDomainUnlocked(normalized, { manualDkim, dkimManagement }));
+  }
+
+  async ensureDomainUnlocked(name, { manualDkim = false, dkimManagement = manualDkim ? 'Manual' : 'Automatic' } = {}) {
     const normalized = domainName(name);
     if (!['Automatic', 'Manual'].includes(dkimManagement)) throw new TypeError('Invalid DKIM management mode');
     const existing = await this.getDomain(normalized);
@@ -140,6 +160,62 @@ export class StalwartMailboxProvider {
     const raced = await this.getDomain(normalized);
     if (raced) return { ...raced, created: false };
     throw new Error('Stalwart domain creation failed');
+  }
+
+  // Matches the live authenticated-local-domain signing policy. No global settings
+  // or existing signing keys are changed by provisioning.
+  async ensureDomainAuthentication(name) {
+    const normalized = domainName(name);
+    return serializeProvisioning(`dkim:${normalized}`, () => this.ensureDomainAuthenticationUnlocked(normalized));
+  }
+
+  async ensureDomainAuthenticationUnlocked(name) {
+    const normalized = domainName(name);
+    const domain = await this.ensureDomain(normalized, { manualDkim: true });
+    const signatures = await this.query('DkimSignature', { domainId: domain.id });
+    const active = signatures.filter(item => item.domainId === domain.id && item.stage === 'active');
+    const toRecord = item => {
+      if (!/^[a-z0-9][a-z0-9_-]{0,62}$/i.test(item.selector || '')) throw new Error('Invalid signing selector');
+      let publicKey = item.publicKey;
+      if (typeof publicKey !== 'string') throw new Error('Signing public key is unavailable');
+      if (publicKey.startsWith('-----BEGIN')) publicKey = createPublicKey(publicKey).export({ type: 'spki', format: 'der' }).toString('base64');
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(publicKey)) throw new Error('Invalid signing public key');
+      const algorithm = item['@type'] === 'Dkim1RsaSha256' ? 'rsa' : item['@type'] === 'Dkim1Ed25519Sha256' ? 'ed25519' : null;
+      if (!algorithm) throw new Error('Unsupported signing key');
+      return { type: 'TXT', name: `${item.selector}._domainkey.${normalized}`, content: `v=DKIM1; k=${algorithm}; p=${publicKey}` };
+    };
+    if (active.length) return { records: active.map(toRecord) };
+    // Existing non-active keys require operator review; never rotate automatically.
+    if (signatures.length) throw new Error('Email authentication is not active');
+    const secretRef = `smtp:dkim:${normalized}:key`;
+    const stored = await this.secretStore.get(secretRef);
+    let staged;
+    if (stored) {
+      try { staged = JSON.parse(stored); } catch { throw new Error('Signing credential is unavailable'); }
+    } else {
+      const pair = await generateKeyPairAsync('rsa', {
+        modulusLength: 2048,
+        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+        publicKeyEncoding: { type: 'spki', format: 'pem' },
+      });
+      staged = { selector: `ui${randomBytes(8).toString('hex')}`, privateKey: pair.privateKey };
+      await this.secretStore.set(secretRef, JSON.stringify(staged));
+    }
+    if (!/^[a-z0-9]{1,63}$/.test(staged?.selector || '') || typeof staged?.privateKey !== 'string') {
+      throw new Error('Signing credential is unavailable');
+    }
+    const publicKey = createPublicKey(staged.privateKey).export({ type: 'spki', format: 'der' }).toString('base64');
+    await this.call('x:DkimSignature/set', { create: { new1: {
+      '@type': 'Dkim1RsaSha256', domainId: domain.id, selector: staged.selector,
+      privateKey: { '@type': 'Text', secret: staged.privateKey }, stage: 'active', canonicalization: 'relaxed/relaxed',
+      headers: { From: true, To: true, Date: true, Subject: true, 'Message-ID': true }, report: true,
+    } } });
+    const actual = (await this.query('DkimSignature', { domainId: domain.id })).find(item =>
+      item.domainId === domain.id && item.selector === staged.selector && item.stage === 'active');
+    if (!actual) throw new Error('Email authentication could not be configured');
+    const record = toRecord(actual);
+    if (record.content !== `v=DKIM1; k=rsa; p=${publicKey}`) throw new Error('Signing public key does not match');
+    return { records: [record] };
   }
 
   async listMailboxes(domain) {
@@ -168,6 +244,11 @@ export class StalwartMailboxProvider {
   }
 
   async ensureMailbox(email, { password } = {}) {
+    const address = mailboxAddress(email);
+    return serializeProvisioning(`mailbox:${address.email}`, () => this.ensureMailboxUnlocked(address.email, { password }));
+  }
+
+  async ensureMailboxUnlocked(email, { password } = {}) {
     const address = mailboxAddress(email);
     const suppliedSecret = password === undefined ? null : mailboxPassword(password);
     const domain = await this.ensureDomain(address.domain);

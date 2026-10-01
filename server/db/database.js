@@ -1,5 +1,6 @@
 import { getMailboxCredentialRows } from '../services/mailboxCsv.js';
 import Database from 'better-sqlite3';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -410,6 +411,90 @@ ensureUserBillingColumns();
 ensureTenantPurchasesColumns();
 backfillLifetimeCompletedOrders();
 backfillInboxesUsed();
+
+// SMTP has its own lifecycle and credential references. Shared quota checks only
+// depend on reserved_inboxes and charged_inboxes, never on provider internals.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS resend_connections (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    secret_ref TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'connected',
+    validated_at TEXT,
+    connected_domain_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS smtp_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    domain TEXT NOT NULL,
+    order_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft'
+      CHECK(status IN ('draft','pending_nameservers','ready','processing','waiting_dns','waiting_verification','completed','failed','cancelled')),
+    progress INTEGER NOT NULL DEFAULT 0,
+    total_mailboxes INTEGER NOT NULL DEFAULT 0,
+    cloudflare_zone_id TEXT,
+    cloudflare_ns TEXT NOT NULL DEFAULT '[]',
+    resend_domain_id TEXT,
+    resend_status TEXT,
+    ownership_checked INTEGER NOT NULL DEFAULT 0,
+    mail_domain_owned INTEGER NOT NULL DEFAULT 0,
+    side_effects INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT,
+    nameservers_connected INTEGER NOT NULL DEFAULT 0,
+    required_dns TEXT NOT NULL DEFAULT '[]',
+    dns_verified INTEGER NOT NULL DEFAULT 0,
+    resend_verified INTEGER NOT NULL DEFAULT 0,
+    relay_verified INTEGER NOT NULL DEFAULT 0,
+    error_code TEXT,
+    charged_inboxes INTEGER NOT NULL DEFAULT 0,
+    reserved_inboxes INTEGER NOT NULL DEFAULT 0,
+    due_at INTEGER NOT NULL DEFAULT 0,
+    processing_token TEXT,
+    lease_until INTEGER,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_smtp_orders_user ON smtp_orders(user_id, id DESC);
+  CREATE INDEX IF NOT EXISTS idx_smtp_orders_due ON smtp_orders(status, due_at);
+  CREATE TABLE IF NOT EXISTS smtp_domain_claims (
+    domain TEXT PRIMARY KEY COLLATE NOCASE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    order_id INTEGER NOT NULL UNIQUE REFERENCES smtp_orders(id),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS smtp_mailboxes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES smtp_orders(id),
+    local_part TEXT NOT NULL,
+    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    credential_ref TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(order_id, local_part)
+  );
+  CREATE TABLE IF NOT EXISTS smtp_resource_claims (
+    kind TEXT NOT NULL, resource_name TEXT NOT NULL,
+    order_id INTEGER NOT NULL REFERENCES smtp_orders(id),
+    operation_token TEXT NOT NULL, remote_id TEXT, credential_ref TEXT,
+    PRIMARY KEY(kind, resource_name)
+  );
+  CREATE TABLE IF NOT EXISTS smtp_order_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES smtp_orders(id),
+    timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    message TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS inbox_download_allocations (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    provider TEXT NOT NULL,
+    order_id TEXT NOT NULL,
+    mailbox_key TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(user_id, provider, order_id, mailbox_key)
+  );
+`);
 
 // --- USERS ---
 
@@ -888,12 +973,15 @@ export function forgetWhopWebhookEvent(eventId) {
 // --- TENANTS ---
 
 export function createTenant(tenant) {
-  const stmt = db.prepare(`
-    INSERT INTO tenants (user_id, name, domain, admin_email, admin_password, mfa_secret)
-    VALUES (@user_id, @name, @domain, @admin_email, @admin_password, @mfa_secret)
-  `);
-  const payload = { ...tenant, mfa_secret: tenant.mfa_secret ?? null };
-  return stmt.run(payload);
+  return db.transaction(() => {
+    assertDomainNotSmtpClaimed(tenant.domain);
+    const stmt = db.prepare(`
+      INSERT INTO tenants (user_id, name, domain, admin_email, admin_password, mfa_secret)
+      VALUES (@user_id, @name, @domain, @admin_email, @admin_password, @mfa_secret)
+    `);
+    const payload = { ...tenant, mfa_secret: tenant.mfa_secret ?? null };
+    return stmt.run(payload);
+  }).immediate();
 }
 
 export function getTenants(userId = null) {
@@ -935,6 +1023,8 @@ export function updateTenantStatus(id, status) {
 }
 
 export function updateTenantDetails(id, updates = {}) {
+  return db.transaction(() => {
+    if (updates.domain) assertDomainNotSmtpClaimed(updates.domain);
   const {
     name = null,
     domain = null,
@@ -952,6 +1042,7 @@ export function updateTenantDetails(id, updates = {}) {
     WHERE id = ?
   `);
   return stmt.run(name, domain, admin_email, admin_password, mfa_secret, id);
+  }).immediate();
 }
 
 export function updateTenantRedirect(id, redirectUrl) {
@@ -1022,7 +1113,7 @@ export function createOrderWithinQuota({
       FROM orders
       WHERE user_id = ? AND status IN ('pending', 'processing')
     `).get(userId)?.total || 0);
-    const committed = completed + reserved;
+    const committed = completed + reserved + getSmtpReservedInboxCount(userId);
     if (Number.isFinite(inboxesLimit) && committed + requested > inboxesLimit) {
       const error = new Error(`This order exceeds the plan allowance. ${Math.max(0, inboxesLimit - committed)} inboxes remain.`);
       error.code = 'INBOX_LIMIT_REACHED';
@@ -1115,7 +1206,7 @@ export function claimOrderForProcessing({ orderId, userId, maxConcurrentOrders, 
     const processing = Number(db.prepare(`
       SELECT COUNT(*) AS count FROM orders
       WHERE user_id = ? AND status = 'processing' AND id != ?
-    `).get(userId, orderId).count);
+    `).get(userId, orderId).count) + getSmtpProcessingCount(userId);
     if (Number.isFinite(maxConcurrentOrders) && processing >= maxConcurrentOrders) {
       return { claimed: false, reason: 'concurrency' };
     }
@@ -1537,7 +1628,7 @@ export function getReservedInboxCount(userId) {
     SELECT COALESCE(SUM(total_mailboxes), 0) AS total FROM orders
     WHERE user_id = ? AND status IN ('pending', 'processing')
   `).get(userId)?.total || 0);
-  return completed + reserved;
+  return completed + reserved + getSmtpReservedInboxCount(userId);
 }
 
 // --- RESELLER API QUOTA ---
@@ -1564,3 +1655,100 @@ export function resetOrdersUsed(userId) {
 }
 
 export default db;
+
+function assertDomainNotSmtpClaimed(domain) {
+  const normalized = String(domain || '').trim().toLowerCase().replace(/\.+$/, '');
+  const claim = db.prepare(`SELECT c.created_at AS claimed_at,o.* FROM smtp_domain_claims c
+    JOIN smtp_orders o ON o.id=c.order_id WHERE c.domain=?`).get(normalized);
+  if (!claim) return;
+  const claimedAt = Date.parse(`${claim.claimed_at.replace(' ', 'T').replace(/Z$/, '')}Z`);
+  const expired = Number.isFinite(claimedAt) && claimedAt + 86400000 <= Date.now();
+  const zone = db.prepare("SELECT remote_id FROM smtp_resource_claims WHERE order_id=? AND kind='zone'").get(claim.id);
+  const hasMailIntent = db.prepare("SELECT 1 FROM smtp_resource_claims WHERE order_id=? AND kind IN ('domain','mailbox')").get(claim.id);
+  const hasMailboxes = db.prepare("SELECT 1 FROM smtp_mailboxes WHERE order_id=? AND (status!='pending' OR credential_ref IS NOT NULL)").get(claim.id);
+  if (expired && !claim.started_at && !claim.nameservers_connected && !claim.mail_domain_owned &&
+      !(claim.processing_token && claim.lease_until > Date.now()) && !hasMailIntent && !hasMailboxes &&
+      !(zone && !zone.remote_id) && (!claim.cloudflare_zone_id || claim.cloudflare_zone_id === zone?.remote_id)) {
+    // Called inside the tenant transaction: an abandoned unverified SMTP draft
+    // cannot permanently block Microsoft onboarding or continue after reclaim.
+    db.prepare("UPDATE smtp_orders SET status='cancelled',reserved_inboxes=0,due_at=0 WHERE id=?").run(claim.id);
+    db.prepare('DELETE FROM smtp_mailboxes WHERE order_id=?').run(claim.id);
+    db.prepare('DELETE FROM smtp_domain_claims WHERE order_id=?').run(claim.id);
+    return;
+  }
+  const error = new Error('This domain is already reserved for SMTP provisioning.');
+  error.code = 'DOMAIN_UNAVAILABLE';
+  throw error;
+}
+
+export function getSmtpReservedInboxCount(userId) {
+  // Release only inboxes with no remote creation intent after the stopped
+  // worker has drained. Unknown outcomes and confirmed mailboxes remain counted.
+  db.prepare(`UPDATE smtp_orders SET reserved_inboxes=(
+    SELECT COUNT(*) FROM smtp_mailboxes m WHERE m.order_id=smtp_orders.id AND
+    (m.status != 'pending' OR m.credential_ref IS NOT NULL OR EXISTS (
+      SELECT 1 FROM smtp_resource_claims r WHERE r.order_id=m.order_id AND r.kind='mailbox' AND r.resource_name=m.email)))
+    WHERE user_id=? AND status='cancelled' AND charged_inboxes=0
+    AND (processing_token IS NULL OR lease_until <= ?)`)
+    .run(userId, Date.now());
+  return Number(db.prepare(`SELECT COALESCE(SUM(reserved_inboxes), 0) AS total
+    FROM smtp_orders WHERE user_id = ? AND charged_inboxes = 0`).get(userId)?.total || 0);
+}
+
+export function getSmtpProcessingCount(userId) {
+  return Number(db.prepare(`SELECT COUNT(*) AS total FROM smtp_orders
+    WHERE user_id = ? AND status IN ('processing','waiting_dns','waiting_verification')`).get(userId)?.total || 0);
+}
+
+// Stable, shared trial visibility. Repeated downloads return the same allocation;
+// deleting or switching products does not create another ten free credentials.
+export function getTrialDownloadKeys(userId, provider, orderId, keys, limit = 10) {
+  if (!['microsoft', 'smtp'].includes(provider)) throw new Error('Invalid download provider');
+  const boundedLimit = Math.max(0, Math.min(10, Number(limit) || 0));
+  return db.transaction(() => {
+    let used = Number(db.prepare('SELECT COUNT(*) AS total FROM inbox_download_allocations WHERE user_id = ?').get(userId).total);
+    const allowed = [];
+    for (const value of [...new Set(keys)]) {
+      const key = String(value).toLowerCase();
+      const existing = db.prepare(`SELECT 1 FROM inbox_download_allocations
+        WHERE user_id = ? AND provider = ? AND order_id = ? AND mailbox_key = ?`).get(userId, provider, String(orderId), key);
+      if (existing) allowed.push(key);
+      else if (used < boundedLimit) {
+        db.prepare(`INSERT INTO inbox_download_allocations(user_id, provider, order_id, mailbox_key) VALUES(?,?,?,?)`)
+          .run(userId, provider, String(orderId), key);
+        used += 1;
+        allowed.push(key);
+      }
+    }
+    return allowed;
+  }).immediate();
+}
+
+// Compatibility exports required by the live API-key routes.
+export function createApiKey(userId, secretHash, name = 'Default API Key') {
+  return createDeveloperApiKey({ id: randomUUID(), userId, name, secretHash,
+    displayPrefix: 'ub_' + String(secretHash || '').substring(0, 8) });
+}
+export function validateApiKeyForUser(secretHash) {
+  return findDeveloperApiKey(secretHash)?.user_id || null;
+}
+export function touchApiKey(userId) {
+  return db.prepare(`UPDATE developer_api_keys SET last_used_at=CURRENT_TIMESTAMP
+    WHERE user_id=? AND revoked_at IS NULL`).run(userId);
+}
+export function getApiKey(userId) {
+  return db.prepare(`SELECT id,user_id,name,display_prefix,created_at,last_used_at FROM developer_api_keys
+    WHERE user_id = ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1`).get(userId);
+}
+export function deleteApiKey(userId) {
+  return db.prepare(`UPDATE developer_api_keys SET revoked_at = CURRENT_TIMESTAMP
+    WHERE user_id = ? AND revoked_at IS NULL`).run(userId);
+}
+
+export function selectCredentialRowsForAllowance(userId, provider, rows, accessState) {
+  if (!accessState?.canAccessApp || Number(accessState.downloadAllowance) <= 0) return [];
+  if (accessState.canDownloadAll && !Number.isFinite(accessState.downloadAllowance)) return rows;
+  const allowed = new Set(getTrialDownloadKeys(userId, provider, 'credentials',
+    rows.map(row => String(row.email || '').toLowerCase()), accessState.downloadAllowance));
+  return rows.filter(row => allowed.has(String(row.email || '').toLowerCase()));
+}

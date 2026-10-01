@@ -1,47 +1,69 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import { mkdtempSync } from 'node:fs';
+import { after, test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { once } from 'node:events';
 import Database from 'better-sqlite3';
+import express from 'express';
 
-import {
-  canonicalJson,
-  normalizeDomain,
-  normalizeNames,
-  normalizeRedirect,
-  orderStage,
-  validateCreatePayload,
-  validMailboxPassword,
-} from '../services/developerApiValidation.js';
-import { unlimitedInboxesOpenApi } from '../services/openapi.js';
-
-process.env.APP_DB_PATH = join(mkdtempSync(join(tmpdir(), 'unlimited-inboxes-api-test-')), 'app.db');
+// This file tests the deployed /api contract. The previous tests imported
+// abandoned /v1 modules that are absent from both Git and the live release.
+const directory = mkdtempSync(join(tmpdir(), 'unlimited-inboxes-api-test-'));
+process.env.APP_DB_PATH = join(directory, 'app.db');
 const legacyDb = new Database(process.env.APP_DB_PATH);
 legacyDb.exec(`
   CREATE TABLE api_keys (id INTEGER PRIMARY KEY, api_key TEXT);
   CREATE TABLE orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tenant_id INTEGER NOT NULL,
-    user_id INTEGER,
-    order_name TEXT,
-    status TEXT DEFAULT 'pending',
-    progress INTEGER DEFAULT 0,
-    total_mailboxes INTEGER DEFAULT 100,
-    mailbox_password TEXT,
-    mailbox_names TEXT,
-    created_mailboxes TEXT DEFAULT '[]',
-    error_message TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER NOT NULL, user_id INTEGER,
+    order_name TEXT, status TEXT DEFAULT 'pending', progress INTEGER DEFAULT 0,
+    total_mailboxes INTEGER DEFAULT 100, mailbox_password TEXT, mailbox_names TEXT,
+    created_mailboxes TEXT DEFAULT '[]', error_message TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
 legacyDb.close();
 const database = await import('../db/database.js');
-const developerApi = await import('../services/developerApi.js');
-
-const paidAccess = { canUseCustomNames: true, canUseDomainRedirects: true };
-
+const { hashApiKey, validateApiKey } = await import('../services/apiKey.js');
+const { default: apiRouter } = await import('../routes/api.js');
+const { default: keyRouter } = await import('../routes/apiKeys.js');
+const app = express();
+app.use(express.json());
+app.use((req, _res, next) => {
+  const user = database.getUserById(Number(req.headers['x-test-user']));
+  req.session = { user, authenticated: Boolean(user) };
+  next();
+});
+app.use('/api/keys', keyRouter);
+app.use('/api', apiRouter);
+const server = app.listen(0, '127.0.0.1');
+await once(server, 'listening');
+const base = `http://127.0.0.1:${server.address().port}`;
+after(async () => {
+  server.closeAllConnections();
+  await new Promise(resolve => server.close(resolve));
+  database.default.close();
+  rmSync(directory, { recursive: true, force: true });
+});
+async function request(method, path, { userId, key, body } = {}) {
+  const response = await fetch(`${base}${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(userId ? { 'x-test-user': String(userId) } : {}), ...(key ? { 'x-api-key': key } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  return { status: response.status, body: await response.json() };
+}
+function user(email, plan = 'basic') {
+  const id = Number(database.createUser(email, 'hash', 'salt', plan).lastInsertRowid);
+  database.default.prepare("UPDATE users SET xpay_subscription_status = 'ACTIVE' WHERE id = ?").run(id);
+  return id;
+}
+async function issueKey(userId) {
+  const result = await request('POST', '/api/keys', { userId });
+  assert.equal(result.status, 201);
+  assert.match(result.body.rawKey, /^[a-f0-9]{64}$/);
+  return result.body.rawKey;
+}
 test('fresh schema removes the retired API key table', () => {
   const legacyTable = database.default.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'api_keys'").get();
   assert.equal(legacyTable, undefined);
@@ -109,120 +131,85 @@ test('mailbox identity plans are immutable once the first worker persists them',
   assert.deepEqual(JSON.parse(stored.planned_mailboxes), firstPlan);
 });
 
-test('idempotency canonicalizes object keys without changing array order', () => {
-  assert.equal(canonicalJson({ b: 2, a: { d: 4, c: 3 } }), canonicalJson({ a: { c: 3, d: 4 }, b: 2 }));
-  assert.notEqual(canonicalJson({ names: ['A', 'B'] }), canonicalJson({ names: ['B', 'A'] }));
+
+test('deployed API keys are one-time secrets with hash-at-rest authentication and revocation', async () => {
+  const userId = user('api-key@example.com');
+  const key = await issueKey(userId);
+  const stored = database.default.prepare('SELECT * FROM developer_api_keys WHERE user_id = ?').get(userId);
+  assert.equal(stored.secret_hash, hashApiKey(key));
+  assert.ok(!JSON.stringify(stored).includes(key));
+  assert.equal(database.listDeveloperApiKeys(userId)[0].secret_hash, undefined);
+  assert.equal((await validateApiKey(key)).id, userId);
+  const summary = await request('GET', '/api/keys', { userId });
+  assert.equal(summary.body.hasKey, true);
+  assert.ok(!JSON.stringify(summary.body).includes(key));
+  assert.equal((await request('DELETE', '/api/keys', { userId })).status, 200);
+  assert.equal(await validateApiKey(key), null);
+  assert.equal((await request('GET', '/api/orders', { key })).status, 401);
 });
 
-test('developer API accepts the complete random-name order payload', () => {
-  const input = validateCreatePayload({
-    order_name: 'Client Batch',
-    domain: 'Example.COM',
-    tenant: {
-      email: 'admin@company.onmicrosoft.com',
-      password: 'TenantPassword!',
-      mfa_secret: 'JBSWY3DPEHPK3PXP',
-    },
-    mailboxes: {
-      quantity: 100,
-      password: 'MailboxPassword123!',
-      naming: { mode: 'random' },
-    },
-    redirect: { enabled: true, url: 'destination.example' },
-  }, paidAccess);
-
-  assert.equal(input.domain, 'example.com');
-  assert.equal(input.quantity, 100);
-  assert.equal(input.naming.names, null);
-  assert.equal(input.redirectUrl, 'https://destination.example/');
+test('deployed API rejects missing, invalid and revoked credentials', async () => {
+  assert.equal((await request('GET', '/api/orders')).status, 401);
+  assert.equal((await request('GET', '/api/orders', { key: 'synthetic-invalid-key' })).status, 401);
+  assert.equal((await request('POST', '/api/keys')).status, 401);
 });
 
-test('trial API orders reject paid naming and redirect features', () => {
-  const trialAccess = { canUseCustomNames: false, canUseDomainRedirects: false };
-  const base = {
-    order_name: 'Trial Batch',
-    domain: 'trial.example.com',
-    tenant: {
-      email: 'admin@trial.onmicrosoft.com',
-      password: 'TenantPassword!',
-      mfa_secret: 'JBSWY3DPEHPK3PXP',
-    },
-    mailboxes: {
-      quantity: 2,
-      password: 'MailboxPassword123!',
-      naming: { mode: 'random' },
-    },
-    redirect: { enabled: false },
+test('deployed API validates tenant credentials, MFA, mailbox password and quantity before provisioning', async () => {
+  const userId = user('validation@example.com');
+  const key = await issueKey(userId);
+  const body = {
+    tenant_domain: 'validation.example.com', admin_email: 'admin@validation.onmicrosoft.com',
+    admin_password: 'SyntheticTenantPassword!', mfa_secret: 'JBSWY3DPEHPK3PXP',
+    mailbox_password: 'SyntheticPassword123!', total_mailboxes: 2,
   };
-
-  assert.throws(
-    () => validateCreatePayload({
-      ...base,
-      mailboxes: { ...base.mailboxes, naming: { mode: 'custom', names: ['Taylor Morgan', 'Jordan Lee'] } },
-    }, trialAccess),
-    (error) => error.code === 'CUSTOM_NAMES_NOT_AVAILABLE',
-  );
-  assert.throws(
-    () => validateCreatePayload({ ...base, redirect: { enabled: true, url: 'destination.example' } }, trialAccess),
-    (error) => error.code === 'REDIRECTS_NOT_AVAILABLE',
-  );
+  for (const field of ['tenant_domain', 'admin_email', 'admin_password', 'mfa_secret', 'mailbox_password']) {
+    const invalid = { ...body }; delete invalid[field];
+    const result = await request('POST', '/api/orders', { key, body: invalid });
+    assert.equal(result.status, 400, field);
+    assert.match(result.body.error, new RegExp(field));
+  }
+  for (const invalid of [
+    { mfa_secret: 'invalid-characters!' }, { mailbox_password: 'alllowercase' },
+    { total_mailboxes: -1 }, { total_mailboxes: 501 },
+  ]) assert.equal((await request('POST', '/api/orders', { key, body: { ...body, ...invalid } })).status, 400);
+  assert.equal(database.getOrders(userId).length, 0);
 });
 
-test('custom names must exactly match the requested mailbox quantity', () => {
-  assert.throws(
-    () => normalizeNames({ mode: 'custom', names: ['Taylor Morgan'] }, 2),
-    (error) => error.code === 'INVALID_CUSTOM_NAMES',
-  );
-  assert.deepEqual(
-    normalizeNames({ mode: 'custom', names: [{ first_name: 'Taylor', last_name: 'Morgan' }] }, 1).names,
-    ['Taylor Morgan'],
-  );
+test('deployed API rejects unpaid users and trial API provisioning before side effects', async () => {
+  const payload = {
+    tenant_domain: 'gated.example.com', admin_email: 'admin@gated.onmicrosoft.com',
+    admin_password: 'SyntheticTenantPassword!', mfa_secret: 'JBSWY3DPEHPK3PXP',
+    mailbox_password: 'SyntheticPassword123!', total_mailboxes: 2,
+  };
+  const freeId = user('free-api@example.com', 'free');
+  database.default.prepare("UPDATE users SET xpay_subscription_status = NULL WHERE id = ?").run(freeId);
+  const freeKey = await issueKey(freeId);
+  const blocked = await request('POST', '/api/orders', { key: freeKey, body: payload });
+  assert.equal(blocked.status, 403);
+  assert.equal(blocked.body.code, 'BILLING_REQUIRED');
+  const trialId = user('trial-api@example.com', 'trial');
+  database.default.prepare("UPDATE users SET xpay_subscription_status = 'TRIALING', xpay_trial_ends_at = datetime('now', '+5 days') WHERE id = ?").run(trialId);
+  const trialKey = await issueKey(trialId);
+  const trial = await request('POST', '/api/orders', { key: trialKey, body: payload });
+  assert.equal(trial.status, 403);
+  assert.equal(trial.body.code, 'API_NOT_AVAILABLE');
+  assert.equal(database.getOrders(freeId).length, 0);
+  assert.equal(database.getOrders(trialId).length, 0);
 });
 
-test('redirect validation rejects loops and embedded credentials', () => {
-  assert.throws(() => normalizeRedirect('https://example.com/path', 'example.com'), (error) => error.code === 'REDIRECT_LOOP');
-  assert.throws(() => normalizeRedirect('https://user:pass@other.example', 'example.com'));
-});
-
-test('domain and Microsoft password validation match the public contract', () => {
-  assert.equal(normalizeDomain('https://Mail.Example.com/'), 'mail.example.com');
-  assert.throws(() => normalizeDomain('localhost'));
-  assert.equal(validMailboxPassword('Password123!'), true);
-  assert.equal(validMailboxPassword('alllowercase'), false);
-});
-
-test('order stages expose the registrar gate before provisioning', () => {
-  assert.equal(orderStage({ status: 'pending' }, { accepted: false }), 'awaiting_nameservers');
-  assert.equal(orderStage({ status: 'pending' }, { accepted: true }), 'ready_to_start');
-  assert.equal(orderStage({ status: 'processing' }), 'provisioning');
-  assert.equal(orderStage({ status: 'completed' }), 'completed');
-});
-
-test('OpenAPI publishes the complete supported lifecycle and marks tenant secrets write-only', () => {
-  const paths = unlimitedInboxesOpenApi.paths;
-  for (const path of [
-    '/v1/account',
-    '/v1/orders',
-    '/v1/orders/{order_id}',
-    '/v1/orders/{order_id}/nameservers/prepare',
-    '/v1/orders/{order_id}/nameservers',
-    '/v1/orders/{order_id}/start',
-    '/v1/orders/{order_id}/download',
-  ]) assert.ok(paths[path], `Missing ${path}`);
-  const tenant = unlimitedInboxesOpenApi.components.schemas.CreateOrderRequest.properties.tenant;
-  assert.equal(tenant.properties.password.writeOnly, true);
-  assert.equal(tenant.properties.mfa_secret.writeOnly, true);
-});
-
-test('API keys are one-time secrets with hash-at-rest authentication and revocation', () => {
-  const userResult = database.createUser('api-key@example.com', 'hash', 'salt', 'basic');
-  const issued = developerApi.issueDeveloperApiKey(Number(userResult.lastInsertRowid), 'Production');
-  assert.match(issued.secret, /^ui_live_[A-Za-z0-9_-]{40,}$/);
-  assert.equal(issued.key.name, 'Production');
-  assert.equal(database.listDeveloperApiKeys(Number(userResult.lastInsertRowid))[0].secret_hash, undefined);
-  assert.equal(developerApi.authenticateDeveloperApiKey(`Bearer ${issued.secret}`).user.email, 'api-key@example.com');
-  database.revokeDeveloperApiKey(issued.key.id, Number(userResult.lastInsertRowid));
-  assert.equal(developerApi.authenticateDeveloperApiKey(`Bearer ${issued.secret}`), null);
+test('deployed API keys cannot read another user order or credentials', async () => {
+  const owner = user('owner-api@example.com');
+  const other = user('other-api@example.com');
+  const tenantId = database.createTenant({ user_id: owner, name: 'Owned', domain: 'owned.example.com', admin_email: 'admin@owned.onmicrosoft.com', admin_password: 'SyntheticTenantPassword!' }).lastInsertRowid;
+  const orderId = database.createOrderWithinQuota({ tenantId, totalMailboxes: 1, mailboxPassword: 'SyntheticPassword123!', userId: owner, inboxesLimit: 100 });
+  const key = await issueKey(other);
+  assert.deepEqual((await request('GET', '/api/orders', { key })).body, []);
+  for (const path of [`/api/orders/${orderId}`, '/api/orders/by-domain/owned.example.com', '/api/orders/by-domain/owned.example.com/download']) {
+    const result = await request('GET', path, { key });
+    assert.equal(result.status, 404, path);
+    assert.ok(!JSON.stringify(result.body).includes('SyntheticPassword'));
+  }
+  assert.equal((await request('POST', `/api/orders/${orderId}/start`, { key })).status, 404);
 });
 
 test('dashboard and API orders share one transactional inbox allowance', () => {

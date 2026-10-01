@@ -497,7 +497,7 @@ export default function Orders() {
  <main className="main-content">
  <div className="page-header">
  <div>
- <h1>Orders</h1>
+ <h1>Microsoft</h1>
  <p>{hasUnlimitedOrders ? 'Create and process unlimited orders at once.' : 'Create orders freely and process one at a time on your current plan.'}</p>
  </div>
  <div className="page-actions">

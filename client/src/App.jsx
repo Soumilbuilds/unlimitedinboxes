@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { BillingProvider } from './context/BillingContext';
 import Login from './pages/Login';
 import Orders from './pages/Orders';
+import SMTP from './pages/SMTP';
 import Inboxes from './pages/Inboxes';
 import API from './pages/API';
 import Tenants from './pages/Tenants';
@@ -71,6 +72,7 @@ export default function App() {
                 </ProtectedRoute>
               }
             />
+            <Route path="/smtp" element={<ProtectedRoute><SMTP /></ProtectedRoute>} />
             <Route
               path="/tenants"
               element={

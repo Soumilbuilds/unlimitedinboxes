@@ -9,10 +9,12 @@ import authRoutes from './routes/auth.js';
 import billingRoutes from './routes/billing.js';
 import tenantRoutes from './routes/tenants.js';
 import orderRoutes from './routes/orders.js';
+import smtpRoutes from './routes/smtp.js';
 import redirectRoutes from './routes/redirects.js';
 import apiRoutes from './routes/api.js';
 import apiKeyRoutes from './routes/apiKeys.js';
 import { resumeInterruptedOrders } from './services/orderProcessor.js';
+import { startSmtpWorker, stopSmtpWorker } from './services/smtpOrderProcessor.js';
 import { createManagedBillingWorker } from './services/recurringBilling.js';
 import db from './db/database.js';
 import { createSessionStore } from './services/sessionStore.js';
@@ -63,10 +65,24 @@ app.use(session({
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+// Preserve the authentication probe used by the deployed MCP service.
+app.get('/api/mcp-auth', async (req, res) => {
+  try {
+    const key = req.headers['x-api-key'];
+    if (typeof key !== 'string' || !key) return res.status(401).json({ error: 'Missing API key' });
+    const { validateApiKey } = await import('./services/apiKey.js');
+    const user = await validateApiKey(key);
+    if (!user) return res.status(401).json({ error: 'Invalid API key' });
+    return res.json({ id: user.id, email: user.email, plan: user.plan || 'free' });
+  } catch {
+    return res.status(503).json({ error: 'Authentication is temporarily unavailable.' });
+  }
+});
 app.use('/api/auth', authRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/tenants', tenantRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/smtp', smtpRoutes);
 app.use('/api/redirects', redirectRoutes);
 app.use('/api/keys', apiKeyRoutes);
 app.use('/api/keys', apiKeyRoutes);
@@ -80,7 +96,7 @@ app.get('/api-docs/llms.txt', (req, res) => {
 
 ## Overview
 
-Unlimited Inboxes is a SaaS platform that provisions Microsoft 365 shared mailboxes at scale. Users connect their Microsoft 365 tenant, configure their domain's nameservers, and the system automatically creates hundreds of mailboxes with randomized female names and secure passwords.
+Unlimited Inboxes supports Microsoft inbox provisioning and SMTP + IMAP inbox provisioning. The Microsoft flow connects a Microsoft 365 tenant. The SMTP flow in the customer application connects Resend, guides domain setup, and creates inbox credentials for standard SMTP + IMAP connections. This developer API documentation covers Microsoft provisioning only.
 
 The API allows programmatic access to:
 - Create orders to provision mailboxes
@@ -433,9 +449,10 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`Server running on http://${HOST}:${PORT}`);
   managedBillingWorker.start();
+  startSmtpWorker();
 
   if (!orderResumeEnabled) {
     console.log('Order resume worker disabled.');
@@ -452,3 +469,15 @@ app.listen(PORT, HOST, () => {
     resumer.unref();
   }
 });
+
+// Stop scheduling SMTP work before systemd retires this release. Checkpoints
+// and leases allow the replacement process to resume safely.
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.once(signal, () => {
+    const drained = stopSmtpWorker();
+    const closed = new Promise(resolve => server.close(resolve));
+    void Promise.allSettled([drained, closed]).then(() => process.exit(0));
+    const timeout = setTimeout(() => process.exit(0), 45_000);
+    timeout.unref();
+  });
+}

@@ -15,7 +15,7 @@ BRANCH="${BRANCH:-main}"
 DEPLOY_HOST="${DEPLOY_HOST:-62.171.150.14}"
 DEPLOY_USER="${DEPLOY_USER:-root}"
 DEPLOY_PATH="${DEPLOY_PATH:-/opt/unlimited-inboxes}"
-SYNC_ENV="${SYNC_ENV:-1}"
+SYNC_ENV="${SYNC_ENV:-0}"
 AUTO_COMMIT="${AUTO_COMMIT:-0}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 BUILD_CLIENT_LOCAL="${BUILD_CLIENT_LOCAL:-1}"
@@ -32,28 +32,19 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:3000/api/health}"
 SSH_CMD="ssh"
 RSYNC_RSH="ssh"
 
-if command -v sshpass >/dev/null 2>&1; then
-  if [ -z "${SSHPASS:-}" ]; then
-    read -r -s -p "SSH Password: " SSHPASS
-    echo ""
-    export SSHPASS
-  fi
+if [ -n "${SSHPASS:-}" ] && command -v sshpass >/dev/null 2>&1; then
   SSH_CMD="sshpass -e ssh"
   RSYNC_RSH="sshpass -e ssh"
 else
-  echo "Tip: install sshpass for a single password prompt (brew install sshpass)."
+  SSH_CMD="ssh -o BatchMode=yes"
+  RSYNC_RSH="ssh -o BatchMode=yes"
 fi
 
 if [ "$AUTO_COMMIT" = "1" ]; then
-  if [ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]; then
-    git -C "$ROOT_DIR" add -A
-    git -C "$ROOT_DIR" commit -m "deploy: $(date +%Y-%m-%d_%H-%M-%S)" || {
-      echo "Commit failed. Configure git user.name/email or set AUTO_COMMIT=0."
-      exit 1
-    }
-  fi
+  echo "Automatic staging is disabled. Commit the intended release explicitly."
+  exit 1
 elif [ "$ALLOW_DIRTY" != "1" ] && [ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]; then
-  echo "Working tree has uncommitted changes. Commit intentionally, or rerun with AUTO_COMMIT=1."
+  echo "Working tree has uncommitted changes. Commit intentionally, or use ALLOW_DIRTY=1 for committed files only."
   git -C "$ROOT_DIR" status --short
   exit 1
 elif [ "$ALLOW_DIRTY" = "1" ] && [ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]; then
@@ -61,13 +52,18 @@ elif [ "$ALLOW_DIRTY" = "1" ] && [ -n "$(git -C "$ROOT_DIR" status --porcelain)"
   git -C "$ROOT_DIR" status --short
 fi
 
+# Build the exact committed revision, even when unrelated scratch files exist.
+RELEASE_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/unlimited-release.XXXXXX")"
+trap 'rm -rf "$BUILD_DIR"' EXIT
+git -C "$ROOT_DIR" archive "$RELEASE_COMMIT" | tar -x -C "$BUILD_DIR"
 if [ "$BUILD_CLIENT_LOCAL" = "1" ]; then
-  echo "Building client locally..."
-  (cd "$ROOT_DIR/client" && (npm ci || npm install) && npm run build)
+  echo "Building committed client $RELEASE_COMMIT..."
+  (cd "$BUILD_DIR/client" && npm ci && npm run build)
 fi
 
-echo "Pushing to GitHub..."
-git -C "$ROOT_DIR" push origin "$BRANCH"
+echo "Pushing committed release to GitHub..."
+git -C "$ROOT_DIR" push origin "$RELEASE_COMMIT:refs/heads/$BRANCH"
 
 if [ "$SYNC_ENV" = "1" ] && [ -f "$ROOT_DIR/server/.env" ]; then
   echo "Syncing server/.env to ${SHARED_DIR}/.env"
@@ -84,21 +80,36 @@ fi
 
 echo "Deploying from GitHub to ${REMOTE}:${RELEASE_DIR}"
 $SSH_CMD "$REMOTE" "mkdir -p \"$REPO_DIR\" \"$RELEASES_DIR\" \"$SHARED_DIR/db\" \"$SHARED_DIR/logs\" \"$SHARED_DIR/pids\""
-$SSH_CMD "$REMOTE" "mkdir -p \"$SHARED_DIR/db/backups\"; if [ -s \"$SHARED_DIR/db/app.db\" ]; then cp \"$SHARED_DIR/db/app.db\" \"$SHARED_DIR/db/backups/app-$TIMESTAMP.db\"; fi"
+$SSH_CMD "$REMOTE" "python3 - '$SHARED_DIR/db/app.db' '$SHARED_DIR/db/backups/app-$TIMESTAMP.db'" <<'PY'
+import os
+import pathlib
+import sqlite3
+import sys
+
+source_path, backup_path = map(pathlib.Path, sys.argv[1:])
+if source_path.exists() and source_path.stat().st_size:
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    os.umask(0o077)
+    with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as source:
+        with sqlite3.connect(backup_path) as backup:
+            source.backup(backup)
+            if backup.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise RuntimeError("Database backup integrity check failed")
+PY
 $SSH_CMD "$REMOTE" "if [ ! -d \"$REPO_DIR/.git\" ]; then git clone \"$REPO_URL\" \"$REPO_DIR\"; fi"
-$SSH_CMD "$REMOTE" "cd \"$REPO_DIR\" && git fetch --all && git reset --hard origin/$BRANCH"
+$SSH_CMD "$REMOTE" "cd \"$REPO_DIR\" && git fetch --all && test \"\$(git rev-parse origin/$BRANCH)\" = \"$RELEASE_COMMIT\" && git reset --hard $RELEASE_COMMIT"
 
 $SSH_CMD "$REMOTE" "if [ ! -f \"$SHARED_DIR/.env\" ]; then touch \"$SHARED_DIR/.env\"; fi"
 $SSH_CMD "$REMOTE" "mkdir -p \"$RELEASE_DIR\" && rsync -az --delete --exclude .git --exclude node_modules --exclude client/node_modules --exclude server/node_modules --exclude server/db/app.db --exclude server/.env \"$REPO_DIR/\" \"$RELEASE_DIR/\""
 $SSH_CMD "$REMOTE" "ln -sfn \"$SHARED_DIR/.env\" \"$RELEASE_DIR/server/.env\""
 $SSH_CMD "$REMOTE" "touch \"$SHARED_DIR/db/app.db\"; ln -sfn \"$SHARED_DIR/db/app.db\" \"$RELEASE_DIR/server/db/app.db\""
 
-$SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/server\" && (npm ci --omit=dev || npm install --omit=dev)"
+$SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/server\" && npm ci --omit=dev"
 if [ "$BUILD_CLIENT_LOCAL" = "1" ]; then
   $SSH_CMD "$REMOTE" "mkdir -p \"$RELEASE_DIR/client/dist\""
-  rsync -az --delete -e "$RSYNC_RSH" "$ROOT_DIR/client/dist/" "$REMOTE:$RELEASE_DIR/client/dist/"
+  rsync -az --delete -e "$RSYNC_RSH" "$BUILD_DIR/client/dist/" "$REMOTE:$RELEASE_DIR/client/dist/"
 else
-  $SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/client\" && (npm ci || npm install) && npm run build"
+  $SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/client\" && npm ci && npm run build"
 fi
 
 echo "Verifying frontend assets before activation..."
@@ -109,6 +120,7 @@ PREVIOUS_RELEASE="$($SSH_CMD "$REMOTE" "readlink -f \"$DEPLOY_PATH/current\" 2>/
 $SSH_CMD "$REMOTE" "ln -sfn \"$RELEASE_DIR\" \"$DEPLOY_PATH/current\""
 
 echo "Restarting unlimited-inboxes.service..."
+$SSH_CMD "$REMOTE" "mkdir -p /etc/systemd/system/unlimited-inboxes.service.d && install -m 0644 \"$RELEASE_DIR/deploy/unlimited-inboxes-smtp.conf\" /etc/systemd/system/unlimited-inboxes.service.d/smtp.conf"
 $SSH_CMD "$REMOTE" "systemctl daemon-reload && systemctl restart unlimited-inboxes"
 
 echo "Checking health..."

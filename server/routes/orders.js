@@ -12,7 +12,8 @@ import {
  deleteOrder,
  getOrderLogs as getStoredLogs,
  getUserById,
- claimOrderForProcessing
+ claimOrderForProcessing,
+ selectCredentialRowsForAllowance
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
 import { processOrder, cancelOrder, getOrderLogs, hasActiveJob } from '../services/orderProcessor.js';
@@ -255,20 +256,25 @@ function maybeMaskOrder(order, accessState) {
  };
  }
  const created = Array.isArray(order.created_mailboxes) ? order.created_mailboxes : [];
- const visibleCount = Number.isFinite(accessState?.downloadAllowance)
- ? Math.max(0, Number(accessState.downloadAllowance))
- : created.length;
+ const allowedEmails = new Set(selectCredentialRowsForAllowance(
+ order.user_id, 'microsoft', getMailboxCredentialRows(order), accessState
+ ).map(row => row.email.toLowerCase()));
  return {
  ...order,
  error_message: maskSensitiveText(order.error_message),
- created_mailboxes: created.map((m, idx) => {
- if (idx < visibleCount) {
+ mailbox_password: null,
+ created_mailboxes: created.map((m) => {
+ const email = m?.email || m?.userPrincipalName || m?.user_principal_name || '';
+ if (allowedEmails.has(String(email).toLowerCase())) {
  return m;
  }
  return {
  ...m,
  name: m?.name ? maskName(m.name) : m?.name,
  email: '',
+ userPrincipalName: '',
+ user_principal_name: '',
+ mailbox_password: '',
  password: ''
  };
  })
@@ -291,10 +297,8 @@ function sendCredentialCsv(res, rows, filename) {
  return res.send(buildMailboxCsv(rows));
 }
 
-function applyDownloadAllowance(rows, accessState) {
- const allowance = accessState?.downloadAllowance;
- if (!Number.isFinite(allowance)) return rows;
- return rows.slice(0, Math.max(0, Number(allowance)));
+function applyDownloadAllowance(rows, accessState, userId) {
+ return selectCredentialRowsForAllowance(userId, 'microsoft', rows, accessState);
 }
 
 router.get('/', (req, res) => {
@@ -324,7 +328,8 @@ router.get('/download/all', (req, res) => {
  .filter(order => order.status === 'completed');
  const rows = applyDownloadAllowance(
  getUniqueMailboxCredentialRows(completedOrders),
- accessState
+ accessState,
+ req.session.user.id
  );
  return sendCredentialCsv(res, rows, `${rows.length.toLocaleString('en-US')} Microsoft Inboxes.csv`);
  } catch (error) {
@@ -351,7 +356,7 @@ router.get('/:id/download', (req, res) => {
  });
  }
 
- const rows = applyDownloadAllowance(getMailboxCredentialRows(order), accessState);
+ const rows = applyDownloadAllowance(getMailboxCredentialRows(order), accessState, req.session.user.id);
  return sendCredentialCsv(res, rows, `${rows.length.toLocaleString('en-US')} Microsoft Inboxes.csv`);
  } catch (error) {
  return res.status(500).json({ error: maskSensitiveText(error.message) });

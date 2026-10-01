@@ -8,13 +8,15 @@ import {
   updateTenantDetails,
   createOrderWithinQuota,
   claimOrderForProcessing,
-  getOrderById
+  getOrderById,
+  selectCredentialRowsForAllowance
 } from '../db/database.js';
 import { getUserAccessState } from '../services/access.js';
 import { chargeSavedPaymentMethodForQuota } from '../services/stripe.js';
 import { processOrder, hasActiveJob } from '../services/orderProcessor.js';
 import { getUserByEmail } from '../db/database.js';
 import { validateApiKey } from '../services/apiKey.js';
+import { buildMailboxCsv, getMailboxCredentialRows } from '../services/mailboxCsv.js';
 import { isValidTotpSecret } from '../services/totp.js';
 
 const router = Router();
@@ -135,22 +137,16 @@ router.get('/orders/by-domain/:domain/download', requireApiKey, async (req, res)
       });
     }
 
-    const mailboxes = JSON.parse(order.created_mailboxes || '[]');
-    const limit = Number.isFinite(accessState.downloadAllowance)
-      ? accessState.downloadAllowance
-      : mailboxes.length;
-    const rows = mailboxes.slice(0, limit);
+    const rows = selectCredentialRowsForAllowance(req.session.user.id, 'microsoft', getMailboxCredentialRows(order), accessState);
 
-    const csvLines = ['email,password'];
-    rows.forEach(m => {
-      const email = (m.email || '').replace(/"/g, '""');
-      const password = (m.password || '').replace(/"/g, '""');
-      csvLines.push(`"${email}","${password}"`);
-    });
+
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="${domain}-mailboxes.csv"`);
-    res.send(csvLines.join('\n'));
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.send(buildMailboxCsv(rows));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -481,22 +477,16 @@ router.get('/orders/:id/download', requireApiKey, async (req, res) => {
       });
     }
 
-    const mailboxes = JSON.parse(order.created_mailboxes || '[]');
-    const limit = Number.isFinite(accessState.downloadAllowance)
-      ? accessState.downloadAllowance
-      : mailboxes.length;
-    const rows = mailboxes.slice(0, limit);
+    const rows = selectCredentialRowsForAllowance(req.session.user.id, 'microsoft', getMailboxCredentialRows(order), accessState);
 
-    const csvLines = ['email,password'];
-    rows.forEach(m => {
-      const email = (m.email || '').replace(/"/g, '""');
-      const password = (m.password || '').replace(/"/g, '""');
-      csvLines.push(`"${email}","${password}"`);
-    });
+
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="order-${orderId}-mailboxes.csv"`);
-    res.send(csvLines.join('\n'));
+    res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.send(buildMailboxCsv(rows));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

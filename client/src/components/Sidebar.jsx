@@ -57,7 +57,10 @@ export default function Sidebar() {
 
       <nav className="sidebar-nav">
         <NavLink to="/orders" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
-          Orders
+          Microsoft
+        </NavLink>
+        <NavLink to="/smtp" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`} >
+          SMTP
         </NavLink>
         <NavLink to="/tenants" className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}>
           Tenants

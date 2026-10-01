@@ -66,4 +66,22 @@ export class FileSecretStore {
       throw new Error('Unable to write secret');
     }
   }
+
+  async delete(key) {
+    await this.prepare();
+    const filename = this.filePath(key);
+    try {
+      const stats = await lstat(filename);
+      if (!stats.isFile() || stats.isSymbolicLink() || (stats.mode & 0o077) !== 0) {
+        throw new Error('Unsafe secret file');
+      }
+      await unlink(filename);
+      const handle = await open(this.directory, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try { await handle.sync(); } finally { await handle.close(); }
+      return true;
+    } catch (error) {
+      if (error.code === 'ENOENT') return false;
+      throw new Error('Unable to delete secret');
+    }
+  }
 }
