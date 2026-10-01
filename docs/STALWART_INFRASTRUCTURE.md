@@ -1,6 +1,6 @@
 # Stalwart Infrastructure And Operations
 
-Last updated: 2026-10-01. Stalwart has trusted public IMAPS and an authenticated pilot mailbox. The **inbound MX cutover is still pending**; the existing SES MX has not been changed.
+Last updated: 2026-10-01. Stalwart has trusted public IMAPS and five authenticated mailboxes. The user changed the apex MX to `10 mail.igoutbound.com.`; DNS answers are still inconsistent across resolvers and authoritative nodes.
 
 ## Current Deployment
 
@@ -10,10 +10,10 @@ Last updated: 2026-10-01. Stalwart has trusted public IMAPS and an authenticated
 | Container runtime | Docker 29.1.3 and Docker Compose 2.40.3. |
 | Mail service | Stalwart v0.16.24 runs as the `stalwart` Compose service under `/opt/stalwart`. `/opt/stalwart/config` binds to `/etc/stalwart`, and `/opt/stalwart/data` binds to `/var/lib/stalwart`. `/opt/stalwart/secrets` and `/opt/stalwart/backups` are host directories; they are not additional container mounts in the checked-in Compose file. |
 | Current Compose exposure | Public `25:25` and `993:993` are published and externally reachable. An extra loopback IMAPS mapping remains at `127.0.0.1:1993:993`; administration remains loopback at `127.0.0.1:18080:8080` and `127.0.0.1:10443:443`. The deployed layout matches [ops/stalwart/compose.yaml](../ops/stalwart/compose.yaml). |
-| Validation | The `igoutbound.com` domain and `stacy@igoutbound.com` mailbox exist. Local SMTP delivery, IMAP message read, and unauthenticated foreign-relay rejection passed. A client outside the VPS connected to public 993, validated the chain and hostname, authenticated as Stacy, and selected INBOX. MX-based external delivery is still untested. See the [local smoke test](../ops/stalwart/local_smoke.py). |
+| Validation | The `igoutbound.com` domain and five requested mailboxes exist. Local SMTP delivery and unauthenticated foreign-relay rejection passed. Gmail delivered a message from `soumil2406@gmail.com` to Stacy at `2026-10-01T02:43:37Z`; the message is in INBOX and its body is readable. An external client validated TLS, logged in to all five mailboxes, and selected each INBOX. See the [local smoke test](../ops/stalwart/local_smoke.py). |
 | Existing web traffic | Caddy already serves the application and MCP endpoints. The app and MCP are healthy. The checked-in [Caddyfile](../deploy/Caddyfile) covers app/API/MCP HTTP reverse proxies; it is not a mail proxy configuration. The app currently also listens publicly on port 3000 despite the older runbook saying loopback; this Stalwart work did not alter it. |
 | Host firewall | UFW is inactive and the observed iptables INPUT policy is ACCEPT. Public 25 is intentional for inbound mail. Avoid enabling a host firewall without first protecting SSH and the existing app paths. |
-| DNS and TLS | `mail.igoutbound.com` resolves publicly to `62.171.150.14`. The **apex `igoutbound.com` inbound MX** still points to SES. Caddy issued a Let's Encrypt certificate for `mail.igoutbound.com` (issuer `YE2`, valid 2026-10-01 through 2026-12-30 UTC). Stalwart serves that certificate on IMAPS and SMTP STARTTLS. External OpenSSL returned `Verification: OK` and `Verify return code: 0 (ok)`. |
+| DNS and TLS | `mail.igoutbound.com` resolves publicly to `62.171.150.14`. The user changed the apex MX to Stalwart, but local/Cloudflare/Hostinger answers still sometimes show the old SES MX while Google resolves the new one. Caddy issued a Let's Encrypt certificate for `mail.igoutbound.com` (issuer `YE2`, valid 2026-10-01 through 2026-12-30 UTC). Stalwart serves it on IMAPS and SMTP STARTTLS; external OpenSSL returned `Verify return code: 0 (ok)`. |
 
 The application deploy path in [DEPLOYMENT_RUNBOOK.md](../DEPLOYMENT_RUNBOOK.md) and [scripts/deploy_github.sh](../scripts/deploy_github.sh) is separate from `/opt/stalwart`. Its app SQLite backup and release-symlink rollback do **not** back up or roll back Stalwart.
 
@@ -23,7 +23,7 @@ The application deploy path in [DEPLOYMENT_RUNBOOK.md](../DEPLOYMENT_RUNBOOK.md)
 Current SMTP:         Internet --TCP 25 (reachable)--> Stalwart
 Current IMAP:         public IMAPS 993 -------------> Stalwart
 Local IMAP testing:   host loopback 1993 -----------> Stalwart IMAPS 993
-After MX cutover:     igoutbound.com MX ------------> mail.igoutbound.com
+Intended inbound:     igoutbound.com MX ------------> mail.igoutbound.com
 Outbound:             Manyreach ----------SMTP/TLS----------> Resend
 Web app and MCP:      Internet --HTTPS--> existing Caddy --> app / MCP
 Administration:       operator/local access --> loopback Stalwart admin ports
@@ -35,23 +35,22 @@ Keep the Stalwart management endpoints on loopback or a private administrative p
 
 ## DNS And TLS Status
 
-**Current cutover gate:** the apex `igoutbound.com` inbound MX still points to SES. Public DNS, trusted TLS, public IMAPS, and Stacy's external IMAP login are ready. Wait for approval to change the MX, then verify Gmail-to-Stacy delivery before creating the remaining four accounts. This document does not propose changing any separate Resend return-path DNS records.
+**Current DNS issue:** the user saved `igoutbound.com MX 10 mail.igoutbound.com.`, and Gmail delivered to Stalwart. During verification, the local resolver and at times 1.1.1.1 returned the old SES MX, while 8.8.8.8 returned the new MX. Direct queries to Hostinger's authoritative `atlas` and `hyperion` servers also disagreed despite reporting the same SOA serial. Recheck all authoritative and recursive answers; until they agree, some senders may still route to SES. No Resend return-path record was changed by this work.
 
 | Stage | Type | Name | Value | Priority |
 | --- | --- | --- | --- | --- |
 | Completed | A | `mail.igoutbound.com` | `62.171.150.14` | — |
-| Pending inbound cutover | MX | `igoutbound.com` | `mail.igoutbound.com` | `10` |
+| Changed by user; verify propagation | MX | `igoutbound.com` | `mail.igoutbound.com` | `10` |
 
-Replace the current apex MX `10 inbound-smtp.us-east-1.amazonaws.com.` only at the later cutover. Preserve Resend DKIM, SPF/return-path, and DMARC records. Do not create an AAAA record for the mail host until IPv6 is ready.
+The former apex MX was `10 inbound-smtp.us-east-1.amazonaws.com.`. Preserve Resend DKIM, SPF/return-path, and DMARC records. Do not create an AAAA record for the mail host until IPv6 is ready.
 
 Current TLS operations: the isolated [Caddy mail block](../ops/stalwart/Caddyfile.mail) is appended to `/etc/caddy/Caddyfile`; a pre-change copy is in `/opt/stalwart/backups`. [sync_caddy_certificate.py](../ops/stalwart/sync_caddy_certificate.py) verifies the certificate and matching key, copies them into `/opt/stalwart/config/tls` as mode 600 under container UID 2000, creates or updates Stalwart's Certificate object, and hot reloads TLS. The [systemd service](../ops/stalwart/stalwart-certificate.service) and [hourly timer](../ops/stalwart/stalwart-certificate.timer) are installed and active. A repeat sync reported the certificate unchanged; the systemd service result was `success`. [Stalwart's Caddy guide](https://stalw.art/docs/server/reverse-proxy/caddy/) documents this pattern.
 
 Next sequence:
 
-1. Keep the current apex SES MX value and TTL recorded. Leave Resend DKIM, SPF/return-path, and DMARC records intact.
-2. After explicit MX-cutover approval, replace only the **apex `igoutbound.com` inbound MX** with `10 mail.igoutbound.com.` and monitor SMTP delivery and queues. Keep the prior SES MX for rollback. [Stalwart's DNS guide](https://stalw.art/docs/install/dns/) explains MX records.
-3. Send a Gmail test to Stacy, retrieve it over public IMAPS, and confirm the message reached Stalwart through the new MX. Only after Stacy passes, create Amy, Sam, Jake, and Mia with distinct random passwords and test each IMAP login.
-4. Connect Manyreach using Resend SMTP and Stalwart IMAP only after the mail path is verified. Test a real reply and keep the two credentials separate.
+1. Check the apex MX at the local resolver, 1.1.1.1, 8.8.8.8, and both Hostinger authoritative nameservers until they agree on `10 mail.igoutbound.com.`. Retain the prior SES MX for rollback. [Stalwart's DNS guide](https://stalw.art/docs/install/dns/) explains MX records.
+2. Gmail-to-Stacy delivery and external IMAP retrieval passed. Amy, Sam, Jake, and Mia were then created with distinct random passwords and passed external IMAP authentication.
+3. Connect Manyreach using Resend SMTP and Stalwart IMAP only when requested. Test a real reply and keep the two credentials separate.
 
 These are read-only checks; run them from the host or an external probe as appropriate:
 
@@ -65,11 +64,11 @@ openssl s_client -connect mail.igoutbound.com:993 -servername mail.igoutbound.co
 openssl s_client -starttls smtp -connect mail.igoutbound.com:25 -servername mail.igoutbound.com
 ```
 
-The apex `igoutbound.com` MX is currently the SES inbound route. Its change is pending; no separate return-path MX change is part of this cutover.
+The intended apex MX is now the Stalwart mail host, but observed DNS answers are inconsistent. No separate return-path MX change is part of this cutover.
 
 ## Provisioning And Manyreach Integration
 
-The repository contains [StalwartMailboxProvider](../server/services/stalwartMailboxProvider.js) and [FileSecretStore](../server/services/fileSecretStore.js). The provider uses the Stalwart JMAP management API with a bearer token over HTTPS or the explicitly allowed IP loopback HTTP endpoint `http://127.0.0.1:18080`; the deployed API remains private. It can ensure a domain and user mailbox and stores a generated mailbox password in the file secret store. Its domain creation requests manual DNS and manual certificate management. Separately, the `igoutbound.com` domain and Stacy mailbox have **already been created on the live Stalwart service** and passed the local smoke test. That does not by itself establish that the application is wired to production Stalwart for customer orders. [Stalwart management documentation](https://stalw.art/docs/management/) describes the API model.
+The repository contains [StalwartMailboxProvider](../server/services/stalwartMailboxProvider.js) and [FileSecretStore](../server/services/fileSecretStore.js). The provider uses the Stalwart JMAP management API with a bearer token over HTTPS or the explicitly allowed IP loopback HTTP endpoint `http://127.0.0.1:18080`; the deployed API remains private. It can ensure a domain and user mailbox, excludes the bootstrap administrator from managed mailbox listings, and stores generated mailbox passwords in the file secret store. Its domain creation requests manual DNS and certificate management. The five requested accounts have been created on live Stalwart and passed external IMAP login, but the application is not wired to Stalwart for customer orders. [Stalwart management documentation](https://stalw.art/docs/management/) describes the API model.
 
 The repository's [Manyreach sender export helper](../server/services/manyreachSenderExport.js) **splits the credentials correctly**: `smtp.resend.com:465`, username `resend`, and a Resend API key from the secret store for SMTP; the Stalwart IMAP host/port, mailbox address, and mailbox password for IMAP. It can build a payload or write a restricted `.credentials.csv` file; it makes no Manyreach API call. Keep the Resend API key and mailbox password out of logs, and treat any CSV as a short-lived secret-bearing artifact. External IMAP login passed, but Manyreach onboarding remains untested. The older [Microsoft OAuth importer](../scripts/MANYREACH_MICROSOFT_IMPORT.md) is unrelated to this flow.
 
@@ -93,14 +92,12 @@ For disaster recovery, freeze new mailbox creation, select a verified backup, re
 
 ## Pending Work, In Order
 
-1. Obtain explicit approval for the apex MX cutover. DNS, trusted TLS, public 25/993, external IMAP login, and service health are already verified.
-2. Replace only the apex `igoutbound.com` inbound MX from SES with `10 mail.igoutbound.com.`; monitor delivery. Do not touch Resend authentication records.
-3. Send Gmail to Stacy and retrieve the message via public IMAPS. If successful, create and test the other four mailboxes.
-4. Exercise the Manyreach payload with Resend SMTP and Stalwart IMAP for one sender; verify outbound sending and reply reading.
-5. Arrange an interruption window for the **unrun** manual `backup.sh --quiesce`, or replace it with a tested non-disruptive snapshot. Verify the resulting archive and isolated restore, then copy it off-host.
+1. Resolve the inconsistent MX answers across Hostinger authoritative servers and recursive resolvers; Gmail delivery succeeded, but not all senders will necessarily use the new route yet.
+2. Keep Manyreach disconnected until specifically requested. When connected, test Resend SMTP sending and Stalwart IMAP reply reading with one sender first.
+3. Arrange an interruption window for the **unrun** manual `backup.sh --quiesce`, or replace it with a tested non-disruptive snapshot. Verify the resulting archive and isolated restore, then copy it off-host.
 
 ## Sources
 
-- Live host, runtime, deployment, DNS, TLS, and health facts: verified on the VPS and from an external client on 2026-10-01. The user added the A record; this deployment made no DNS or MX change.
+- Live host, runtime, deployment, DNS, TLS, and health facts: verified on the VPS and from an external client on 2026-10-01. The user changed A and MX records; this deployment made no DNS change.
 - Repository: [deployment runbook](../DEPLOYMENT_RUNBOOK.md), [deploy script](../scripts/deploy_github.sh), [Caddyfile](../deploy/Caddyfile), [Stalwart Compose](../ops/stalwart/compose.yaml), [local smoke test](../ops/stalwart/local_smoke.py), [manual backup script](../ops/stalwart/backup.sh), [Stalwart provider](../server/services/stalwartMailboxProvider.js), [Manyreach export helper](../server/services/manyreachSenderExport.js).
 - Vendor references: [Stalwart Caddy certificate-copy guidance](https://stalw.art/docs/server/reverse-proxy/caddy/), [Stalwart DNS](https://stalw.art/docs/install/dns/), [Stalwart storage](https://stalw.art/docs/storage/), [Resend SMTP](https://resend.com/docs/send-with-smtp), [Manyreach sender setup](https://help.manyreach.com/en/articles/119-senders-and-mailboxes-setup-and-troubleshooting-guide). Current vendor docs may describe versions newer than the installed Stalwart v0.16.24; verify version-specific settings against the deployed service.

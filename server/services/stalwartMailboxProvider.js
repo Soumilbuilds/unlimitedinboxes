@@ -41,6 +41,10 @@ function publicMailbox(item, domain) {
   return { id: item.id, email: item.emailAddress || `${item.name}@${domain}`, domain };
 }
 
+function isManagedMailbox(item) {
+  return item['@type'] === 'User' && item.roles?.['@type'] === 'User';
+}
+
 export class StalwartMailboxProvider {
   constructor({ baseUrl, token, tokenSecretKey, secretStore, fetchImpl = fetch, requestTimeoutMs = 30000 }) {
     let url;
@@ -141,7 +145,7 @@ export class StalwartMailboxProvider {
     const found = await this.getDomain(domain);
     if (!found) return [];
     return (await this.query('Account', { domainId: found.id }))
-      .filter(item => item['@type'] === 'User' && item.domainId === found.id)
+      .filter(item => isManagedMailbox(item) && item.domainId === found.id)
       .map(item => publicMailbox(item, found.name));
   }
 
@@ -150,7 +154,10 @@ export class StalwartMailboxProvider {
     const domain = await this.getDomain(address.domain);
     if (!domain) return null;
     const match = (await this.query('Account', { domainId: domain.id, name: address.local }))
-      .find(item => item['@type'] === 'User' && item.domainId === domain.id && item.name?.toLowerCase() === address.local);
+      .find(item => item.domainId === domain.id && item.name?.toLowerCase() === address.local);
+    if (match && !isManagedMailbox(match)) {
+      throw new Error('Account exists but is not a managed mailbox');
+    }
     return match ? { account: match, domain } : null;
   }
 

@@ -73,7 +73,7 @@ async function fixture(fn, pageCap) {
   }
 }
 
-test('ensures domains and mailboxes once and lists only exact user accounts', async () => fixture(async ({ provider, calls, accounts, secretStore }) => {
+test('ensures domains and mailboxes once and excludes the bootstrap administrator', async () => fixture(async ({ provider, calls, accounts, secretStore }) => {
   const first = await provider.ensureMailbox('  Alice@Example.Test  ');
   const second = await provider.ensureMailbox('alice@example.test');
   assert.equal(first.created, true);
@@ -81,9 +81,13 @@ test('ensures domains and mailboxes once and lists only exact user accounts', as
   assert.equal(first.id, second.id);
   assert.deepEqual(await provider.listDomains(), [{ id: '1', name: 'example.test', isEnabled: true }]);
   assert.deepEqual(await provider.getDomain('other.example.test'), null);
+  accounts.set('admin', { id: 'admin', '@type': 'User', name: 'admin', domainId: '1',
+    emailAddress: 'admin@example.test', roles: { '@type': 'Admin' } });
   assert.equal((await provider.listMailboxes('example.test')).length, 1);
   assert.equal((await provider.getMailbox('alice@example.test')).id, first.id);
   assert.equal(await provider.getMailbox('bob@example.test'), null);
+  await assert.rejects(provider.getMailbox('admin@example.test'), /not a managed mailbox/);
+  await assert.rejects(provider.ensureMailbox('admin@example.test'), /not a managed mailbox/);
   assert.equal(calls.filter(call => call.method === 'x:Domain/set').length, 1);
   assert.equal(calls.filter(call => call.method === 'x:Account/set' && call.args.create).length, 1);
   assert.equal(calls.some(call => call.args.destroy), false);
