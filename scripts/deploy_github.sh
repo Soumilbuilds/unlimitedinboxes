@@ -104,7 +104,7 @@ $SSH_CMD "$REMOTE" "mkdir -p \"$RELEASE_DIR\" && rsync -az --delete --exclude .g
 $SSH_CMD "$REMOTE" "ln -sfn \"$SHARED_DIR/.env\" \"$RELEASE_DIR/server/.env\""
 $SSH_CMD "$REMOTE" "touch \"$SHARED_DIR/db/app.db\"; ln -sfn \"$SHARED_DIR/db/app.db\" \"$RELEASE_DIR/server/db/app.db\""
 
-$SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/server\" && npm ci --omit=dev"
+$SSH_CMD "$REMOTE" "cd \"$RELEASE_DIR/server\" && npm ci --omit=dev --no-audit --no-fund"
 if [ "$BUILD_CLIENT_LOCAL" = "1" ]; then
   $SSH_CMD "$REMOTE" "mkdir -p \"$RELEASE_DIR/client/dist\""
   rsync -az --delete -e "$RSYNC_RSH" "$BUILD_DIR/client/dist/" "$REMOTE:$RELEASE_DIR/client/dist/"
@@ -120,7 +120,7 @@ PREVIOUS_RELEASE="$($SSH_CMD "$REMOTE" "readlink -f \"$DEPLOY_PATH/current\" 2>/
 $SSH_CMD "$REMOTE" "ln -sfn \"$RELEASE_DIR\" \"$DEPLOY_PATH/current\""
 
 echo "Restarting unlimited-inboxes.service..."
-$SSH_CMD "$REMOTE" "mkdir -p /etc/systemd/system/unlimited-inboxes.service.d && install -m 0644 \"$RELEASE_DIR/deploy/unlimited-inboxes-smtp.conf\" /etc/systemd/system/unlimited-inboxes.service.d/smtp.conf"
+$SSH_CMD "$REMOTE" "mkdir -p /etc/systemd/system/unlimited-inboxes.service.d && install -m 0644 \"$RELEASE_DIR/deploy/unlimited-inboxes-smtp.conf\" /etc/systemd/system/unlimited-inboxes.service.d/zz-smtp.conf"
 $SSH_CMD "$REMOTE" "systemctl daemon-reload && systemctl restart unlimited-inboxes"
 
 echo "Checking health..."
