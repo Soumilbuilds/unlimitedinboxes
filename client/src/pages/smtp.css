@@ -25,6 +25,7 @@
 .smtp-orders .order-row-main { width: 100%; gap: 9px; }
 .smtp-orders strong, .smtp-orders h2, .smtp-orders .order-header p { overflow-wrap: anywhere; }
 .smtp-orders .status { width: fit-content; white-space: normal; font-size: 11px; }
+.smtp-page .status { text-transform: none; }
 .smtp-orders .orders-panel { padding: 26px; }
 .smtp-page .status.waiting_dns, .smtp-page .status.waiting_verification, .smtp-page .status.pending_nameservers { background: rgba(110,170,255,.09); color: #aecbfa; }
 .smtp-page .status.draft, .smtp-page .status.cancelled { background: rgba(255,255,255,.06); color: rgba(245,245,245,.65); }
