@@ -113,6 +113,39 @@ test('MAIL FROM 530 is safe: no RCPT, AUTH or DATA is sent', async () => {
   assertClosed(f);
 });
 
+test('MAIL FROM 503 explicitly requiring authentication is safe without RCPT, AUTH or DATA', async () => {
+  for (const reply of [
+    '503 5.5.1 You must authenticate first.\r\n',
+    '503 You must authenticate first\r\n',
+    '503 5.5.1 Authentication required.\r\n',
+    '503 AUTHENTICATION REQUIRED\r\n',
+  ]) {
+    const f = fixture([smtp([{ command: 'MAIL FROM:<relay-check@example.net>', reply }])]);
+    assert.equal(await f.service.verifyRelaySecurity(), true);
+    assert.deepEqual(f.sockets[0].commands, [hello.command, 'MAIL FROM:<relay-check@example.net>']);
+    assert.equal(f.sockets[0].remaining.length, 0);
+    assertClosed(f);
+  }
+});
+
+test('MAIL FROM 503 without an explicit authentication requirement fails without further commands', async () => {
+  for (const reply of [
+    '503 5.5.1 Bad sequence of commands.\r\n',
+    '503 5.5.1 Send HELO first.\r\n',
+    '503 5.5.1 Authentication not required.\r\n',
+    '503 5.5.1 You must authenticate first. But anonymous relay is allowed.\r\n',
+    '503\r\n',
+    '503-Bad sequence of commands\r\n503 5.5.1 You must authenticate first.\r\n',
+    '503 Authentication required for another operation.\r\n',
+  ]) {
+    const f = fixture([smtp([{ command: 'MAIL FROM:<relay-check@example.net>', reply }])]);
+    await assert.rejects(f.service.verifyRelaySecurity(), safeFailure('Relay security verification failed.'));
+    assert.deepEqual(f.sockets[0].commands, [hello.command, 'MAIL FROM:<relay-check@example.net>']);
+    assert.equal(f.sockets[0].remaining.length, 0);
+    assertClosed(f);
+  }
+});
+
 test('relay recipient 530 or 550 is safe; accepting an external recipient is rejected without DATA', async () => {
   for (const code of [530, 550, 250, 251, 451]) {
     const f = fixture([smtp([

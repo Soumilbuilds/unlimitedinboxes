@@ -299,6 +299,10 @@ export function createSmtpConnectivity({
           await smtpHello(session);
           const sender = await smtpCommand(session, 'MAIL FROM:<relay-check@example.net>');
           if (sender.code === 530) return;
+          // Some servers use 503 for this authentication gate. A generic 503
+          // only indicates a command sequencing error and cannot prove safety.
+          if (sender.code === 503 && sender.lines.length === 1 &&
+              /^(?:5\.5\.1[ \t]+)?(?:You must authenticate first|Authentication required)\.?$/i.test(sender.lines[0].trim())) return;
           if (sender.code !== 250) throw protocolError();
           const recipient = await smtpCommand(session, 'RCPT TO:<relay-check@example.net>');
           if (recipient.code !== 530 && recipient.code !== 550) throw protocolError();
