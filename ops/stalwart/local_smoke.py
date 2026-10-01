@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local functional smoke test before a trusted certificate or MX cutover."""
+"""Local SMTP and IMAP smoke test, independent of public MX delivery."""
 
 import hashlib
 import imaplib
@@ -26,7 +26,7 @@ def main():
     message["Subject"] = subject
     message.set_content("Local delivery smoke test.")
 
-    # This test is loopback-only. Public IMAPS stays closed until trusted TLS is installed.
+    # This test deliberately uses loopback. Public TLS is checked separately.
     context = ssl._create_unverified_context()
     with imaplib.IMAP4_SSL("127.0.0.1", 1993, ssl_context=context, timeout=15) as imap:
         status, _ = imap.login(ADDRESS, password)
