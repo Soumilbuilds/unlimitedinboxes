@@ -37,19 +37,24 @@ async function fixture(t, options = {}) {
     delete: async ref => secrets.delete(ref),
   };
   const dnsService = createSmtpDnsService({ resolver: { resolveNs: async () => state.connected ? NS : ['old.ns.example.test'] } });
+  let deleteZoneCalls = 0;
+  let deleteDomainCalls = 0;
+  const makeResend = () => ({
+    listDomains: () => state.list(),
+    ensureDomain: async domain => {
+      if (state.failPrepare) throw smtpError('RESEND_DOMAIN_LIMIT');
+      return { id: 'resend1', name: domain, status: 'pending', records: [] };
+    },
+    getDomain: async () => ({ id: 'resend1', name: 'example.test', status: 'pending', records: [] }),
+    deleteDomain: async () => { deleteDomainCalls++; },
+  });
   const runtime = {
     repository, secretStore, config: { publicHost: 'mail.example.test' }, buildCsv: buildSmtpCsv,
-    resendFactory: () => ({
-      listDomains: () => state.list(),
-      ensureDomain: async domain => {
-        if (state.failPrepare) throw smtpError('RESEND_DOMAIN_LIMIT');
-        return { id: 'resend1', name: domain, status: 'pending', records: [] };
-      },
-      getDomain: async () => ({ id: 'resend1', name: 'example.test', status: 'pending', records: [] }),
-    }),
+    resendFactory: () => { deleteDomainCalls = 0; return makeResend(); },
     dns: {
       findSmtpZone: async () => null,
       ensureSmtpZone: async () => ({ zoneId: 'zone1', nameServers: NS, created: true }),
+      deleteSmtpZone: async () => { deleteZoneCalls++; },
       reconcileSmtpDns: async ({ records }) => records,
       checkSmtpNameservers: input => dnsService.checkSmtpNameservers(input),
     },
@@ -110,7 +115,7 @@ async function fixture(t, options = {}) {
     }
     return order;
   };
-  return { db, repository, runtime, processor, state, secrets, request, connect, draft, ready, completed };
+  return { db, repository, runtime, processor, state, secrets, request, connect, draft, ready, completed, get deleteZoneCalls() { return deleteZoneCalls; }, get deleteDomainCalls() { return deleteDomainCalls; } };
 }
 function expectError(response, status, code) {
   assert.equal(response.status, status, response.text);
@@ -303,10 +308,34 @@ test('order list/detail report real counts; logs expose timestamp and sanitized 
 test('deletion respects actual mailbox counts and repository infrastructure safeguards', async t => {
   const f = await fixture(t); const order = f.completed();
   expectError(await f.request(`/orders/${order.id}`, { method: 'DELETE' }), 409, 'ORDER_NOT_DELETABLE');
-  const prepared = f.ready('prepared.test'); f.repository.updateOrder(prepared.id, { side_effects: 1 });
-  expectError(await f.request(`/orders/${prepared.id}`, { method: 'DELETE' }), 409, 'ORDER_NOT_DELETABLE');
   const draft = f.draft('delete.test'); assert.equal((await f.request(`/orders/${draft.id}`, { method: 'DELETE' })).status, 204);
   assert.equal(f.repository.getDomainClaim('delete.test'), undefined);
+});
+test('deletion cleans up provisioned Cloudflare and Resend infrastructure', async t => {
+  const f = await fixture(t);
+  // Orders with infrastructure get their external resources deleted before removal.
+  const withZone = f.ready('zoned.test');
+  f.repository.updateOrder(withZone.id, { side_effects: 1 });
+  assert.equal((await f.request(`/orders/${withZone.id}`, { method: 'DELETE' })).status, 204);
+  assert.equal(f.deleteZoneCalls, 1);
+  assert.equal(f.repository.getOrder(withZone.id), undefined);
+
+  // When both Cloudflare and Resend resources exist, both get cleaned up.
+  const withBoth = f.ready('bothtype.test');
+  f.repository.updateOrder(withBoth.id, { side_effects: 1, resend_domain_id: 'resend1' });
+  await f.connect();
+  assert.equal((await f.request(`/orders/${withBoth.id}`, { method: 'DELETE' })).status, 204);
+  assert.equal(f.deleteZoneCalls, 2);
+  assert.equal(f.deleteDomainCalls, 1);
+  assert.equal(f.repository.getOrder(withBoth.id), undefined);
+});
+test('deletion with infrastructure is best-effort: cleanup failure never blocks', async t => {
+  const f = await fixture(t);
+  const order = f.ready('fragile.test');
+  f.repository.updateOrder(order.id, { side_effects: 1 });
+  f.runtime.dns.deleteSmtpZone = async () => { throw new Error('Cloudflare unavailable'); };
+  assert.equal((await f.request(`/orders/${order.id}`, { method: 'DELETE' })).status, 204);
+  assert.equal(f.repository.getOrder(order.id), undefined);
 });
 test('CSV reads secret refs, preserves exact passwords and returns no-store metadata', async t => {
   const f = await fixture(t); const order = f.completed();

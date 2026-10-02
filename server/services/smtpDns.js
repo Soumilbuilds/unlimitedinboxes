@@ -376,7 +376,13 @@ export function createSmtpDnsService({ cloudflare = defaultCloudflare, resolver 
     return { ready: missing.length === 0, missing };
   }
 
-  return { findSmtpZone, ensureSmtpZone, checkSmtpNameservers, reconcileSmtpDns, verifySmtpDns };
+  async function deleteSmtpZone(zoneId) {
+    try {
+      await sharedCloudflare.deleteZone(zoneId);
+    } catch { /* best-effort */ }
+  }
+
+  return { findSmtpZone, ensureSmtpZone, checkSmtpNameservers, reconcileSmtpDns, verifySmtpDns, deleteSmtpZone };
 }
 
 const service = createSmtpDnsService();
@@ -385,3 +391,4 @@ export const ensureSmtpZone = service.ensureSmtpZone;
 export const checkSmtpNameservers = service.checkSmtpNameservers;
 export const reconcileSmtpDns = service.reconcileSmtpDns;
 export const verifySmtpDns = service.verifySmtpDns;
+export const deleteSmtpZone = service.deleteSmtpZone;

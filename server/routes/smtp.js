@@ -190,7 +190,26 @@ export function createSmtpRouter({ getRuntime = loadRuntime, getProcessor = load
     const order = orderFor(req);
     if (ACTIVE.has(order.status)) throw smtpError('ORDER_STATE_CONFLICT');
     if (publicOrder(req, order).created_mailboxes_count) throw smtpError('ORDER_NOT_DELETABLE');
-    repoFor(req).deleteOrder(order.id, req.smtpUser.id);
+    const repo = repoFor(req);
+    // Best-effort cleanup of provisioned external infrastructure, then clear
+    // the side_effects flag so deleteOrder will proceed.
+    if (order.cloudflare_zone_id || order.resend_domain_id) {
+      try {
+        const runtime = req.smtpRuntime;
+        const connection = repo.getConnection(req.smtpUser.id);
+        if (order.cloudflare_zone_id) {
+          try { await runtime.dns.deleteSmtpZone(order.cloudflare_zone_id); } catch { /* best-effort */ }
+        }
+        if (order.resend_domain_id && connection) {
+          try {
+            const key = await runtime.secretStore.get(connection.secret_ref);
+            if (key) await runtime.resendFactory(key).deleteDomain(order.resend_domain_id);
+          } catch { /* best-effort */ }
+        }
+      } catch { /* best-effort cleanup never blocks deletion */ }
+      repo.updateOrder(order.id, { side_effects: 0 });
+    }
+    repo.deleteOrder(order.id, req.smtpUser.id);
     res.status(204).send();
   }));
   router.get('/orders/:id/logs', route(async (req, res) => {

@@ -156,6 +156,10 @@ export async function getZoneStatus(zoneId) {
   return res.data?.result?.status || null;
 }
 
+export async function deleteZone(zoneId) {
+  await cf.delete(`/zones/${zoneId}`);
+}
+
 async function upsertProxiedRedirectRecord(zoneId, name) {
   const records = await listDnsRecords(zoneId, { type: 'A', name });
   const data = {

@@ -259,4 +259,9 @@ export class ResendService {
     await this.#request(`/domains/${domainId}/verify`, { method: 'POST' });
     return this.getDomain(domainId);
   }
+
+  async deleteDomain(id) {
+    const domainId = validId(id);
+    return this.#request(`/domains/${domainId}`, { method: 'DELETE', operation: 'delete' });
+  }
 }

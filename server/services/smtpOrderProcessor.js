@@ -118,19 +118,17 @@ export function createSmtpProcessor(dependencies) {
     row = check();
     let remote;
     if (!row.resend_domain_id) {
-      update({ side_effects: 1 });
       remote = await call(() => resend.ensureDomain(row.domain));
-      update({ resend_domain_id: remote.id, resend_status: remote.status });
+      update({ side_effects: 1, resend_domain_id: remote.id, resend_status: remote.status });
     } else {
       remote = await call(() => resend.getDomain(row.resend_domain_id));
       if (remote.name !== row.domain) throw smtpError('DOMAIN_UNAVAILABLE', 409);
     }
     row = check();
     if (!row.cloudflare_zone_id) {
-      update({ side_effects: 1 });
       const zone = await ensureOwnedResource(ctx, 'zone', row.domain,
         () => dns.findSmtpZone(row.domain), () => dns.ensureSmtpZone(row.domain), zone => zone?.zoneId);
-      update({ cloudflare_zone_id: zone.zoneId, cloudflare_ns: JSON.stringify(zone.nameServers) });
+      update({ side_effects: 1, cloudflare_zone_id: zone.zoneId, cloudflare_ns: JSON.stringify(zone.nameServers) });
     } else {
       if (zoneReceipt?.remote_id !== row.cloudflare_zone_id) throw smtpError('DOMAIN_UNAVAILABLE', 409);
       const zone = await call(() => dns.ensureSmtpZone(row.domain, { ownedZoneId: row.cloudflare_zone_id }));
