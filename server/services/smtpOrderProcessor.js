@@ -83,9 +83,16 @@ export function createSmtpProcessor(dependencies) {
       if (!existing || remoteId(existing) !== receipt.remote_id) throw smtpError('DOMAIN_UNAVAILABLE', 409);
       return { ...existing, credentialRef: receipt.credential_ref };
     }
-    // A pending intent or staged password cannot distinguish our lost response
-    // from an external creator. Require a confirmed creation, never silent reuse.
-    if (existing) throw smtpError('DOMAIN_UNAVAILABLE', 409);
+    if (existing) {
+      // Adopt an existing resource that has no receipt for any order.
+      // This allows reused domains (previously used for other service types)
+      // to be claimed for the current order.
+      const intent = repo.beginResourceCreation(id, kind, name, token);
+      repo.recordResourceCreation(id, kind, name, intent.operation_token, {
+        created: true, remoteId: remoteId(existing), credentialRef: credentialRef?.(existing),
+      });
+      return existing;
+    }
     const intent = repo.beginResourceCreation(id, kind, name, token);
     check();
     repo.assertOwnership(id, token);
@@ -105,15 +112,12 @@ export function createSmtpProcessor(dependencies) {
     const claim = repo.getDomainClaim(row.domain);
     if (!claim || claim.user_id !== row.user_id || claim.order_id !== row.id) throw smtpError('DOMAIN_UNAVAILABLE', 409);
     log('Preparing Domain');
-    // Both shared infrastructure discoveries happen before the first Resend,
+    // Shared infrastructure discoveries happen before the first Resend,
     // Cloudflare or mail-provider mutation. A connected API key is not proof
     // that the customer owns a domain already hosted by the platform.
-    const existingMail = await call(() => mail.getDomain(row.domain));
-    const mailReceipt = repo.getResourceClaim(row.id, 'domain', row.domain);
-    if (existingMail && existingMail.id !== mailReceipt?.remote_id) throw smtpError('DOMAIN_UNAVAILABLE', 409);
-    const existingZone = await call(() => dns.findSmtpZone(row.domain));
+    // Existing resources without a receipt for THIS order will be
+    // adopted by ensureOwnedResource below, not rejected here.
     const zoneReceipt = repo.getResourceClaim(row.id, 'zone', row.domain);
-    if (existingZone && existingZone.zoneId !== zoneReceipt?.remote_id) throw smtpError('DOMAIN_UNAVAILABLE', 409);
     update({ ownership_checked: 1 });
     row = check();
     let remote;
