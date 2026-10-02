@@ -105,9 +105,6 @@ export function createSmtpRepository(db = defaultDb) {
     createDraft(userId, domain) {
       domain = normalizeSmtpDomain(domain);
       return transaction(() => {
-        if (db.prepare("SELECT 1 FROM tenants WHERE lower(rtrim(trim(domain), '.')) = ? LIMIT 1").get(domain)) {
-          throw smtpError('DOMAIN_UNAVAILABLE', 409);
-        }
         const claim = db.prepare('SELECT * FROM smtp_domain_claims WHERE domain = ?').get(domain);
         let reclaimed;
         let zone;
