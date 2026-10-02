@@ -33,11 +33,11 @@ SSH_CMD="ssh"
 RSYNC_RSH="ssh"
 
 if [ -n "${SSHPASS:-}" ] && command -v sshpass >/dev/null 2>&1; then
-  SSH_CMD="sshpass -e ssh"
-  RSYNC_RSH="sshpass -e ssh"
+  SSH_CMD="sshpass -e ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
+  RSYNC_RSH="$SSH_CMD"
 else
-  SSH_CMD="ssh -o BatchMode=yes"
-  RSYNC_RSH="ssh -o BatchMode=yes"
+  SSH_CMD="ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
+  RSYNC_RSH="$SSH_CMD"
 fi
 
 if [ "$AUTO_COMMIT" = "1" ]; then
@@ -85,14 +85,19 @@ import os
 import pathlib
 import sqlite3
 import sys
+import time
 
 source_path, backup_path = map(pathlib.Path, sys.argv[1:])
 if source_path.exists() and source_path.stat().st_size:
     backup_path.parent.mkdir(parents=True, exist_ok=True)
     os.umask(0o077)
+    deadline = time.monotonic() + 120
+    def check_progress(status, remaining, total):
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Database backup timed out; production was not changed")
     with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as source:
         with sqlite3.connect(backup_path) as backup:
-            source.backup(backup)
+            source.backup(backup, pages=256, progress=check_progress)
             if backup.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise RuntimeError("Database backup integrity check failed")
 PY
