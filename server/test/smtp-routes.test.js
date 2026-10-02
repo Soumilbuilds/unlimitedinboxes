@@ -337,6 +337,17 @@ test('deletion with infrastructure is best-effort: cleanup failure never blocks'
   assert.equal((await f.request(`/orders/${order.id}`, { method: 'DELETE' })).status, 204);
   assert.equal(f.repository.getOrder(order.id), undefined);
 });
+test('deletion clears stale side_effects flag even when no infrastructure exists', async t => {
+  const f = await fixture(t);
+  // Reproduces the live bug: failed order with side_effects=1 but no cloudflare_zone_id
+  // or resend_domain_id (provisioning failed before either was created).
+  const stale = f.ready('stale.test');
+  f.repository.updateOrder(stale.id, { side_effects: 1, status: 'failed', cloudflare_zone_id: null, resend_domain_id: null });
+  assert.equal((await f.request(`/orders/${stale.id}`, { method: 'DELETE' })).status, 204);
+  assert.equal(f.repository.getOrder(stale.id), undefined);
+  assert.equal(f.deleteZoneCalls, 0);
+  assert.equal(f.deleteDomainCalls, 0);
+});
 test('CSV reads secret refs, preserves exact passwords and returns no-store metadata', async t => {
   const f = await fixture(t); const order = f.completed();
   const response = await f.request(`/orders/${order.id}/download`);
