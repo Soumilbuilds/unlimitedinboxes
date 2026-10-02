@@ -282,3 +282,29 @@ test('pagination preserves all TXT records and a provider that drops writes fail
   const broken = fixture([], { addDnsRecord: async () => {} });
   await assert.rejects(broken.reconcile([spf]), safeError('DNS_UNAVAILABLE', 502));
 });
+
+test('configured Cloudflare account creates a zone without account-list permission', async t => {
+  const { default: axios } = await import('axios');
+  const previous = process.env.CLOUDFLARE_ACCOUNT_ID;
+  process.env.CLOUDFLARE_ACCOUNT_ID = 'configured_account';
+  t.after(() => {
+    if (previous === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    else process.env.CLOUDFLARE_ACCOUNT_ID = previous;
+  });
+  const calls = [];
+  t.mock.method(axios, 'get', async url => {
+    calls.push(url);
+    assert.equal(url, 'https://api.cloudflare.com/client/v4/zones');
+    return { data: { success: true, result: [] } };
+  });
+  t.mock.method(axios, 'post', async (url, body) => {
+    assert.equal(url, 'https://api.cloudflare.com/client/v4/zones');
+    assert.equal(body.account.id, 'configured_account');
+    return { data: { success: true, result: { id: zoneId, name_servers: nameServers } } };
+  });
+  const service = createSmtpDnsService();
+  const zone = await service.ensureSmtpZone(domain);
+  assert.equal(zone.created, true);
+  assert.deepEqual(zone.nameServers, nameServers);
+  assert.equal(calls.length, 1);
+});

@@ -135,8 +135,11 @@ async function createZoneStrict(domain) {
   // The shared createZone helper silently reuses duplicate zones; this security boundary must not.
   const token = process.env.CLOUDFLARE_ZONE_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
   const options = { headers: { Authorization: `Bearer ${token}` }, timeout: 15000, maxRedirects: 0 };
-  const accounts = await axios.get('https://api.cloudflare.com/client/v4/accounts', options);
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || accounts.data?.result?.[0]?.id;
+  let accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (!accountId) {
+    const accounts = await axios.get('https://api.cloudflare.com/client/v4/accounts', options);
+    accountId = accounts.data?.result?.[0]?.id;
+  }
   if (!accountId) throw unavailable();
   try {
     const response = await axios.post('https://api.cloudflare.com/client/v4/zones', {

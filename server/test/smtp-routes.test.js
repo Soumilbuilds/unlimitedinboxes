@@ -541,3 +541,22 @@ test('already expired unverified claim is rejected before nameserver lookup', as
   assert.equal(calls, 0); assert.equal(f.repository.getOrder(order.id).nameservers_connected, 0);
   assert.equal(f.repository.getOrder(order.id).processing_token, null);
 });
+
+test('transient preparation exposes a safe pause and retry resumes the same order', async t => {
+  const f = await fixture(t); await f.connect();
+  const ensureZone = f.runtime.dns.ensureSmtpZone;
+  f.runtime.dns.ensureSmtpZone = async () => { throw Object.assign(new Error(PRIVATE), { code: 'DNS_UNAVAILABLE' }); };
+  const paused = await f.request('/orders', { method: 'POST', body: { domain: 'example.test' } });
+  assert.equal(paused.status, 201);
+  assert.equal(paused.data.status, 'draft');
+  assert.equal(paused.data.error_code, 'DNS_UNAVAILABLE');
+  assert.equal(paused.data.error_message, 'DNS could not be checked. Try again.');
+  assert.ok(!paused.text.includes(PRIVATE));
+  f.runtime.dns.ensureSmtpZone = ensureZone;
+  const retried = await f.request(`/orders/${paused.data.id}/start`, { method: 'POST' });
+  assert.equal(retried.status, 200);
+  assert.equal(retried.data.id, paused.data.id);
+  assert.equal(retried.data.status, 'pending_nameservers');
+  assert.equal(retried.data.error_code, null);
+  assert.deepEqual(retried.data.name_servers, NS);
+});
