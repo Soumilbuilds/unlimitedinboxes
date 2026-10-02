@@ -55,10 +55,9 @@ export function createSmtpRepository(db = defaultDb) {
     const created = Date.parse(`${claim.created_at.replace(' ', 'T').replace(/Z$/, '')}Z`);
     return !row.started_at && !row.nameservers_connected && (!Number.isFinite(created) || created + CLAIM_TTL_MS <= Date.now());
   };
-  const assertClaim = (row, { allowExpired = false } = {}) => {
+  const assertClaim = (row) => {
     const claim = db.prepare('SELECT * FROM smtp_domain_claims WHERE domain=?').get(row.domain);
     if (!claim || claim.order_id !== row.id || claim.user_id !== row.user_id ||
-      (!allowExpired && expired(row, claim)) ||
       db.prepare("SELECT 1 FROM tenants WHERE lower(rtrim(trim(domain), '.'))=?").get(row.domain)) {
       throw smtpError('DOMAIN_UNAVAILABLE', 409);
     }
@@ -105,17 +104,22 @@ export function createSmtpRepository(db = defaultDb) {
     createDraft(userId, domain) {
       domain = normalizeSmtpDomain(domain);
       return transaction(() => {
+        if (db.prepare("SELECT 1 FROM tenants WHERE lower(rtrim(trim(domain), '.'))=?").get(domain)) {
+          throw smtpError('DOMAIN_UNAVAILABLE', 409);
+        }
         const claim = db.prepare('SELECT * FROM smtp_domain_claims WHERE domain = ?').get(domain);
         let reclaimed;
         let zone;
         if (claim) {
           const old = getOrder(claim.order_id);
-          if (!expired(old, claim)) {
-            if (claim.user_id !== userId) throw smtpError('DOMAIN_UNAVAILABLE', 409);
+          if (claim.user_id === userId) {
             return getOrder(claim.order_id, userId);
           }
+          if (!expired(old, claim)) {
+            throw smtpError('DOMAIN_UNAVAILABLE', 409);
+          }
           // Repeating createDraft cannot renew an attacker's original deadline.
-          if (claim.user_id === userId || old.started_at || old.mail_domain_owned ||
+          if (old.started_at || old.mail_domain_owned ||
             (old.processing_token && old.lease_until > Date.now()) ||
             db.prepare("SELECT 1 FROM smtp_resource_claims WHERE order_id=? AND kind IN ('domain','mailbox')").get(old.id) ||
             mailboxes(old.id).some(item => item.status !== 'pending' || item.credential_ref)) throw smtpError('DOMAIN_UNAVAILABLE', 409);
@@ -176,7 +180,6 @@ export function createSmtpRepository(db = defaultDb) {
       return transaction(() => {
         const row = getOrder(id);
         if (!row) throw smtpError('DOMAIN_UNAVAILABLE', 409);
-        assertClaim(row, { allowExpired: true });
         if (created !== true || typeof remoteId !== 'string' || !remoteId ||
           (kind === 'mailbox' && credentialRef !== `mailbox:${name}`)) throw smtpError('DOMAIN_UNAVAILABLE', 409);
         const result = db.prepare(`UPDATE smtp_resource_claims SET remote_id=?,credential_ref=?

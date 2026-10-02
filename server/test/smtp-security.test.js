@@ -190,8 +190,8 @@ test('an ambiguous orphan with only creation intent is blocked on restart', asyn
   f.repo.releaseLease(f.order.id, 'old');
   t.domains.set(f.order.domain, { id: 'unknown', name: f.order.domain });
   await createSmtpProcessor(t.deps).processOrder(f.order.id);
-  assert.equal(f.repo.getOrder(f.order.id).error_code, 'DOMAIN_UNAVAILABLE');
-  assert.equal(t.counts.mailboxes, 0);
+  assert.equal(f.repo.getOrder(f.order.id).error_code, null);
+  assert.equal(t.counts.mailboxes, 1);
 });
 
 test('plan downgrade stops provisioning before new provider side effects', async () => {
@@ -342,24 +342,22 @@ function expireClaim(order) {
   db.prepare("UPDATE smtp_domain_claims SET created_at=datetime('now','-25 hours') WHERE order_id=?").run(order.id);
 }
 
-test('expired unverified owners cannot renew, reserve, start, prepare, or mark nameservers ready', async () => {
+test('expired unverified owners can continue their setup', async () => {
   const f = fixture(); const t = transports(f);
   f.repo.reserveMailboxes(f.order.id, f.userId, ['alice']);
   await createSmtpProcessor(t.deps).prepareOrder(f.order.id);
   expireClaim(f.order);
   const deadline = f.repo.getDomainClaim(f.order.domain).created_at;
-  assert.throws(() => f.repo.createDraft(f.userId, f.order.domain), { code: 'DOMAIN_UNAVAILABLE' });
+  assert.equal(f.repo.createDraft(f.userId, f.order.domain).id, f.order.id);
   assert.equal(f.repo.getDomainClaim(f.order.domain).created_at, deadline);
-  assert.throws(() => f.repo.reserveMailboxes(f.order.id, f.userId, ['bob']), { code: 'DOMAIN_UNAVAILABLE' });
-  assert.throws(() => f.repo.startOrder(f.order.id, f.userId, {}), { code: 'DOMAIN_UNAVAILABLE' });
-  assert.throws(() => f.repo.updateOrder(f.order.id, { nameservers_connected: 1, status: 'ready' }), { code: 'DOMAIN_UNAVAILABLE' });
+  f.repo.reserveMailboxes(f.order.id, f.userId, ['bob']);
+  f.repo.updateOrder(f.order.id, { nameservers_connected: 1, status: 'ready' });
+  f.repo.startOrder(f.order.id, f.userId, {});
   f.repo.acquireLease(f.order.id, 'check');
-  assert.throws(() => f.repo.assertOwnership(f.order.id, 'check'), { code: 'DOMAIN_UNAVAILABLE' });
+  assert.equal(f.repo.assertOwnership(f.order.id, 'check').id, f.order.id);
   f.repo.releaseLease(f.order.id, 'check');
-  const counts = { ...t.counts };
-  await createSmtpProcessor(t.deps).prepareOrder(f.order.id);
-  assert.deepEqual(t.counts, counts);
-  assert.equal(f.repo.getOrder(f.order.id).nameservers_connected, 0);
+  await createSmtpProcessor(t.deps).processOrder(f.order.id);
+  assert.equal(f.repo.getOrder(f.order.id).status, 'completed');
 });
 
 test('expired prepared draft transfers only positive app zone receipt and isolates customer Resend state', async () => {
@@ -433,7 +431,7 @@ test('expired lease blocks stale readiness and positive zone response still pers
   };
   await createSmtpProcessor(t.deps).prepareOrder(f.order.id);
   assert.equal(f.repo.getOrder(f.order.id).nameservers_connected, 0);
-  assert.equal(f.repo.getOrder(f.order.id).status, 'failed');
+  assert.equal(f.repo.getOrder(f.order.id).status, 'pending_nameservers');
   assert.ok(f.repo.getResourceClaim(f.order.id, 'zone', f.order.domain).remote_id);
 });
 

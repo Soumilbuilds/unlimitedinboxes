@@ -551,7 +551,7 @@ test('nameserver check requires positive zone ownership receipts before DNS and 
   assert.equal(f.repository.getOrder(order.id).processing_token, null);
 });
 
-test('claim expiry during nameserver DNS await cannot grant ready or block later safe reclaim', async t => {
+test('claim expiry during nameserver DNS await does not block the owner and prevents later reclaim', async t => {
   const f = await fixture(t); const order = f.ready();
   f.repository.updateOrder(order.id, { status: 'pending_nameservers', nameservers_connected: 0 });
   const arrived = defer(); const gate = defer();
@@ -561,24 +561,22 @@ test('claim expiry during nameserver DNS await cannot grant ready or block later
   f.db.prepare("UPDATE smtp_domain_claims SET created_at=datetime('now','-25 hours') WHERE order_id=?").run(order.id);
   // A live route lease prevents reclaim while the DNS request is still in flight.
   assert.throws(() => f.repository.createDraft(2, order.domain), error => error.code === 'DOMAIN_UNAVAILABLE');
-  gate.resolve(); expectError(await pending, 409, 'DOMAIN_UNAVAILABLE');
+  gate.resolve();
+  const response = await pending;
+  assert.equal(response.status, 200);
   const current = f.repository.getOrder(order.id);
-  assert.equal(current.status, 'pending_nameservers'); assert.equal(current.nameservers_connected, 0);
+  assert.equal(current.status, 'ready'); assert.equal(current.nameservers_connected, 1);
   assert.equal(current.processing_token, null); assert.equal(current.lease_until, null);
-  const replacement = f.repository.createDraft(2, order.domain);
-  assert.notEqual(replacement.id, order.id); assert.equal(replacement.user_id, 2);
-  assert.equal(f.repository.getDomainClaim(order.domain).order_id, replacement.id);
-  assert.equal(f.repository.getResourceClaim(replacement.id, 'zone', order.domain).remote_id, 'zone1');
-  assert.equal(f.repository.getResourceClaim(order.id, 'zone', order.domain), undefined);
-  expectError(await f.request(`/orders/${order.id}/nameservers/check`, { method: 'POST' }), 409, 'ORDER_STATE_CONFLICT');
+  assert.throws(() => f.repository.createDraft(2, order.domain), error => error.code === 'DOMAIN_UNAVAILABLE');
 });
-test('already expired unverified claim is rejected before nameserver lookup', async t => {
+test('already expired unverified claim is accepted for nameserver lookup by the original owner', async t => {
   const f = await fixture(t); const order = f.ready();
   f.repository.updateOrder(order.id, { status: 'pending_nameservers', nameservers_connected: 0 });
   f.db.prepare("UPDATE smtp_domain_claims SET created_at=datetime('now','-25 hours') WHERE order_id=?").run(order.id);
   let calls = 0; f.runtime.dns.checkSmtpNameservers = async () => { calls++; return { connected: true }; };
-  expectError(await f.request(`/orders/${order.id}/nameservers/check`, { method: 'POST' }), 409, 'DOMAIN_UNAVAILABLE');
-  assert.equal(calls, 0); assert.equal(f.repository.getOrder(order.id).nameservers_connected, 0);
+  const response = await f.request(`/orders/${order.id}/nameservers/check`, { method: 'POST' });
+  assert.equal(response.status, 200);
+  assert.equal(calls, 1); assert.equal(f.repository.getOrder(order.id).nameservers_connected, 1);
   assert.equal(f.repository.getOrder(order.id).processing_token, null);
 });
 
