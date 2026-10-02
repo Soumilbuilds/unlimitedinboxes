@@ -287,6 +287,7 @@ export function createSmtpDnsService({ cloudflare = defaultCloudflare, resolver 
       if (desiredSpf.length && currentSpf.length > 1) throw conflict();
       const desiredMx = requirements.filter(record => record.type === 'MX');
       if (desiredMx.length && current.some(record => record.type === 'MX' && !desiredMx.some(item => sameRecord(item, record)))) throw conflict();
+      if (name.includes('._domainkey.') && requirements.filter(record => record.type === 'TXT').length > 1) throw conflict();
       for (const required of requirements) {
         let record = { ...required };
         let target;
@@ -315,12 +316,16 @@ export function createSmtpDnsService({ cloudflare = defaultCloudflare, resolver 
       if (target) await cloudflare.updateDnsRecord(zoneId, target.id, record);
       else await cloudflare.addDnsRecord(zoneId, record.type, record.name, record.content, record.priority);
     }
-    // A successful write is not sufficient: check the stored records and duplicate SPF after reconciliation.
+    // Recheck conflicts as well as required records: another writer may have raced the plan.
     for (const name of groups.keys()) {
       const actual = await listRecords(zoneId, name);
       if (final.some(record => record.name === name && !actual.some(item => sameRecord(item, record)))) throw unavailable();
       if (final.some(record => record.name === name && record.type === 'TXT' && isSpf(record.content))
           && actual.filter(record => record.type === 'TXT' && isSpf(record.content)).length !== 1) throw conflict();
+      const requiredMx = final.filter(record => record.name === name && record.type === 'MX');
+      if (requiredMx.length && actual.some(record => record.type === 'MX' && !requiredMx.some(item => sameRecord(item, record)))) throw conflict();
+      if (name.includes('._domainkey.') && final.some(record => record.name === name && record.type === 'TXT')
+          && actual.filter(record => record.type === 'TXT').length !== 1) throw conflict();
     }
     return final;
   }
@@ -353,9 +358,13 @@ export function createSmtpDnsService({ cloudflare = defaultCloudflare, resolver 
       if (record.type === 'TXT') {
         const values = answers.map(answer => Array.isArray(answer) ? answer.join('') : unquoteTxt(answer));
         const filtered = isSpf(record.content) ? values.filter(isSpf) : isDmarc(record.content) ? values.filter(isDmarc) : values;
-        matches = filtered.includes(unquoteTxt(record.content)) && (!(isSpf(record.content) || isDmarc(record.content)) || filtered.length === 1);
+        matches = filtered.includes(unquoteTxt(record.content))
+          && (!(isSpf(record.content) || isDmarc(record.content) || record.name.includes('._domainkey.')) || filtered.length === 1);
       } else if (record.type === 'MX') {
-        matches = answers.some(answer => String(answer.exchange).toLowerCase().replace(/\.$/, '') === record.content && Number(answer.priority) === record.priority);
+        const requiredMx = normalized.filter(item => item.type === 'MX' && item.name === record.name);
+        const answerRecord = answer => ({ type: 'MX', name: record.name, content: String(answer.exchange), priority: answer.priority });
+        matches = answers.some(answer => sameRecord(record, answerRecord(answer)))
+          && answers.every(answer => requiredMx.some(item => sameRecord(item, answerRecord(answer))));
       } else {
         matches = answers.some(answer => String(answer).toLowerCase().replace(/\.$/, '') === record.content.toLowerCase());
       }

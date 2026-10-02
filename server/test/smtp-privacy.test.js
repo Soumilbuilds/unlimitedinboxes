@@ -24,7 +24,7 @@ function assertPrivate(value, { allowPassword = false } = {}) {
 }
 
 test('SMTP public errors discard raw provider bodies, stack traces, authorization and unknown codes', () => {
-  for (const code of ['SERVICE_UNAVAILABLE', 'RESEND_INVALID_KEY', 'RESEND_FULL_ACCESS_REQUIRED', 'RESEND_DOMAIN_CONFLICT', 'MAILBOX_PROVISIONING_FAILED', 'PRIVATE_PROVIDER_CODE']) {
+  for (const code of ['SERVICE_UNAVAILABLE', 'RESEND_INVALID_KEY', 'RESEND_FULL_ACCESS_REQUIRED', 'RESEND_DOMAIN_CONFLICT', 'MAILBOX_PROVISIONING_FAILED', 'PRIVATE_PROVIDER_CODE', 'constructor', '__proto__', 'toString']) {
     const error = Object.assign(new Error(diagnostic), {
       code, stack: diagnostic, response: { data: { message: diagnostic } },
       headers: { Authorization: `Bearer ${KEY}` }, publicMessage: diagnostic,

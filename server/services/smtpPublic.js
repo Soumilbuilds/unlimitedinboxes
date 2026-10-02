@@ -42,7 +42,7 @@ const PROVIDER_CODES = Object.freeze({
   RESEND_NETWORK_ERROR: 'RESEND_UNAVAILABLE', RESEND_DOMAIN_ALREADY_EXISTS: 'RESEND_DOMAIN_CONFLICT',
 });
 export function publicSmtpError(error) {
-  const code = Object.hasOwn(ERRORS, error?.code) ? error.code : (PROVIDER_CODES[error?.code] || 'SERVICE_UNAVAILABLE');
+  const code = Object.hasOwn(ERRORS, error?.code) ? error.code : (Object.hasOwn(PROVIDER_CODES, error?.code) ? PROVIDER_CODES[error.code] : 'SERVICE_UNAVAILABLE');
   const [status, message] = ERRORS[code];
   return { code, status, error: message };
 }

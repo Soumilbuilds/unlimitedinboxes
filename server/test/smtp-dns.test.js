@@ -129,6 +129,82 @@ test('unsafe SPF merges, malformed DMARC, and conflicting MX or DKIM fail withou
   }
 });
 
+test('conflicting required DKIM keys at the same normalized selector fail before any write', async () => {
+  const f = fixture();
+  await assert.rejects(f.reconcile([
+    { type: 'TXT', name: 'early', content: 'would-be-added' },
+    { type: 'TXT', name: 'resend._domainkey', content: 'p=first-key' },
+    { type: 'TXT', name: `RESEND._domainkey.${domain}.`, content: 'p=second-key' },
+  ]), safeError('DNS_CONFLICT'));
+  assert.deepEqual(f.writes, []);
+});
+
+test('MX and DKIM conflicts added after planning cannot pass post-write verification', async () => {
+  for (const required of [
+    { type: 'MX', name: domain, content: 'mail.example.test', priority: 10 },
+    { type: 'TXT', name: `resend._domainkey.${domain}`, content: 'p=expected-key' },
+  ]) {
+    const f = fixture();
+    const push = f.records.push.bind(f.records);
+    f.records.push = record => {
+      const result = push(record);
+      if (record.name === required.name && record.type === required.type) {
+        push({ ...record, id: 'competing-record', content: required.type === 'MX' ? 'foreign.example.test' : 'p=foreign-key' });
+      }
+      return result;
+    };
+    await assert.rejects(f.reconcile([required]), safeError('DNS_CONFLICT'));
+    assert.ok(f.writes.length > 0);
+    assert.ok(f.records.some(record => record.id === 'competing-record'));
+  }
+});
+
+function publicDns(records) {
+  return createSmtpDnsService({
+    resolver: {
+      resolveNs: async () => nameServers,
+      resolveTxt: async name => records.filter(record => record.name === name && record.type === 'TXT').map(record => [record.content]),
+      resolveMx: async name => records.filter(record => record.name === name && record.type === 'MX').map(record => ({ exchange: `${record.content.toUpperCase()}.`, priority: record.priority })),
+    },
+    fetchImpl: async () => { throw new Error('Unexpected fallback'); },
+  });
+}
+
+test('public DNS rejects extra MX hosts or priorities and conflicting DKIM keys', async () => {
+  for (const [required, extra] of [
+    [{ type: 'MX', name: domain, content: 'mail.example.test', priority: 10 }, { content: 'foreign.example.test', priority: 0 }],
+    [{ type: 'MX', name: domain, content: 'mail.example.test', priority: 10 }, { priority: 0 }],
+    [{ type: 'TXT', name: `resend._domainkey.${domain}`, content: 'p=expected-key' }, { content: 'p=foreign-key' }],
+  ]) {
+    const service = publicDns([required, { ...required, ...extra }]);
+    assert.deepEqual(await service.verifySmtpDns({ domain, nameServers, records: [required] }), {
+      ready: false, missing: [{ type: required.type, name: required.name }],
+    });
+  }
+});
+
+test('distinct DKIM selectors and a complete required MX set remain valid and idempotent', async () => {
+  const preserved = [
+    { id: 'dmarc', type: 'TXT', name: `_dmarc.${domain}`, content: 'v=DMARC1; p=reject; rua=mailto:reports@example.test;' },
+    { id: 'verification', type: 'TXT', name: domain, content: 'verification=keep-me' },
+  ];
+  const required = [
+    { type: 'TXT', name: `first._domainkey.${domain}`, content: 'p=first-key' },
+    { type: 'TXT', name: `second._domainkey.${domain}`, content: 'p=second-key' },
+    { type: 'MX', name: domain, content: 'primary.example.test', priority: 10 },
+    { type: 'MX', name: domain, content: 'backup.example.test', priority: 20 },
+  ];
+  const f = fixture(preserved);
+  const final = await f.reconcile([...required, required[0]]);
+  assert.deepEqual(f.records.slice(0, preserved.length), preserved);
+  assert.deepEqual(await publicDns(f.records).verifySmtpDns({ domain, nameServers, records: final }), { ready: true, missing: [] });
+  const writes = structuredClone(f.writes);
+  assert.deepEqual(await f.reconcile(required), final);
+  assert.deepEqual(f.writes, writes);
+  const incomplete = publicDns(f.records.filter(record => record.content !== 'backup.example.test'));
+  assert.equal((await incomplete.verifySmtpDns({ domain, nameServers, records: final })).ready, false);
+});
+
 test('Resend DKIM, send-subdomain SPF and feedback MX reconcile and verify through injected public DNS', async () => {
   const f = fixture();
   const final = await f.reconcile([
